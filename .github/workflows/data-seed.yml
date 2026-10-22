@@ -1,0 +1,35 @@
+name: Data seed
+
+# Builds the writable Data volume seed (/private/var) from data-seed.json on a macOS runner (diskutil: case-sensitive
+# APFS, role Data) and uploads the packed DBRDISK1 seed and its report. The volume UUID in the report goes to
+# CONFIG_XNU_OWNER_DATA_VOLUME_UUID.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - data-seed.json
+      - scripts/make-data-seed-macos.py
+      - .github/workflows/data-seed.yml
+
+permissions:
+  contents: read
+
+jobs:
+  seed:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch the DBRDISK1 packer from UniXNU
+        run: |
+          mkdir -p tools
+          # The DarwinBoot commit UniXNU pins (drivers/DarwinBoot).
+          curl -fsSL https://raw.githubusercontent.com/UniXNU/DarwinBoot/d099354/Test/packed_ramdisk.py -o tools/packed_ramdisk.py
+          head -3 tools/packed_ramdisk.py
+      - name: Build the seed
+        run: python3 scripts/make-data-seed-macos.py --packer tools/packed_ramdisk.py --out out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: data-seed
+          path: |
+            out/data-macos.dbr
+            out/data-macos.json
