@@ -51,6 +51,7 @@ archives = [
   "build-mockfs-fixture.py",
   "build-libpthread-kernel.py",
   "build-fajita-storage.py",          # storage ABI audit and NativeVirtioBlock bindings (needs FAJITA_STORAGE_CANDIDATE)
+  "build-sheng-platform-power.py",    # the PMGR the original AMFI needs, from UniXNU-sheng
 ]
 
 # The pin and early initializer are the sheng values: the same 21H461 kernelcache. The roots are the sheng list,

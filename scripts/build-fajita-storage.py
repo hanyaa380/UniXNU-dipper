@@ -6,6 +6,9 @@ Runs as a [kernel] archives builder, after the bootstrap pass left the compile r
 fajita kernel.macho with its kernel.json prelink report beside it: the bound addresses are those of the original
 IOStorageFamily at the board-independent slide, so any prelink of the same kernelcache qualifies. Copies of the
 audit and the bindings report go to the logs directory, which the macOS workflow uploads.
+
+It also stages the inputs of build-sheng-platform-power.py, which runs after it: the same candidate under the name
+that script reads, and the decompressed original kernelcache (fetch it first with "unixnu ipsw fetch KernelCache").
 """
 import os
 from pathlib import Path
@@ -25,6 +28,15 @@ def main():
     candidate = os.environ.get('FAJITA_STORAGE_CANDIDATE')
     if not candidate or not Path(candidate).is_file() or not Path(candidate).with_suffix('.json').is_file():
         raise SystemExit('FAJITA_STORAGE_CANDIDATE must name a prelinked fajita kernel.macho with its kernel.json beside it')
+    prelink = ROOT / 'build/native-prelink'
+    prelink.mkdir(parents=True, exist_ok=True)
+    for suffix in ('.macho', '.json'):
+        shutil.copyfile(Path(candidate).with_suffix(suffix), prelink / f'native-owner-ufs-rootauth3-candidate{suffix}')
+    original = ROOT.parents[1] / 'ipsw/21H461/kernelcache.decompressed'
+    if original.is_file():
+        staged = ROOT / '.cache/firmware/kernelcache.macho/kernelcache.release.ipad7.decompressed'
+        staged.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(original, staged)
     run(ROOT / 'scripts/audit-storage-interface.py', '--static', '--candidate', candidate)
     run(ROOT / 'scripts/build-arm-driver.py', 'NativeVirtioBlock', '--verified-root', '--verified-root-bundle')
     run(ROOT / 'scripts/build-native-virtio-bindings.py', '--component', 'NativeVirtioBlock',
