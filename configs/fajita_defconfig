@@ -1,5 +1,7 @@
 # Kernel configuration of the fajita image. CONFIG_XNU_<NAME> becomes XNU_<NAME> for the kernel build.
-# The generic sheng set without the board power, GPU, display, boot progress and owner/verified root parts.
+# The generic sheng set without the board power, GPU, display, boot progress and owner/verified root parts, and
+# without NativeRamBlock: its bindings need the storage ABI audit (build/storage-abi/interface-audit.json), which comes
+# from a live observation, and the Data ramdisk it serves is not used yet.
 
 CONFIG_XNU_BUILD_ARCHIVES=y
 CONFIG_XNU_SOURCE_CORECRYPTO14=y
@@ -8,7 +10,6 @@ CONFIG_XNU_ARM_DT_PLATFORM=y
 CONFIG_XNU_ARMCPU=y
 CONFIG_XNU_NATIVE_UFS=y
 CONFIG_XNU_NATIVE_AES=y
-CONFIG_XNU_NATIVE_RAM_BLOCK=y
 CONFIG_XNU_TRUST_CACHE_RUNTIME=y
 CONFIG_XNU_SOURCE_MOCKFS=y
 CONFIG_XNU_NATIVE_CS_HASH_CACHE=y
@@ -19,6 +20,7 @@ CONFIG_XNU_NATIVE_PAN=y
 CONFIG_XNU_CRYPTO_BOOTSTRAP="prelinked"
 CONFIG_XNU_EXTRA_LD_ARCHIVES=""
 CONFIG_XNU_NATIVE_VIRTIO_BLOCK=n
+CONFIG_XNU_NATIVE_RAM_BLOCK=n
 CONFIG_XNU_NATIVE_ADRENO=n
 CONFIG_XNU_NATIVE_MOBILE_DISPLAY=n
 CONFIG_XNU_NATIVE_LEGACY_DISPLAY=n
