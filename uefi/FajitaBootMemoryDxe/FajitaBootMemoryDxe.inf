@@ -1,0 +1,36 @@
+[Defines]
+  INF_VERSION                    = 0x0001001B
+  BASE_NAME                      = FajitaBootMemoryDxe
+  FILE_GUID                      = 36CB8B81-DA94-418C-8EED-269EEB0406F5
+  MODULE_TYPE                    = DXE_DRIVER
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = FajitaBootMemoryDxeEntry
+
+[Sources]
+  FajitaBootMemoryDxe.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  SiliciumPkg/SiliciumPkg.dec
+
+[LibraryClasses]
+  BaseLib
+  BaseMemoryLib
+  DebugLib
+  DxeServicesTableLib
+  FdtLib
+  HobLib
+  MemoryAllocationLib
+  UefiBootServicesTableLib
+  UefiDriverEntryPoint
+
+[Guids]
+  gSiliciumEntryArgHobGuid                      ## CONSUMES
+
+[Protocols]
+  gEfiBlockIoProtocolGuid                       ## PRODUCES
+  gEfiDevicePathProtocolGuid                    ## PRODUCES
+
+[Depex]
+  TRUE
