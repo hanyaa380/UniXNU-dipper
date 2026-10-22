@@ -1,0 +1,226 @@
+Prefer chosen CPUs for timeshare threads: pcpu=<mask> and rcpu=<mask> (fajita, both default off).
+
+The BCM2837 configuration builds the clutch scheduler without __AMP__, so the SDM845's Kryo 385 Gold cores
+(logical 4-7) and Silver cores (0-3) are one undifferentiated pset, and choose_processor() takes the lowest
+numbered idle CPU first: a CPU-bound thread usually lands on a Silver core. The pset's perfcontrol preferred
+and migration bitmasks, which CLPC sets through the edge scheduler on Apple parts, are already honoured by
+choose_processor() on every scheduler; nothing sets them here. pcpu=<mask> seeds them in pset_init (preferred
+= mask, migration = the rest), and the clutch thread_avoid_processor() gets the edge scheduler's quantum
+expiry check, so a running thread also moves to an idle CPU of the mask. rcpu=<mask> recommends only the CPUs
+of the mask instead (a measurement aid). sched_pcpu_tick(), called once a second by package/BootLog.c, applies
+rcpu as CPUs come online and fills the two [sched] rows of the UFS log. Touches only osfmk/kern processor.c,
+sched_prim.c and sched_clutch.c, which no other patch changes (it applies to pristine xnu-10063.141.1).
+diff --git a/osfmk/kern/processor.c b/osfmk/kern/processor.c
+index c69d246..2535424 100644
+--- a/osfmk/kern/processor.c
++++ b/osfmk/kern/processor.c
+@@ -566,6 +566,8 @@ pset_find(
+ /*
+  *	Initialize the given processor_set structure.
+  */
++extern uint64_t sched_pcpu_mask;   /* fajita: sched_prim.c */
++
+ void
+ pset_init(
+ 	processor_set_t         pset,
+@@ -613,6 +615,11 @@ pset_init(
+ 	 */
+ 	pset->perfcontrol_cpu_preferred_bitmask = 0;
+ 	pset->perfcontrol_cpu_migration_bitmask = 0;
++	/* fajita: pcpu=<mask> prefers those CPUs and avoids the rest (sched_prim.c, patches/xnu/fajita-pcpu.patch) */
++	if (sched_pcpu_mask != 0) {
++		pset->perfcontrol_cpu_preferred_bitmask = sched_pcpu_mask;
++		pset->perfcontrol_cpu_migration_bitmask = ~sched_pcpu_mask;
++	}
+ 	pset->cpu_preferred_last_chosen = -1;
+ 
+ 	pset->stealable_rt_threads_earliest_deadline = UINT64_MAX;
+diff --git a/osfmk/kern/sched_clutch.c b/osfmk/kern/sched_clutch.c
+index e459195..f0b676c 100644
+--- a/osfmk/kern/sched_clutch.c
++++ b/osfmk/kern/sched_clutch.c
+@@ -3164,9 +3164,11 @@ sched_clutch_thread_update_scan(sched_update_scan_context_t scan_context)
+ 
+ extern int sched_allow_rt_smt;
+ 
++extern uint64_t sched_pcpu_stats[4];
++
+ /* Return true if this thread should not continue running on this processor */
+ static bool
+-sched_clutch_thread_avoid_processor(processor_t processor, thread_t thread, __unused ast_t reason)
++sched_clutch_thread_avoid_processor(processor_t processor, thread_t thread, ast_t reason)
+ {
+ 	if (processor->processor_primary != processor) {
+ 		/*
+@@ -3178,6 +3180,20 @@ sched_clutch_thread_avoid_processor(processor_t processor, thread_t thread, __un
+ 		}
+ 	}
+ 
++	/*
++	 * fajita (pcpu=<mask>, see pset_init): as sched_edge_thread_avoid_processor() does with CLPC's rotation
++	 * bitmasks, at quantum expiry an unbound timeshare thread leaves a CPU of the migration bitmask while a
++	 * recommended CPU outside it is idle; choose_processor() then places it there. The bitmask is 0 by default.
++	 */
++	if ((reason & AST_QUANTUM) && thread->sched_pri < BASEPRI_RTQUEUES && thread->bound_processor == PROCESSOR_NULL) {
++		processor_set_t pset = processor->processor_set;
++		if (bit_test(pset->perfcontrol_cpu_migration_bitmask, processor->cpu_id) &&
++		    (pset->cpu_state_map[PROCESSOR_IDLE] & pset->recommended_bitmask & ~pset->perfcontrol_cpu_migration_bitmask) != 0) {
++			os_atomic_inc(&sched_pcpu_stats[3], relaxed);
++			return true;
++		}
++	}
++
+ 	return false;
+ }
+ 
+diff --git a/osfmk/kern/sched_prim.c b/osfmk/kern/sched_prim.c
+index 8446b8e..12db9bc 100644
+--- a/osfmk/kern/sched_prim.c
++++ b/osfmk/kern/sched_prim.c
+@@ -271,6 +271,21 @@ TUNABLE_DEV_WRITEABLE(int, safe_fixed_multiplier, "safe_fixed_multiplier", SAFE_
+ #define         MAX_POLL_QUANTA                 2
+ TUNABLE(int, max_poll_quanta, "poll", MAX_POLL_QUANTA);
+ 
++/*
++ * fajita (patches/xnu/fajita-pcpu.patch). pcpu=<mask> seeds every pset's perfcontrol preferred and migration
++ * bitmasks (pset_init), which the edge scheduler's CLPC sets on Apple parts: choose_processor() then takes an
++ * idle CPU of the mask first and passes over an idle hint outside it, and the clutch thread_avoid_processor()
++ * moves a timeshare thread off a CPU outside the mask at quantum expiry while a CPU of the mask is idle.
++ * rcpu=<mask> instead recommends only the CPUs of the mask (sched_pcpu_tick, a measurement aid). Both are
++ * logical CPU masks (processor->cpu_id); 0, the default, changes nothing.
++ */
++extern uint64_t sched_pcpu_mask, sched_rcpu_mask, sched_pcpu_stats[4];
++extern char sched_pcpu_rows[2][240];
++TUNABLE(uint64_t, sched_pcpu_mask, "pcpu", 0);
++TUNABLE(uint64_t, sched_rcpu_mask, "rcpu", 0);
++/* [0] idle CPUs picked in the mask [1] idle CPUs picked outside it [2] idle hints passed over [3] quantum avoid decisions */
++uint64_t sched_pcpu_stats[4];
++
+ #define         SCHED_POLL_YIELD_SHIFT          4               /* 1/16 */
+ int             sched_poll_yield_shift = SCHED_POLL_YIELD_SHIFT;
+ 
+@@ -5178,6 +5193,7 @@ choose_processor(
+ 					if (!(bit_test(processor->processor_set->perfcontrol_cpu_migration_bitmask, processor->cpu_id) && non_avoided_idle_primary_map != 0)) {
+ 						return processor;
+ 					}
++					os_atomic_inc(&sched_pcpu_stats[2], relaxed);
+ 				}
+ 				processor = PROCESSOR_NULL;
+ 				break;
+@@ -5347,6 +5363,7 @@ no_available_cpus:
+ 		if (cpuid >= 0) {
+ 			processor = processor_array[cpuid];
+ 			pset->cpu_preferred_last_chosen = cpuid;
++			os_atomic_inc(&sched_pcpu_stats[0], relaxed);
+ 			return processor;
+ 		}
+ 
+@@ -5362,6 +5379,7 @@ no_available_cpus:
+ 			if (cpuid >= 0) {
+ 				processor = processor_array[cpuid];
+ 				pset->cpu_preferred_last_chosen = cpuid;
++				os_atomic_inc(&sched_pcpu_stats[1], relaxed);
+ 				return processor;
+ 			}
+ 		}
+@@ -5372,6 +5390,7 @@ no_available_cpus:
+ 		cpuid = lsb_first(idle_primary_map);
+ 		if (cpuid >= 0) {
+ 			processor = processor_array[cpuid];
++			os_atomic_inc(&sched_pcpu_stats[1], relaxed);
+ 			return processor;
+ 		}
+ 
+@@ -9203,3 +9222,92 @@ sysctl_get_quantum_us(void)
+ }
+ 
+ #endif /* DEVELOPMENT || DEBUG */
++
++#if __arm64__
++/*
++ * fajita: called once a second by the boot progress monitor (package/BootLog.c boot_log_tick), in thread
++ * context with preemption enabled. Applies rcpu=<mask> whenever the set of online CPUs changes (a CPU that
++ * comes up is recommended by processor_init), and every 5th call refreshes the two [sched] rows of the UFS
++ * log: the masks, the choose_processor counters and each CPU as XNU sees it (MPIDR, ml topology type and
++ * cluster, pset, recommended), then each CPU's user and total busy share of the last window and its user time.
++ */
++char sched_pcpu_rows[2][240];
++extern void sched_pcpu_tick(void);
++void
++sched_pcpu_tick(void)
++{
++	static uint32_t calls;
++	static uint64_t last_online, last_at, last_user[MAX_CPUS], last_busy[MAX_CPUS];
++
++	if (sched_rcpu_mask != 0 && preemption_enabled()) {
++		uint64_t online = os_atomic_load(&sched_online_processors, relaxed);
++		if (online != last_online) {
++			last_online = online;
++			sched_perfcontrol_update_recommended_cores_reason(sched_rcpu_mask, REASON_CLPC_USER, 0);
++		}
++	}
++	if (calls++ % 5 != 0) {
++		return;
++	}
++
++	const ml_topology_info_t *ti = ml_get_topology_info();
++	uint64_t rec = 0, now = mach_absolute_time(), win = now - last_at;
++	char *r0 = sched_pcpu_rows[0], *r1 = sched_pcpu_rows[1];
++	size_t cap = sizeof(sched_pcpu_rows[0]);
++	int n0 = snprintf(r0, cap, "[sched] pcpu=0x%llx rcpu=0x%llx online=0x%llx picks in=%llu out=%llu passed=%llu qavoid=%llu |",
++	    sched_pcpu_mask, sched_rcpu_mask, os_atomic_load(&sched_online_processors, relaxed),
++	    os_atomic_load(&sched_pcpu_stats[0], relaxed), os_atomic_load(&sched_pcpu_stats[1], relaxed),
++	    os_atomic_load(&sched_pcpu_stats[2], relaxed), os_atomic_load(&sched_pcpu_stats[3], relaxed));
++	uint64_t win_ms = 0;
++	absolutetime_to_nanoseconds(win, &win_ms);
++	win_ms /= NSEC_PER_MSEC;
++	int n1 = snprintf(r1, cap, "[sched busy] win=%llums user/busy%%", last_at ? win_ms : 0);
++	char tail[120];
++	int nt = snprintf(tail, sizeof(tail), " | user s");
++
++	for (unsigned int k = 0; ti != NULL && k < ti->num_cpus && k < MAX_CPUS; k++) {
++		const ml_topology_cpu_t *c = &ti->cpus[k];
++		unsigned int id = c->cpu_id;
++		processor_t p = (id < MAX_SCHED_CPUS) ? processor_array[id] : PROCESSOR_NULL;
++		char type = c->cluster_type == CLUSTER_TYPE_E ? 'E' : c->cluster_type == CLUSTER_TYPE_P ? 'P' : 'S';
++		if (p != PROCESSOR_NULL && p->is_recommended) {
++			bit_set(rec, id);
++		}
++		if (n0 > 0 && n0 < (int)cap) {
++			n0 += snprintf(r0 + n0, cap - n0, " %u=%x/%c%u/s%d%s", id, c->phys_id, type, c->cluster_id,
++			    p != PROCESSOR_NULL ? (int)p->processor_set->pset_id : -1,
++			    p == PROCESSOR_NULL ? "-" : p->is_recommended ? "" : "x");
++		}
++		if (p == PROCESSOR_NULL || id >= MAX_CPUS) {
++			continue;
++		}
++		struct recount_usage usage = { 0 };
++		uint64_t idle = 0;
++		recount_processor_usage(&p->pr_recount, &usage, &idle);
++		uint64_t user = usage.ru_metrics[RCT_LVL_USER].rm_time_mach, busy = recount_usage_time_mach(&usage);
++		unsigned int up = 0, bp = 0;
++		if (last_at && win) {
++			up = (unsigned int)((user - last_user[id]) * 100 / win);
++			bp = (unsigned int)((busy - last_busy[id]) * 100 / win);
++		}
++		last_user[id] = user;
++		last_busy[id] = busy;
++		uint64_t user_ms = 0;
++		absolutetime_to_nanoseconds(user, &user_ms);
++		user_ms /= NSEC_PER_MSEC;
++		if (n1 > 0 && n1 < (int)cap) {
++			n1 += snprintf(r1 + n1, cap - n1, " c%u=%u/%u", id, up, bp);
++		}
++		if (nt > 0 && nt < (int)sizeof(tail)) {
++			nt += snprintf(tail + nt, sizeof(tail) - nt, " %llu.%llu", user_ms / 1000, (user_ms % 1000) / 100);
++		}
++	}
++	if (n0 > 0 && n0 < (int)cap) {
++		snprintf(r0 + n0, cap - n0, " rec=0x%llx", rec);
++	}
++	if (n1 > 0 && n1 < (int)cap) {
++		strlcat(r1, tail, cap);
++	}
++	last_at = now;
++}
++#endif /* __arm64__ */
