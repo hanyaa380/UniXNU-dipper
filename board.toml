@@ -157,9 +157,10 @@ owned_memory_size = "0xc0000000"   # a 3 GiB DarwinBoot window, as guacamole
 cpu_regs = "0,0x100,0x200,0x300,0x400,0x500,0x600,0x700"
 psci_method = "smc"
 
-# The header of the stock boot image of OxygenOS 11.1.2.2 (scripts/fetch-fajita-boot.py --info), as version 0: after
-# the boot partitions were erased and rewritten, the ABL refused every version 1 image ("Load Error", the stock one
-# too) and kept loading version 0 ones, which is what postmarketOS ships for fajita.
+# The header of the stock boot image of OxygenOS 11.1.2.2 (scripts/fetch-fajita-boot.py --info), as version 0, the
+# version postmarketOS ships for fajita. Version 1 images were refused while version 0 ones loaded.
+# The ABL also refuses fastboot boot ("Load Error") once the active slot is unbootable: every reset spends one retry
+# of that slot, so run "fastboot set_active b" (or a) before "fastboot boot" during bring-up.
 [bootimg.image]
 header_version = 0
 pagesize = 4096
