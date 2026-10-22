@@ -28,7 +28,9 @@ CONFIG_XNU_CRYPTO_BOOTSTRAP="prelinked"
 # NativeDwc3 (SDM845 DWC3 USB device-mode probe, scripts/build-fajita-dwc3.py) is force-loaded into the kernel. The
 # driver is default-off: it maps and reads nothing unless the boot argument native-dwc3-probe=1 is present. Its
 # IOKit personality is added unconditionally by patches/xnu/zzv-native-dwc3-personality.patch.
-CONFIG_XNU_EXTRA_LD_ARCHIVES="-Wl,-force_load,{tree}/build/fajita-dwc3/libNativeDwc3.a"
+# The touch bring-up (scripts/build-fajita-touch.py, default off: fajita-touch=<stage>) is force-loaded as well; it defines the
+# touch snapshot NativeHidInput reads.
+CONFIG_XNU_EXTRA_LD_ARCHIVES="-Wl,-force_load,{tree}/build/fajita-dwc3/libNativeDwc3.a -Wl,-force_load,{tree}/build/fajita-touch/libFajitaTouch.a"
 CONFIG_XNU_NATIVE_VIRTIO_BLOCK_ARCHIVE="{tree}/build/native-virtio-block-verified-bundle/libNativeVirtioBlock.a"
 CONFIG_XNU_VERIFIED_ROOT_ARCHIVE="{tree}/build/verified-root-os-xnu-bundle/libVerifiedRootProbe.a"
 CONFIG_XNU_NATIVE_RAM_BLOCK=y
