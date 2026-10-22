@@ -103,10 +103,10 @@ extern "C" void guest_main() {
   asm volatile("mrs %0, ctr_el0":"=r"(state)); number("CTR",state);
   number("DMA_VA",0x50000000); number("DMA_PA",physical); number("DMA_PTE",l3[0]);
   // AT checks the active hardware translation, not merely table construction.
-  asm volatile("at s1e1r, %0; isb"::"r"(uint64_t(0x50000000)):"memory");
+  asm volatile("at s1e1r, %0\n\tisb"::"r"(uint64_t(0x50000000)):"memory");
   asm volatile("mrs %0, par_el1":"=r"(state)); number("DMA_PAR",state);
   check(!(state&1) && (state&0x0000fffffffff000ULL)==physical,"VA to PA");
-  asm volatile("at s1e1r, %0; isb"::"r"(uint64_t(0x50000000+kDmaBytes)):"memory");
+  asm volatile("at s1e1r, %0\n\tisb"::"r"(uint64_t(0x50000000+kDmaBytes)):"memory");
   asm volatile("mrs %0, par_el1":"=r"(state)); check(state&1,"4K guard page");
 
   gHost={reinterpret_cast<uint8_t *>(0x50000000),physical,true,false,0x10000000,nullptr};

@@ -120,7 +120,7 @@ static int readable (const char *s, const u64 *args)
   u64 a = (u64)s, par;
   (void)args;
   if (a < 0xffff000000000000UL) return 0;
-  __asm__ volatile ("at s1e1r, %1; isb; mrs %0, par_el1" : "=r" (par) : "r" (a) : "memory");
+  __asm__ volatile ("at s1e1r, %1\n\tisb\n\tmrs %0, par_el1" : "=r" (par) : "r" (a) : "memory");
   return !(par & 1) && ((par >> 60) != 0);
 }
 
@@ -282,10 +282,10 @@ __attribute__((noreturn, used, section(".text.b_main"))) void panic_screen_main 
   {
     u64 freq, start, now;
     __asm__ volatile ("mrs %0, cntfrq_el0" : "=r" (freq));
-    __asm__ volatile ("isb; mrs %0, cntvct_el0" : "=r" (start));
+    __asm__ volatile ("isb\n\tmrs %0, cntvct_el0" : "=r" (start));
     if (!freq) freq = 19200000;
     do {
-      __asm__ volatile ("isb; mrs %0, cntvct_el0" : "=r" (now));
+      __asm__ volatile ("isb\n\tmrs %0, cntvct_el0" : "=r" (now));
     } while (now - start < (u64)PANIC_RESET_S * freq);
     register u64 x0 __asm__ ("x0") = 0x84000009UL;
     __asm__ volatile ("smc #0" : "+r" (x0) :: "memory", "x1", "x2", "x3");

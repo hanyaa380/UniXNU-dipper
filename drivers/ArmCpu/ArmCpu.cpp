@@ -4,6 +4,7 @@
 #include <IOKit/IOMemoryDescriptor.h>
 #include <libkern/c++/OSData.h>
 #include <libkern/c++/OSSymbol.h>
+#include <kern/clock.h>
 #include <machine/machine_routines.h>
 #include <pexpert/pexpert.h>
 
@@ -165,13 +166,41 @@ static void write32 (uintptr_t base, unsigned offset, uint32_t value)
 // Also petted from the boot-progress monitor (BootLog's once-a-second tick): XNU's timer is tickless, so an idle system can go
 // longer than the 32 s bite without a timer interrupt (an idle kernel-only run bit falsely). A real freeze stops both.
 // Only the boot CPU pets: with SMP a healthy secondary kept the watchdog alive while CPU0 was frozen (fajita, 2-core run, 2026-10-22).
+// fajita-wdog-stop=<seconds>: a positive control for the bark capture. Petting stops that long after the first pet, so a healthy
+// system barks 16 s later and must show "FAJITA BARK" in the log (then the panic screen resets); a bite instead means the bark
+// does not reach the CPU. 0 (default) = pet forever.
+// armcpu_wdog_live (BootReset's probe text, refreshed every log slot): cntfrq, stop, first and last pet (mach_absolute_time), STS,
+// raw CNTVCT/CNTPCT, then IPIs sent and taken and timer interrupts. The stop runs on mach_absolute_time: an inline CNTVCT read in a kext came back as a constant (0 or 3) on
+// fajita (runH-barkctl2), so a CNTVCT-based stop never fired.
+extern "C" { volatile uint64_t armcpu_wdog_live[10] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }; }
+static uint64_t gWdogStopTicks = 0;
+static void wdogPet (void)
+{
+  const uint64_t now = mach_absolute_time ();
+  if (!armcpu_wdog_live[2]) armcpu_wdog_live[2] = now;
+  if (gWdogStopTicks && now - armcpu_wdog_live[2] >= gWdogStopTicks) return;
+  write32 (gWdog, 0x4, 1);   // WDT_RST: restart the count
+  armcpu_wdog_live[3] = now;
+  armcpu_wdog_pets = armcpu_wdog_pets + 1;
+}
+
+extern "C" void armcpu_wdog_sample (void)
+{
+  uint64_t vct, pct;
+  __asm__ volatile ("isb\n\tmrs %0, cntvct_el0" : "=r" (vct));
+  __asm__ volatile ("isb\n\tmrs %0, cntpct_el0" : "=r" (pct));
+  armcpu_wdog_live[5] = vct;
+  armcpu_wdog_live[6] = pct;
+  armcpu_wdog_live[7] = armcpu_ipi_sent;
+  armcpu_wdog_live[8] = armcpu_ipi_interrupts;
+  armcpu_wdog_live[9] = armcpu_timer_interrupts;
+  if (gWdog) armcpu_wdog_live[4] = read32 (gWdog, 0xc);
+}
+
 extern "C" int cpu_number (void);
 extern "C" void armcpu_wdog_pet (void)
 {
-  if (gWdog && gWdogMode >= 2 && cpu_number () == 0) {
-    write32 (gWdog, 0x4, 1);
-    armcpu_wdog_pets = armcpu_wdog_pets + 1;
-  }
+  if (gWdog && gWdogMode >= 2 && cpu_number () == 0) wdogPet ();
 }
 
 // Distributor side of the software IPI of logical core `core`: group 1, edge-triggered, priority 0x80, routed to affinity `aff`, enabled.
@@ -198,7 +227,7 @@ static void spiIpiSend (uintptr_t dist, uint32_t core)
 static uint64_t counter (void)
 {
   uint64_t value;
-  __asm__ volatile ("isb; mrs %0, cntvct_el0" : "=r" (value));
+  __asm__ volatile ("isb\n\tmrs %0, cntvct_el0" : "=r" (value));
   return value;
 }
 
@@ -230,7 +259,7 @@ static const uint32_t kBarkIntid = 32;
 static void spiConfigure (uintptr_t dist, uint32_t id, uint64_t aff)
 {
   write32 (dist, 0x80 + (id / 32) * 4, read32 (dist, 0x80 + (id / 32) * 4) | (1U << (id % 32)));        // group 1 (non-secure)
-  write32 (dist, 0xc00 + (id / 16) * 4, read32 (dist, 0xc00 + (id / 16) * 4) | (2U << ((id % 16) * 2))); // edge (rising)
+  write32 (dist, 0xc00 + (id / 16) * 4, read32 (dist, 0xc00 + (id / 16) * 4) & ~(3U << ((id % 16) * 2))); // level (Linux DT: level high)
   *reinterpret_cast<volatile uint8_t *>(dist + 0x400 + id) = 0x80;
   *reinterpret_cast<volatile uint64_t *>(dist + 0x6000 + 8ULL * id) = aff & 0xff00ffffffULL;
   __asm__ volatile ("dsb sy" ::: "memory");
@@ -247,7 +276,7 @@ static void barkCapture (void)
   __asm__ volatile ("mrs %0, far_el1" : "=r" (far));
   __asm__ volatile ("mrs %0, esr_el1" : "=r" (esr));
   __asm__ volatile ("mrs %0, sp_el0" : "=r" (sp0));
-  __asm__ volatile ("isb; mrs %0, cntvct_el0" : "=r" (vct));
+  __asm__ volatile ("isb\n\tmrs %0, cntvct_el0" : "=r" (vct));
   __asm__ volatile ("mrs %0, cntv_cval_el0" : "=r" (cval));
   __asm__ volatile ("mrs %0, cntv_ctl_el0" : "=r" (ctl));
   __asm__ volatile ("mrs %0, daif" : "=r" (daif));
@@ -438,7 +467,7 @@ void ArmCpu::enableGic (void)
   uint64_t value;
   __asm__ volatile ("mrs %0, icc_sre_el1" : "=r" (value));
   value |= 1;
-  __asm__ volatile ("msr icc_sre_el1, %0; isb" :: "r" (value) : "memory");
+  __asm__ volatile ("msr icc_sre_el1, %0\n\tisb" :: "r" (value) : "memory");
   __asm__ volatile ("mrs %0, icc_sre_el1" : "=r" (value));
   if ((value & 1) == 0) { panic ("ArmCpu: GICv3 system register interface unavailable"); }
   __asm__ volatile ("mrs %0, icc_ctlr_el1" : "=r" (value));
@@ -454,7 +483,7 @@ void ArmCpu::enableGic (void)
     write32 (dist, 0, read32 (dist, 0) | 0x12U);
   }
   value = 1;
-  __asm__ volatile ("msr icc_igrpen1_el1, %0; dsb sy; isb" :: "r" (value) : "memory");
+  __asm__ volatile ("msr icc_igrpen1_el1, %0\n\tdsb sy\n\tisb" :: "r" (value) : "memory");
   if (!secondary) {
     uint64_t pmr, ig, sre;
     __asm__ volatile ("mrs %0, icc_pmr_el1" : "=r" (pmr));
@@ -515,11 +544,21 @@ bool ArmCpu::start (IOService *provider)
       write32 (gWdog, 0x10, 0x7ffff);  // BARK_TIME 16 s
       write32 (gWdog, 0x14, 0xfffff);  // BITE_TIME 32 s
       write32 (gWdog, 0x4, 1);         // RST: restart the count
-      write32 (gWdog, 0x8, 1);         // EN
+      // EN: bit 0 counts, bit 1 raises the bark interrupt (Linux qcom_wdt: QCOM_WDT_ENABLE | QCOM_WDT_ENABLE_IRQ). With bit 0 alone a
+      // frozen run bit at 32 s without ever barking (runF-bark).
+      write32 (gWdog, 0x8, 3);
       armcpu_wdog[2] = read32 (gWdog, 0x8);
       armcpu_wdog[4] = read32 (gWdog, 0x10);
       armcpu_wdog[5] = read32 (gWdog, 0x14);
     }
+  }
+  unsigned wdogStop = 0;
+  if (gWdog && !gWdogStopTicks && PE_parse_boot_argn ("fajita-wdog-stop", &wdogStop, sizeof (wdogStop)) && wdogStop) {
+    uint64_t ticks = 0;
+    nanoseconds_to_absolutetime (static_cast<uint64_t> (wdogStop) * NSEC_PER_SEC, &ticks);
+    __asm__ volatile ("mrs %0, cntfrq_el0" : "=r" (armcpu_wdog_live[0]));
+    gWdogStopTicks = ticks;
+    armcpu_wdog_live[1] = ticks;
   }
   unsigned deadline = 0;
   if (!armcpu_deadline_ticks && PE_parse_boot_argn ("fajita-deadline", &deadline, sizeof (deadline)) && deadline >= 60) {
@@ -729,13 +768,10 @@ void ArmCpu::interrupt (void)
     if ((id & 0xffffff) == gTimerIntid) {
       armcpu_timer_interrupts = armcpu_timer_interrupts + 1;
       armcpu_core_timer[logicalId & 7] = armcpu_core_timer[logicalId & 7] + 1;
-      if (gWdog && gWdogMode >= 2 && logicalId == 0) {   // boot CPU only (see armcpu_wdog_pet)
-        write32 (gWdog, 0x4, 1);   // WDT_RST: restart the count
-        armcpu_wdog_pets = armcpu_wdog_pets + 1;
-      }
+      if (gWdog && gWdogMode >= 2 && logicalId == 0) wdogPet ();   // boot CPU only (see armcpu_wdog_pet)
       if (armcpu_deadline_ticks) {
         uint64_t now;
-        __asm__ volatile ("isb; mrs %0, cntvct_el0" : "=r" (now));
+        __asm__ volatile ("isb\n\tmrs %0, cntvct_el0" : "=r" (now));
         armcpu_deadline_seen = now;
         if (!armcpu_deadline_start) armcpu_deadline_start = now;
         // Unsigned difference: correct across the wrap (fajita's virtual counter starts near 2^64 and wraps ~20 minutes in).
@@ -781,7 +817,7 @@ void ArmCpu::interrupt (void)
       }
     }
     armcpu_irq_phase=6;
-    __asm__ volatile ("msr icc_eoir1_el1, %0; isb" :: "r" (id) : "memory");
+    __asm__ volatile ("msr icc_eoir1_el1, %0\n\tisb" :: "r" (id) : "memory");
   }
 }
 
@@ -796,7 +832,7 @@ void ArmCpu::signalCPU (IOCPU *target)
                  ((aff & 0xff00) << 8) | (1ULL << (aff & 0xff));
   armcpu_ipi_sent = armcpu_ipi_sent + 1;
   if (gSpiIpi) { spiIpiSend (gDist, peer->logicalId & 7); return; }
-  __asm__ volatile ("dsb ishst; msr icc_sgi1r_el1, %0; isb" :: "r" (sgi) : "memory");
+  __asm__ volatile ("dsb ishst\n\tmsr icc_sgi1r_el1, %0\n\tisb" :: "r" (sgi) : "memory");
 }
 
 // Diagnostic: sends SGI 0 to the core whose MPIDR affinity is aff (the DT "reg" value, e.g. 0x100 for core 1) exactly as signalCPU
@@ -842,7 +878,7 @@ extern "C" void armcpu_sgi_selfprobe (uint64_t *out)
 {
   uint64_t mpidr, daif, v;
   __asm__ volatile ("mrs %0, mpidr_el1" : "=r" (mpidr));
-  __asm__ volatile ("mrs %0, daif; msr daifset, #2; isb" : "=r" (daif) :: "memory");
+  __asm__ volatile ("mrs %0, daif\n\tmsr daifset, #2\n\tisb" : "=r" (daif) :: "memory");
   for (unsigned i = 0; i < 10; i++) { out[i] = 0; }
   out[0] = mpidr;
   __asm__ volatile ("mrs %0, icc_pmr_el1" : "=r" (v)); out[3] = v;
@@ -855,8 +891,8 @@ extern "C" void armcpu_sgi_selfprobe (uint64_t *out)
     for (uint64_t intid = 0; intid < 16; intid++) {
       const uint64_t sgi = base | (intid << 24);
       uint64_t h = 1023, ta, tb;
-      __asm__ volatile ("dsb ishst; isb; mrs %0, cntvct_el0; isb" : "=r" (ta) :: "memory");
-      __asm__ volatile ("msr icc_sgi1r_el1, %0; isb; mrs %1, cntvct_el0" : "=r" (tb) : "r" (sgi) : "memory");
+      __asm__ volatile ("dsb ishst\n\tisb\n\tmrs %0, cntvct_el0\n\tisb" : "=r" (ta) :: "memory");
+      __asm__ volatile ("msr icc_sgi1r_el1, %0\n\tisb\n\tmrs %1, cntvct_el0" : "=r" (tb) : "r" (sgi) : "memory");
       if (intid == 0) { out[8] = tb - ta; }
       for (unsigned polls = 0; polls < 400; polls++) {
         __asm__ volatile ("mrs %0, icc_hppir1_el1" : "=r" (h));
@@ -866,10 +902,10 @@ extern "C" void armcpu_sgi_selfprobe (uint64_t *out)
       if ((h & 0xffffff) == intid) {
         out[1] |= 1ULL << intid;
         __asm__ volatile ("mrs %0, icc_iar1_el1" : "=r" (v));
-        __asm__ volatile ("msr icc_eoir1_el1, %0; isb" :: "r" (v) : "memory");
+        __asm__ volatile ("msr icc_eoir1_el1, %0\n\tisb" :: "r" (v) : "memory");
         continue;
       }
-      __asm__ volatile ("dsb ishst; msr icc_sgi0r_el1, %0; isb" :: "r" (sgi) : "memory");
+      __asm__ volatile ("dsb ishst\n\tmsr icc_sgi0r_el1, %0\n\tisb" :: "r" (sgi) : "memory");
       for (unsigned polls = 0; polls < 400; polls++) {
         __asm__ volatile ("mrs %0, icc_hppir0_el1" : "=r" (h));
         if ((h & 0xffffff) == intid) { break; }
@@ -878,16 +914,16 @@ extern "C" void armcpu_sgi_selfprobe (uint64_t *out)
       if ((h & 0xffffff) == intid) {
         out[2] |= 1ULL << intid;
         __asm__ volatile ("mrs %0, icc_iar0_el1" : "=r" (v));
-        __asm__ volatile ("msr icc_eoir0_el1, %0; isb" :: "r" (v) : "memory");
+        __asm__ volatile ("msr icc_eoir0_el1, %0\n\tisb" :: "r" (v) : "memory");
       }
     }
   }
   {
     uint64_t ta, tb;
-    __asm__ volatile ("isb; mrs %0, cntvct_el0; isb; mrs %2, icc_pmr_el1; isb; mrs %1, cntvct_el0" : "=r" (ta), "=r" (tb), "=r" (v) :: "memory");
+    __asm__ volatile ("isb\n\tmrs %0, cntvct_el0\n\tisb\n\tmrs %2, icc_pmr_el1\n\tisb\n\tmrs %1, cntvct_el0" : "=r" (ta), "=r" (tb), "=r" (v) :: "memory");
     out[9] = tb - ta;
   }
-  __asm__ volatile ("msr daif, %0; isb" :: "r" (daif) : "memory");
+  __asm__ volatile ("msr daif, %0\n\tisb" :: "r" (daif) : "memory");
 }
 
 extern "C" void armcpu_ipi_selftest (uint64_t aff)
@@ -895,13 +931,13 @@ extern "C" void armcpu_ipi_selftest (uint64_t aff)
   uint64_t sgi = ((aff & 0xff00000000ULL) << 16) | ((aff & 0xff0000) << 16) | ((aff & 0xff00) << 8) | (1ULL << (aff & 0xff));
   armcpu_ipi_selftest_sent = armcpu_ipi_selftest_sent + 1;
   if (gSpiIpi) { spiIpiSend (gDist, static_cast<uint32_t> ((aff >> 8) & 7)); return; }
-  __asm__ volatile ("dsb ishst; msr icc_sgi1r_el1, %0; isb" :: "r" (sgi) : "memory");
+  __asm__ volatile ("dsb ishst\n\tmsr icc_sgi1r_el1, %0\n\tisb" :: "r" (sgi) : "memory");
 }
 
 void ArmCpu::enableCPUTimeBase (bool enabled)
 {
   uint64_t value = enabled ? 1 : 2;
-  __asm__ volatile ("msr cntv_ctl_el0, %0; isb" :: "r" (value) : "memory");
+  __asm__ volatile ("msr cntv_ctl_el0, %0\n\tisb" :: "r" (value) : "memory");
 }
 
 void ArmCpu::quiesceCPU (void)
@@ -910,7 +946,7 @@ void ArmCpu::quiesceCPU (void)
   if(diagnosePower)panic("ArmCpu: unsupported quiesce requested before timer/GIC disable caller=%p halt=%u timer=%llu phase=%u",__builtin_return_address(0),armcpu_halt_calls,armcpu_timer_interrupts,armcpu_irq_phase);
   enableCPUTimeBase (false);
   uint64_t value = 0;
-  __asm__ volatile ("msr icc_igrpen1_el1, %0; dsb sy; isb" :: "r" (value) : "memory");
+  __asm__ volatile ("msr icc_igrpen1_el1, %0\n\tdsb sy\n\tisb" :: "r" (value) : "memory");
 }
 
 void ArmCpu::haltCPU (void)
@@ -932,7 +968,7 @@ static void cleanToMemory (const void *start, size_t length)
   uintptr_t line = static_cast<uintptr_t> (4) << ((ctr >> 16) & 15);
   uintptr_t address = reinterpret_cast<uintptr_t> (start) & ~(line - 1), end = reinterpret_cast<uintptr_t> (start) + length;
   for (; address < end; address += line) { __asm__ volatile ("dc civac, %0" :: "r" (address) : "memory"); }
-  __asm__ volatile ("dsb sy; isb" ::: "memory");
+  __asm__ volatile ("dsb sy\n\tisb" ::: "memory");
 }
 
 kern_return_t ArmCpu::startCPU (vm_offset_t, vm_offset_t)
