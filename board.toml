@@ -55,6 +55,7 @@ archives = [
   "build-native-virtio-bindings.py --component NativeRamBlock --directory build/native-ram-block",
   "build-fajita-verified-root.py",    # owner keys, OS and SystemOS policies, libVerifiedRootProbe.a (needs the OS images)
   "build-arm-driver.py NativeUfs",
+  "build-fajita-dwc3.py",             # NativeDwc3: SDM845 DWC3 USB device-mode probe (default-off; native-dwc3-probe=1), for the SSH-over-USB channel
   "build-sheng-platform-power.py",
   "build-boot-progress.py",          # kits/fajita (from UniXNU-sheng d92e799): boot progress, fault probe, watchdog/lite job policy, diag export    # the PMGR the original AMFI needs, from UniXNU-sheng
 ]

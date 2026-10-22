@@ -1,0 +1,22 @@
+Add the NativeDwc3 built-in personality. Like NativeUfs's root personality, it
+matches the platform-expert (root) device so the probe can start early, before the
+original AMFI. It is unconditional: a personality is a runtime string resolved by
+class name, so when the NativeDwc3 archive is not linked (any board that does not
+force_load libNativeDwc3.a) IOKit simply finds no such class and does not match.
+On fajita the archive is linked (CONFIG_XNU_EXTRA_LD_ARCHIVES); the driver is still
+default-off, doing nothing unless the boot argument native-dwc3-probe=1 is set.
+Applies after native-aes-personality.patch, which adds the NativeUfs block above.
+diff --git a/iokit/KernelConfigTables.cpp b/iokit/KernelConfigTables.cpp
+--- a/iokit/KernelConfigTables.cpp
++++ b/iokit/KernelConfigTables.cpp
+@@ -105,4 +105,10 @@
+     "     'IOProbeScore'    = 500:32;"
+     "   }"
+ #endif
++    "   ,{"
++    "     'IOClass'         = NativeDwc3;"
++    "     'IOMatchCategory' = NativeDwc3;"
++    "     'IOProviderClass' = IOPlatformExpertDevice;"
++    "     'IOProbeScore'    = 400:32;"
++    "   }"
+     ")";
