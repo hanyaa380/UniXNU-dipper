@@ -29,7 +29,11 @@ import uuid
 ROOT = Path(__file__).resolve().parents[1]
 IPSW = ROOT.parents[1] / 'ipsw/21H461'
 CACHE = Path(os.environ.get('FAJITA_VERIFIED_ROOT_CACHE') or ROOT / '.cache/verified-root')
-sys.path.insert(0, str(ROOT.parents[2] / 'scripts'))   # the UniXNU checkout (out/<board>/tree is two levels down)
+# The UniXNU checkout: out/<board>/tree is two levels down from it with the default output root; with UNIXNU_OUT elsewhere, the
+# tree's module links (kits/NativePrelink is a link into the checkout) lead back to it.
+UNIXNU = next((base for base in (ROOT.parents[2], (ROOT / 'kits/NativePrelink').resolve().parents[1])
+               if (base / 'scripts/unixnu/userdata.py').is_file()), ROOT.parents[2])
+sys.path.insert(0, str(UNIXNU / 'scripts'))
 from unixnu import userdata  # noqa: E402  the UDIF reader of the userdata step
 
 # (component, member, volume UUID read from the image's APFS volume superblock, expanded SHA-256, 4096-byte blocks)
