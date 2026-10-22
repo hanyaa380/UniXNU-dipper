@@ -23,9 +23,16 @@ ROOT = Path(__file__).resolve().parents[1]
 MAC_EXTRAS = ('.fseventsd', '.Spotlight-V100', '.Trashes', '.TemporaryItems', '.DocumentRevisions-V100', '.DS_Store')
 
 
-def run(*command, capture=False):
+def run(*command, capture=False, check=True):
     print('+', ' '.join(map(str, command)), flush=True)
-    return subprocess.run(list(map(str, command)), check=True, capture_output=capture).stdout
+    result = subprocess.run(list(map(str, command)), capture_output=True)
+    if not capture:
+        print(result.stdout.decode(errors='replace'), end='', flush=True)
+    if result.returncode:
+        print(result.stderr.decode(errors='replace'), end='', flush=True)
+        if check:
+            raise SystemExit(f'failed ({result.returncode}): {" ".join(map(str, command))}')
+    return result.stdout if capture else result.returncode
 
 
 def plist(*command):
@@ -60,16 +67,19 @@ def main():
     attached = plist('hdiutil', 'attach', '-nomount', '-imagekey', 'diskimage-class=CRawDiskImage', raw)
     disk = attached['system-entities'][0]['dev-entry']
     try:
-        container = plist('diskutil', 'apfs', 'createContainer', disk)
-        container_disk = container.get('ContainerDevice') or container.get('Container')
-        if not container_disk:  # older diskutil: find the synthesized container from the APFS list
-            listing = plist('diskutil', 'apfs', 'list')
-            container_disk = next(c['ContainerReference'] for c in listing['Containers']
-                                  if any(s['DeviceIdentifier'] in disk for s in c['PhysicalStores']))
+        # A container on the whole raw disk (no partition map); a diskutil that refuses that gets one GPT partition.
+        if run('diskutil', 'apfs', 'createContainer', disk, check=False):
+            run('diskutil', 'partitionDisk', disk, '1', 'GPT', 'free', 'none', '100%')
+            store = plist('diskutil', 'list', disk)['AllDisksAndPartitions'][0]['Partitions'][0]['DeviceIdentifier']
+            run('diskutil', 'apfs', 'createContainer', store)
+        name = disk.replace('/dev/', '')
+        listing = plist('diskutil', 'apfs', 'list')
+        container_disk = next(c['ContainerReference'] for c in listing['Containers']
+                              if any(s['DeviceIdentifier'] == name or s['DeviceIdentifier'].startswith(name + 's') for s in c['PhysicalStores']))
         fs = 'Case-sensitive APFS' if spec['case_sensitive'] else 'APFS'
         run('diskutil', 'apfs', 'addVolume', container_disk, fs, spec['volume_name'], '-role', 'D')
         listing = plist('diskutil', 'apfs', 'list')
-        volumes = [v for c in listing['Containers'] if c['ContainerReference'] == container_disk.replace('/dev/', '')
+        volumes = [v for c in listing['Containers'] if c['ContainerReference'] == container_disk
                    for v in c['Volumes']]
         if len(volumes) != 1:
             raise SystemExit(f'expected one volume in {container_disk}, found {len(volumes)}')
