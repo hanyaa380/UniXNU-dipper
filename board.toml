@@ -152,7 +152,7 @@ kernel_args = [
   "-v",
   "debug=0x14e",
   "kt_fixed_zones=120",
-  "armcpu-diagnostics=1",
+  "armcpu-diagnostics=1","armcpu-timer-intid=19",
   "-no_slto_panic",
   "native-ufs-root=1",
   "native-ufs-diagnostics=1",
