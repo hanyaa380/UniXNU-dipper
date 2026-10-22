@@ -6,11 +6,20 @@ commit = "933f9360f1b70dfbda5548386a3d65e0358b4f7d"
 [source."IOStorageFamily"]
 commit = "e45fbe30a7879e0b16e26dddb78538f1b00e0bff"
 
+[source."Libc"]
+commit = "899a3b2d52d95d75e05fb286a5e64975ec3de757"
+
 [source."bootstrap_cmds"]
 commit = "619db33806b11b58fa14078bc7a811958312e52d"
 
+[source."compiler-rt"]
+commit = "2078da43e25a4623cab2d0d60decddf709aaea28"
+
 [source."corecrypto-2023"]
 commit = "11fba65b12d8830630e248dfa8344caf8b065f26"
+
+[source."dyld"]
+commit = "d1a0f6869ece370913a3f749617e457f3b4cd7c4"
 
 [source."edk2"]
 commit = "cfb93724a06ff86ff5ba971413368a7809ee42a5"
@@ -18,11 +27,17 @@ commit = "cfb93724a06ff86ff5ba971413368a7809ee42a5"
 [source."libdispatch"]
 commit = "30fe6a7d945340ce69cef121132f049e810089a5"
 
+[source."libmalloc"]
+commit = "5819cfb972b7a75d29df2faf8a485c0fa56c6aec"
+
 [source."libplatform"]
 commit = "a00a4cc36da2110578bcf3b8eeeeb93dcc7f4e11"
 
 [source."libpthread"]
 commit = "c0e60fb5ecfc54cf379c261d3f9572cc22ded891"
+
+[source."llvm-third-party"]
+commit = "2078da43e25a4623cab2d0d60decddf709aaea28"
 
 [source."xnu"]
 commit = "d8b80295118ef25ac3a784134bcf95cd8e88109f"

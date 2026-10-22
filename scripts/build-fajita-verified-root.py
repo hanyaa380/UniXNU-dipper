@@ -21,7 +21,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 IPSW = ROOT.parents[1] / 'ipsw/21H461'
-sys.path.insert(0, str(ROOT / 'scripts'))
+sys.path.insert(0, str(ROOT.parents[2] / 'scripts'))   # the UniXNU checkout (out/<board>/tree is two levels down)
 from unixnu import userdata  # noqa: E402  the UDIF reader of the userdata step
 
 # (component, member, volume UUID read from the image's APFS volume superblock, expanded SHA-256, 4096-byte blocks)
