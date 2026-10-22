@@ -14,6 +14,7 @@ boot_ui_trace_ready
 boot_ui_trace_role_rows
 boot_ui_trace_rows
 boot_ui_trace_snapshot
+fajita_cpufreq_rows
 fajita_touch_rows
 native_adreno_audit_attr
 native_adreno_audit_ticks

@@ -29,8 +29,8 @@ CONFIG_XNU_CRYPTO_BOOTSTRAP="prelinked"
 # driver is default-off: it maps and reads nothing unless the boot argument native-dwc3-probe=1 is present. Its
 # IOKit personality is added unconditionally by patches/xnu/zzv-native-dwc3-personality.patch.
 # The touch bring-up (scripts/build-fajita-touch.py, default off: fajita-touch=<stage>) is force-loaded as well; it defines the
-# touch snapshot NativeHidInput reads.
-CONFIG_XNU_EXTRA_LD_ARCHIVES="-Wl,-force_load,{tree}/build/fajita-dwc3/libNativeDwc3.a -Wl,-force_load,{tree}/build/fajita-touch/libFajitaTouch.a"
+# touch snapshot NativeHidInput reads. The CPU clock probe (scripts/build-fajita-cpufreq.py, default off: fajita-cpufreq=<n>) too.
+CONFIG_XNU_EXTRA_LD_ARCHIVES="-Wl,-force_load,{tree}/build/fajita-dwc3/libNativeDwc3.a -Wl,-force_load,{tree}/build/fajita-touch/libFajitaTouch.a -Wl,-force_load,{tree}/build/fajita-cpufreq/libFajitaCpuFreq.a"
 CONFIG_XNU_NATIVE_VIRTIO_BLOCK_ARCHIVE="{tree}/build/native-virtio-block-verified-bundle/libNativeVirtioBlock.a"
 CONFIG_XNU_VERIFIED_ROOT_ARCHIVE="{tree}/build/verified-root-os-xnu-bundle/libVerifiedRootProbe.a"
 CONFIG_XNU_NATIVE_RAM_BLOCK=y

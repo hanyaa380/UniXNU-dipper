@@ -6,6 +6,7 @@
 #include <stddef.h>
 
 __attribute__((weak)) void boot_log_tick(unsigned p0) { (void)p0;  }
+__attribute__((weak)) char fajita_cpufreq_rows[4096] __attribute__((aligned(16)));
 __attribute__((weak)) char boot_process_attempts[4096] __attribute__((aligned(16)));
 __attribute__((weak)) char boot_process_busy[4096] __attribute__((aligned(16)));
 __attribute__((weak)) void boot_process_capture(void) {   }
