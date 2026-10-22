@@ -97,8 +97,13 @@ extern "C" { volatile uint64_t armcpu_deadline_start = 0, armcpu_deadline_ticks 
 // 0x10, BITE_TIME 0x14, 32768 Hz sleep clock). Every fajita run froze ~2 minutes after kernel start with even the timer interrupt
 // gone, which a watchdog left running by the bootloader would explain (Linux's qcom_wdt pets a watchdog it finds running).
 // 1 = read the registers once (armcpu_wdog[], shown by BootReset's probe text), 2 = also pet it from the timer interrupt, which
-// needs no thread. 0 (default) = untouched.
-extern "C" { volatile uint32_t armcpu_wdog[6] = { 0, 0, 0, 0, 0, 0 }; volatile uint64_t armcpu_wdog_pets = 0; }
+// needs no thread, 3 = arm it as the unattended-run backstop: the bootloader leaves it disabled (EN=0 on hardware), so a freeze
+// that stops even the timer interrupt (fajita froze ~2 minutes in, every run) would otherwise need a key press. Mode 3 writes the
+// bootloader restart reason (IMEM 0x146bf65c = 0x77665500, the cookie the Qualcomm ABL reads), then enables the watchdog with
+// bark 16 s and bite 32 s (the register maxima, 32768 Hz) and pets it from every timer interrupt. A freeze bites within 32 s and the
+// ABL lands in fastboot. 0 (default) = untouched.
+extern "C" { volatile uint32_t armcpu_wdog[6] = { 0, 0, 0, 0, 0, 0 }; volatile uint64_t armcpu_wdog_pets = 0;
+             volatile uint32_t armcpu_imem[4] = { 0, 0, 0, 0 }; }   // IMEM 0x146bf000: word 0, dload_type 0x1c, restart_reason 0x65c, after write
 static OSSharedPtr<IOMemoryMap> gWdogMap;
 static uintptr_t gWdog = 0;
 static unsigned gWdogMode = 0;
@@ -398,6 +403,26 @@ bool ArmCpu::start (IOService *provider)
       armcpu_wdog[0] = 1;
       for (unsigned i = 1; i < 6; i++) armcpu_wdog[i] = read32 (gWdog, 4 * i);   // RST, EN, STS, BARK, BITE
     }
+    if (gWdog && gWdogMode >= 3) {
+      OSSharedPtr<IOMemoryDescriptor> imem (IOMemoryDescriptor::withPhysicalAddress (0x146bf000, 0x1000, kIODirectionInOut), OSNoRetain);
+      OSSharedPtr<IOMemoryMap> imemMap = imem ? OSSharedPtr<IOMemoryMap> (imem->map (kIOMapAnywhere | kIOMapInhibitCache), OSNoRetain) : nullptr;
+      if (imemMap) {
+        uintptr_t base = static_cast<uintptr_t> (imemMap->getVirtualAddress ());
+        armcpu_imem[0] = read32 (base, 0x0);
+        armcpu_imem[1] = read32 (base, 0x1c);
+        armcpu_imem[2] = read32 (base, 0x65c);
+        write32 (base, 0x65c, 0x77665500);   // restart reason: bootloader (fastboot)
+        armcpu_imem[3] = read32 (base, 0x65c);
+      }
+      write32 (gWdog, 0x8, 0);         // EN off while programming
+      write32 (gWdog, 0x10, 0x7ffff);  // BARK_TIME 16 s
+      write32 (gWdog, 0x14, 0xfffff);  // BITE_TIME 32 s
+      write32 (gWdog, 0x4, 1);         // RST: restart the count
+      write32 (gWdog, 0x8, 1);         // EN
+      armcpu_wdog[2] = read32 (gWdog, 0x8);
+      armcpu_wdog[4] = read32 (gWdog, 0x10);
+      armcpu_wdog[5] = read32 (gWdog, 0x14);
+    }
   }
   unsigned deadline = 0;
   if (!armcpu_deadline_ticks && PE_parse_boot_argn ("fajita-deadline", &deadline, sizeof (deadline)) && deadline >= 60) {
@@ -614,7 +639,8 @@ void ArmCpu::interrupt (void)
         uint64_t now;
         __asm__ volatile ("isb; mrs %0, cntvct_el0" : "=r" (now));
         armcpu_deadline_seen = now;
-        if (now > armcpu_deadline_start && now - armcpu_deadline_start >= armcpu_deadline_ticks) {
+        // Unsigned difference: correct across the wrap (fajita's virtual counter starts near 2^64 and wraps ~20 minutes in).
+        if (now - armcpu_deadline_start >= armcpu_deadline_ticks) {
           register uint64_t x0 __asm__ ("x0") = 0x84000009ULL;   // PSCI SYSTEM_RESET
           __asm__ volatile ("smc #0" : "+r" (x0) :: "memory", "x1", "x2", "x3");
         }
