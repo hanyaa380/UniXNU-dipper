@@ -1,7 +1,7 @@
 # Board description of the OnePlus 6T (fajita, SDM845), read by the unixnu build driver.
 #
-# Bring-up stage 1 works: firmware and UniXNU menu. [board], [ipsw], [userdata], [kernel] and [firmware] are active. The
-# prelink and payload sections below are filled in as the later stages are reached.
+# Bring-up stage 1 works (firmware and UniXNU menu) and the userdata image is flashed. The kernel, prelink and payload
+# sections target the first kernel boot: XNU to the video console, no storage yet.
 
 [board]
 name = "fajita"
@@ -124,25 +124,36 @@ ENABLE_SECUREBOOT = 0
 MEMORY_PROTECTION = "TRUE"
 SHIP_MODE = "FALSE"
 
-# TODO(stage 3): the ramdisk of the boot image. Known values: 8 cores with MPIDR 0x000 to 0x700, PSCI over SMC,
-# DRAM at 0x80000000 (6, 8 or 10 GiB by variant).
-# [payload]
-# volume = "FAJITAESP"
-# size_mib = 192
-# loader = "firmware"
-# title = "fajita bring-up"
-# dram_size = ""
-# panic_screen = true
-# trust_cache_sha256 = [             # the static and System trust caches of 21H461
-#   "7416ca4f8377146626bb284e2133c76bee6cb4e3ee0af5d648b186235a7323a7",
-#   "8900d6a93d7a59ce1a872a5c081e559f4240a218f97e12d44d22dda46644d68f",
-# ]
-# kernel_args = ["-v", "serial=3"]
-#
-# [payload.adt]
-# tool = "scripts/make-fajita-adt.py"
-# cpu_regs = "0,0x100,0x200,0x300,0x400,0x500,0x600,0x700"
-# psci_method = "smc"
+# The ramdisk of the boot image: a FAT volume with the UniXNU config, the kernel and its device tree. The loader
+# (DarwinBoot) is part of the firmware volume. First kernel boot: no storage driver, so XNU is expected to reach the
+# video console and stop at the root device. dram_size is the 8 GiB of the 256 GB model.
+[payload]
+volume = "FAJITAESP"
+# The ABL loads the ramdisk at base + ramdisk_offset (0x81000000); 64 MiB ends at 0x85000000, below the hypervisor
+# region at 0x85700000. A 192 MiB volume crosses it, and the ABL then stays in fastboot.
+size_mib = 64
+loader = "firmware"
+title = "fajita first boot: XNU to console"
+dram_size = "0x200000000"
+# panic_screen stays off: scripts/patch-xnu-entry-probe.py of sheng pins the addresses of the sheng kernel build.
+# The static and System trust caches of 21H461, for the userland stages.
+trust_cache_sha256 = [
+  "7416ca4f8377146626bb284e2133c76bee6cb4e3ee0af5d648b186235a7323a7",
+  "8900d6a93d7a59ce1a872a5c081e559f4240a218f97e12d44d22dda46644d68f",
+]
+kernel_args = [
+  "-v",
+  "debug=0x14e",
+  "kt_fixed_zones=120",
+  "armcpu-diagnostics=1",
+  "-no_slto_panic",
+]
+
+[payload.adt]
+tool = "scripts/make-fajita-adt.py"
+owned_memory_size = "0xc0000000"   # a 3 GiB DarwinBoot window, as guacamole
+cpu_regs = "0,0x100,0x200,0x300,0x400,0x500,0x600,0x700"
+psci_method = "smc"
 
 # The header of the stock boot image of OxygenOS 11.1.2.2 (scripts/fetch-fajita-boot.py --info).
 [bootimg.image]
