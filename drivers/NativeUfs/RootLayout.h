@@ -58,7 +58,7 @@ static bool rootEntryUsed (const uint8_t *entry)
 // manifest at its first block. Read-only. Returns false only if the GPT itself is unusable.
 static bool findRootLayout (RootLayout *layout, const char **why)
 {
-  gRootDiagnostic.stage = "GPT header";
+  ROOT_STAGE ("GPT header");
   bzero (layout, sizeof (*layout));
   if (hostRead4k (0, 1, 1, gScratch) != kIOReturnSuccess) {
     *why = "GPT header read";
@@ -94,7 +94,7 @@ static bool findRootLayout (RootLayout *layout, const char **why)
     *why = "GPT usable range";
     return false;
   }
-  gRootDiagnostic.stage = "GPT entries";
+  ROOT_STAGE ("GPT entries");
   if (hostRead4k (0, entriesLba, blocks, gScratch) != kIOReturnSuccess) {
     *why = "GPT entries read";
     return false;
@@ -143,7 +143,8 @@ static bool findRootLayout (RootLayout *layout, const char **why)
   }
   gRootDiagnostic.first = layout->userdataFirst;
   gRootDiagnostic.last = layout->userdataLast;
-  gRootDiagnostic.stage = "root manifest";
+  ROOT_LOG ("userdata LBA %llx..%llx\n", layout->userdataFirst, layout->userdataLast);
+  ROOT_STAGE ("root manifest");
   // First block of the partition: manifest if the root image was flashed, ext4 otherwise.
   if (hostRead4k (0, layout->userdataFirst, 1, gScratch) != kIOReturnSuccess) {
     *why = "userdata first block read";
@@ -151,6 +152,7 @@ static bool findRootLayout (RootLayout *layout, const char **why)
   }
   layout->magic0 = le32 (gScratch);
   layout->magic1 = le32 (gScratch + 4);
+  ROOT_LOG ("root manifest magic %08x %08x\n", layout->magic0, layout->magic1);
   layout->ext4Magic = uint32_t (gScratch[1080]) | (uint32_t (gScratch[1081]) << 8);
   layout->ext4Blocks = le32 (gScratch + 1028);
   layout->manifestStatus = 1;
