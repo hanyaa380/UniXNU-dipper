@@ -41,7 +41,9 @@ static void rootDiagnosticFailure (const char *reason);
 extern "C" {
 // Optional passive observer; absent in ordinary builds. It may run while a
 // window lock is held, so its contract forbids blocking or transport access.
-void boot_progress_poll (void) __attribute__((weak));
+// A board without the boot progress layer links this empty weak definition; ld64 refuses a weak undefined symbol in
+// the static kernel link. A board that has the layer overrides it with its own.
+__attribute__((weak)) void boot_progress_poll (void) {}
 volatile uint32_t native_ufs_probe_calls = 0;
 volatile uint32_t native_ufs_matched = 0;
 volatile uint32_t native_ufs_probe_requested = 0;
