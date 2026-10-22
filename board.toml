@@ -51,6 +51,8 @@ archives = [
   "build-mockfs-fixture.py",
   "build-libpthread-kernel.py",
   "build-fajita-storage.py",          # storage ABI audit and NativeVirtioBlock bindings (needs FAJITA_STORAGE_CANDIDATE)
+  "build-arm-driver.py NativeRamBlock",   # the RAM-backed Data volume (/private/var) from the Data seed
+  "build-native-virtio-bindings.py --component NativeRamBlock --directory build/native-ram-block",
   "build-fajita-verified-root.py",    # owner keys, OS and SystemOS policies, libVerifiedRootProbe.a (needs the OS images)
   "build-arm-driver.py NativeUfs",
   "build-sheng-platform-power.py",    # the PMGR the original AMFI needs, from UniXNU-sheng
@@ -167,6 +169,8 @@ kernel_args = [
 tool = "scripts/make-fajita-adt.py"
 root_match_volume_uuid = "04769D26-2CA0-4825-B443-E2E5F88300F2"   # the 21H461 OS volume, read from the image
 owned_memory_size = "0xc0000000"   # a 3 GiB DarwinBoot window, as guacamole
+# The Data seed (data-seed.json, built by the Data seed workflow) arrives packed (DBRDISK1); NativeRamBlock serves it.
+packed_data_ramdisk = true
 cpu_regs = "0,0x100,0x200,0x300,0x400,0x500,0x600,0x700"
 psci_method = "smc"
 
