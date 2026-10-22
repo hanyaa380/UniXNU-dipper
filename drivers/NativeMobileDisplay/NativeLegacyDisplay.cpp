@@ -378,9 +378,22 @@ public:
             native_legacy_swap_stage(1);
             shadowValid=false;gpuRequest=request;gpuLength=length;transferred=true;return;
         }
-        IOMemoryMap *source=memory->map(kIOMapAnywhere|kIOMapReadOnly);
+        // fajita-fb-src-cached=1: read the surface through a cacheable mapping. Its default cache mode is the creator's (CoreAnimation
+        // asks for write-combined surfaces), and the copy reads every source pixel (the scaled copy several times): uncached reads.
+        // The lines are cleaned and invalidated first, so nothing cached from an earlier frame is copied.
+        static int srcCached=-1;
+        if(srcCached<0){unsigned v=0;PE_parse_boot_argn("fajita-fb-src-cached",&v,sizeof v);srcCached=v==1;}
+        IOMemoryMap *source=memory->map(kIOMapAnywhere|kIOMapReadOnly|(srcCached?kIOMapCopybackCache:0));
         if(!source || !source->getVirtualAddress() || source->getLength()<allocation) {
             OSSafeReleaseNULL(source);native_legacy_transfer_observed(kIOReturnNoMemory,request,0);return;
+        }
+        if(srcCached) {
+            uint64_t ctr;__asm__ volatile("mrs %0, ctr_el0":"=r"(ctr));
+            const uintptr_t line=(uintptr_t)4<<((ctr>>16)&15);
+            uintptr_t at=(uintptr_t)source->getVirtualAddress()&~(line-1);
+            const uintptr_t end=(uintptr_t)source->getVirtualAddress()+(uintptr_t)allocation;
+            for(;at<end;at+=line)__asm__ volatile("dc civac, %0"::"r"(at):"memory");
+            __asm__ volatile("dsb sy" ::: "memory");
         }
         if(logical ? !native_legacy_scale_destination(reinterpret_cast<volatile void *>(bootMapping->getVirtualAddress()),
             bootMapping->getLength(),video.v_rowBytes,&scaleMap) ||

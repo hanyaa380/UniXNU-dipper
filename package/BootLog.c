@@ -120,6 +120,8 @@ extern volatile uint64_t native_gpu_idle_spins __attribute__((weak_import));
 extern volatile uint32_t native_adreno_coherent_skips[4] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_io_coherent __attribute__((weak_import));
 extern char native_cpufreq_row[120] __attribute__((weak_import));
+// FajitaCpuFreq.cpp (fajita-cpufreq=<n>): summary, per-core MHz before the vote and latest, LUTs of d0, d1, L3.
+extern char fajita_cpufreq_rows[6][256] __attribute__((weak_import));
 extern uint32_t native_gpu_perf_vote[2] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_pool_status __attribute__((weak_import));
 extern volatile uint32_t native_adreno_pool_wc __attribute__((weak_import));
@@ -145,7 +147,7 @@ extern volatile uint64_t native_adreno_import_diag[10] __attribute__((weak_impor
 extern volatile uint32_t native_adreno_import_stage __attribute__((weak_import));
 extern volatile uint64_t native_adreno_import_fail_pa __attribute__((weak_import)), native_adreno_import_fail_offset __attribute__((weak_import));
 // What the reset probe and the autoreset attempt saw, for the [reset] section of the log.
-static char boot_log_reset_probe_text[768], boot_log_reset_result[120], boot_log_reset_mark[64], boot_log_reset_watchdog[120];
+static char boot_log_reset_probe_text[1024], boot_log_reset_result[120], boot_log_reset_mark[64], boot_log_reset_watchdog[120];
 // The kernel message buffer (bsd/sys/msgbuf.h); only these leading fields are read.
 struct boot_log_msgbuf {int msg_magic, msg_size, msg_bufx, msg_bufr; char *msg_bufc;};
 extern struct boot_log_msgbuf *msgbufp;
@@ -597,6 +599,8 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
              &native_gpu_perf_vote ? native_gpu_perf_vote[1] : 0);
     at = put(out, at, cap, row, sizeof row);
   }
+  if (&fajita_cpufreq_rows)
+    for (unsigned i = 0; i < 6; ++i) if (fajita_cpufreq_rows[i][0]) at = put(out, at, cap, fajita_cpufreq_rows[i], sizeof fajita_cpufreq_rows[i]);
   if (&native_adreno_export_stats && (native_adreno_export_stats[0] || native_adreno_export_stats[1])) {
     char row[120];
     snprintf(row, sizeof row, "[export] pieces=%u refused=%u generation=%u bytes=%u | complete generation=%u bytes=%u", native_adreno_export_stats[0],

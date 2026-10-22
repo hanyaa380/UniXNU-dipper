@@ -13,6 +13,11 @@ extern volatile int64_t armcpu_scm[8];
 extern volatile uint64_t armcpu_wdog_pets, armcpu_deadline_start, armcpu_deadline_ticks, armcpu_deadline_seen;
 extern volatile uint64_t armcpu_wdog_live[14] __attribute__((weak_import));   // cntfrq, stop, first/last pet, STS, CNTVCT, CNTPCT, IPIs sent/taken, timer IRQs
 extern void armcpu_wdog_sample(void) __attribute__((weak_import));
+// Display frame copies (LegacyDisplayProbe.cpp), CNTPCT ticks.
+extern volatile uint64_t native_legacy_copy_n __attribute__((weak_import));
+extern volatile uint64_t native_legacy_copy_last __attribute__((weak_import));
+extern volatile uint64_t native_legacy_copy_max __attribute__((weak_import));
+extern volatile uint64_t native_legacy_copy_sum __attribute__((weak_import));
 
 enum { PsciVersion = 0x84000000u, PsciFeatures = 0x8400000au, PsciSystemReset = 0x84000009u };
 
@@ -45,6 +50,14 @@ int boot_reset_probe(char *text, unsigned cap)
                (unsigned long long)armcpu_wdog_live[5], (unsigned long long)armcpu_wdog_live[6], (unsigned long long)armcpu_wdog_live[7],
                (unsigned long long)armcpu_wdog_live[8], (unsigned long long)armcpu_wdog_live[9], (unsigned long long)armcpu_wdog_live[10],
                (unsigned long long)armcpu_wdog_live[11], (unsigned long long)armcpu_wdog_live[12], (unsigned long long)armcpu_wdog_live[13]);
+  }
+  if (&native_legacy_copy_n && native_legacy_copy_n) {
+    size_t used = strlen(text);
+    const uint64_t n = native_legacy_copy_n, per_ms = 19200;   // 19.2 MHz counter
+    if (used < cap)
+      snprintf(text + used, cap - used, " | fbcopy n=%llu last=%llums max=%llums mean=%llums", (unsigned long long)n,
+               (unsigned long long)(native_legacy_copy_last / per_ms), (unsigned long long)(native_legacy_copy_max / per_ms),
+               (unsigned long long)(native_legacy_copy_sum / n / per_ms));
   }
   // PSCI 0.2+ always implements SYSTEM_RESET; PSCI_FEATURES only exists from 1.0.
   return version >= 0x2 ? 0 : 1;
