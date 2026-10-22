@@ -160,7 +160,7 @@ trust_cache_sha256 = [
 kernel_args = [
   "debug=0x14e",
   "kt_fixed_zones=120",
-  "armcpu-diagnostics=1","armcpu-timer-intid=19","-apfs_shared_datavolume","ml-timeout-lock-panic-scale=40","sheng-staged-apps=1","sheng-disable-watchdogd=1","sheng-lite=1","sheng-data-persist=2","boot-progress=1","sheng-log=1","sheng-autoreset=300","fajita-deadline=600",
+  "armcpu-diagnostics=1","armcpu-timer-intid=19","-apfs_shared_datavolume","ml-timeout-lock-panic-scale=40","sheng-staged-apps=1","sheng-disable-watchdogd=1","sheng-lite=1","sheng-data-persist=2","boot-progress=1","sheng-log=1","sheng-autoreset=300","fajita-deadline=600","fajita-wdog=2",
   "-no_slto_panic",
   "native-ufs-root=1",
   "native-ufs-diagnostics=1",
@@ -208,7 +208,7 @@ text_fixups = [
 [payload.adt]
 tool = "scripts/make-fajita-adt.py"
 root_match_volume_uuid = "04769D26-2CA0-4825-B443-E2E5F88300F2"   # the 21H461 OS volume, read from the image
-owned_memory_size = "0xc0000000"   # a 3 GiB DarwinBoot window, as guacamole
+owned_memory_size = "0x130000000"   # 4.75 GiB, as sheng: 3 GiB ran out of memory 2 minutes into userland (2026-10-22)
 # The Data seed (data-seed.json, built by the Data seed workflow) arrives packed (DBRDISK1); NativeRamBlock serves it.
 packed_data_ramdisk = true
 # sheng-data-persist=2: Data writes go through to a store window at the end of userdata (NativeUfs), not to RAM.

@@ -92,7 +92,16 @@ static uint32_t gTimerIntid = 27;
 // fajita-deadline=<seconds>: an unattended run must come back even when threads stop (memory exhaustion, a stuck kernel thread). The
 // timer interrupt keeps arriving then, so its handler issues PSCI SYSTEM_RESET <seconds> after ArmCpu starts; with empty boot
 // slots the OnePlus ABL lands in fastboot. 0 (default) = off.
-static uint64_t gDeadlineTicks = 0;
+extern "C" { volatile uint64_t armcpu_deadline_start = 0, armcpu_deadline_ticks = 0, armcpu_deadline_seen = 0; }
+// fajita-wdog=<mode>: the SDM845 APSS watchdog (qcom,apss-wdt-sdm845, 0x17980000, kpss layout: RST 0x4, EN 0x8, STS 0xC, BARK_TIME
+// 0x10, BITE_TIME 0x14, 32768 Hz sleep clock). Every fajita run froze ~2 minutes after kernel start with even the timer interrupt
+// gone, which a watchdog left running by the bootloader would explain (Linux's qcom_wdt pets a watchdog it finds running).
+// 1 = read the registers once (armcpu_wdog[], shown by BootReset's probe text), 2 = also pet it from the timer interrupt, which
+// needs no thread. 0 (default) = untouched.
+extern "C" { volatile uint32_t armcpu_wdog[6] = { 0, 0, 0, 0, 0, 0 }; volatile uint64_t armcpu_wdog_pets = 0; }
+static OSSharedPtr<IOMemoryMap> gWdogMap;
+static uintptr_t gWdog = 0;
+static unsigned gWdogMode = 0;
 // Redistributor ISENABLER0: SGIs 0..15 (only SGI 0 is used by the kernel; the others let the self-SGI probe tell which INTIDs the GIC accepts) and the timer PPI.
 #define kSgiPpiEnable (0xffffU | (1U << gTimerIntid))
 
@@ -381,15 +390,23 @@ bool ArmCpu::start (IOService *provider)
   if (PE_parse_boot_argn ("armcpu-timer-intid", &timerIntid, sizeof (timerIntid)) && timerIntid >= 16 && timerIntid < 32) {
     gTimerIntid = timerIntid;
   }
+  if (!gWdog && PE_parse_boot_argn ("fajita-wdog", &gWdogMode, sizeof (gWdogMode)) && gWdogMode) {
+    OSSharedPtr<IOMemoryDescriptor> wdog (IOMemoryDescriptor::withPhysicalAddress (0x17980000, 0x1000, kIODirectionInOut), OSNoRetain);
+    if (wdog) gWdogMap = OSSharedPtr<IOMemoryMap> (wdog->map (kIOMapAnywhere | kIOMapInhibitCache), OSNoRetain);
+    if (gWdogMap) {
+      gWdog = static_cast<uintptr_t> (gWdogMap->getVirtualAddress ());
+      armcpu_wdog[0] = 1;
+      for (unsigned i = 1; i < 6; i++) armcpu_wdog[i] = read32 (gWdog, 4 * i);   // RST, EN, STS, BARK, BITE
+    }
+  }
   unsigned deadline = 0;
-  if (!gDeadlineTicks && PE_parse_boot_argn ("fajita-deadline", &deadline, sizeof (deadline)) && deadline >= 60) {
-    uint64_t frequency = 0;
+  if (!armcpu_deadline_ticks && PE_parse_boot_argn ("fajita-deadline", &deadline, sizeof (deadline)) && deadline >= 60) {
+    uint64_t frequency = 0, now = 0;
     __asm__ volatile ("mrs %0, cntfrq_el0" : "=r" (frequency));
-    // The counter keeps running across warm resets (it was already past 600 s at a fresh boot on fajita), so the deadline is
-    // relative to now, not to zero.
-    uint64_t now;
     __asm__ volatile ("isb; mrs %0, cntvct_el0" : "=r" (now));
-    gDeadlineTicks = now + (frequency ? frequency : 19200000) * deadline;
+    // Elapsed time from now, never an absolute value: the counter keeps running across warm resets.
+    armcpu_deadline_start = now;
+    armcpu_deadline_ticks = (frequency >= 1000000 && frequency <= 100000000 ? frequency : 19200000) * (uint64_t)deadline;
   }
   uint32_t physical;
   OSData *reg = OSDynamicCast (OSData, provider->getProperty ("reg"));
@@ -589,10 +606,15 @@ void ArmCpu::interrupt (void)
     if ((id & 0xffffff) == gTimerIntid) {
       armcpu_timer_interrupts = armcpu_timer_interrupts + 1;
       armcpu_core_timer[logicalId & 7] = armcpu_core_timer[logicalId & 7] + 1;
-      if (gDeadlineTicks) {
+      if (gWdog && gWdogMode >= 2) {
+        write32 (gWdog, 0x4, 1);   // WDT_RST: restart the count
+        armcpu_wdog_pets = armcpu_wdog_pets + 1;
+      }
+      if (armcpu_deadline_ticks) {
         uint64_t now;
         __asm__ volatile ("isb; mrs %0, cntvct_el0" : "=r" (now));
-        if (now >= gDeadlineTicks) {
+        armcpu_deadline_seen = now;
+        if (now > armcpu_deadline_start && now - armcpu_deadline_start >= armcpu_deadline_ticks) {
           register uint64_t x0 __asm__ ("x0") = 0x84000009ULL;   // PSCI SYSTEM_RESET
           __asm__ volatile ("smc #0" : "+r" (x0) :: "memory", "x1", "x2", "x3");
         }

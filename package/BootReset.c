@@ -7,6 +7,9 @@
 #include <string.h>
 #include <pexpert/pexpert.h>
 
+extern volatile uint32_t armcpu_wdog[6];
+extern volatile uint64_t armcpu_wdog_pets, armcpu_deadline_start, armcpu_deadline_ticks, armcpu_deadline_seen;
+
 enum { PsciVersion = 0x84000000u, PsciFeatures = 0x8400000au, PsciSystemReset = 0x84000009u };
 
 static uint64_t psci(uint64_t fid, uint64_t a1)
@@ -21,7 +24,10 @@ int boot_reset_probe(char *text, unsigned cap)
 {
   const uint64_t version = psci(PsciVersion, 0);
   const int64_t reset = (int64_t)psci(PsciFeatures, PsciSystemReset);
-  snprintf(text, cap, "psci v%llx reset=%lld (fajita: any reset lands in fastboot)", (unsigned long long)version, (long long)reset);
+  snprintf(text, cap, "psci v%llx reset=%lld | wdog mapped=%u rst=%x en=%x sts=%x bark=%x bite=%x pets=%llu | deadline start=%llx ticks=%llx seen=%llx",
+           (unsigned long long)version, (long long)reset, armcpu_wdog[0], armcpu_wdog[1], armcpu_wdog[2], armcpu_wdog[3], armcpu_wdog[4],
+           armcpu_wdog[5], (unsigned long long)armcpu_wdog_pets, (unsigned long long)armcpu_deadline_start,
+           (unsigned long long)armcpu_deadline_ticks, (unsigned long long)armcpu_deadline_seen);
   // PSCI 0.2+ always implements SYSTEM_RESET; PSCI_FEATURES only exists from 1.0.
   return version >= 0x2 ? 0 : 1;
 }
