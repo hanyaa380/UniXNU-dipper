@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Verified root policies and archive of the fajita kernel (macOS: xcrun, Homebrew OpenSSL).
+"""Verified root policies and archive of the fajita kernel.
 
-Runs as a [kernel] archives builder. Every run makes its own owner key pair (kits/VerifiedRoot/tests/check.py, which
-also builds the C verifier), so no private key exists outside the build. For the OS and the SystemOS image of the
+Runs as a [kernel] archives builder. Every run makes its own owner key pair, so no private key exists outside the build:
+on macOS kits/VerifiedRoot/tests/check.py makes it and builds the C verifier as a dylib (Homebrew OpenSSL); elsewhere
+the same key pair comes from openssl genpkey and the verifier is a shared object built with the host cc and -lcrypto. For the OS and the SystemOS image of the
 IPSW it signs a policy over the expanded image (kits/VerifiedRoot/tools/manifest.py), then verifies every block of it
 again with the C verifier, as build-owner-os-policy.py does for the OS image, and writes the verification report
 build-verified-root-probe.py requires. That script then builds build/verified-root-os-xnu-bundle/libVerifiedRootProbe.a
@@ -13,7 +14,9 @@ import ctypes
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
+import platform
 import shutil
 import subprocess
 import sys
@@ -98,15 +101,38 @@ def policy(manifest, native, keys, component, member, volume, expected_sha256, e
     print(f'PASS: {component} signature and every one of {view.block_count} blocks verified by the C verifier', flush=True)
 
 
+def host_verifier(host):
+    """The owner key pair and the C verifier of the host; returns the verifier library."""
+    if platform.system() == 'Darwin':
+        openssl = subprocess.check_output(['brew', '--prefix', 'openssl@3'], text=True).strip()
+        subprocess.run(['python3', ROOT / 'kits/VerifiedRoot/tests/check.py', '--output', host, '--openssl-prefix', openssl],
+                       cwd=ROOT, check=True)
+        return host / 'verified-root.dylib'
+    # As check.py does it, without its macOS and iOS test builds.
+    keys = host / 'keys'
+    keys.mkdir(parents=True, mode=0o700, exist_ok=True)
+    os.chmod(keys, 0o700)
+    for name in ('owner', 'other'):
+        private, public = keys / (name + '.pem'), keys / (name + '-public.pem')
+        private.unlink(missing_ok=True)
+        os.close(os.open(private, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+        subprocess.run(['openssl', 'genpkey', '-algorithm', 'RSA', '-pkeyopt', 'rsa_keygen_bits:3072', '-out', private],
+                       check=True, capture_output=True)
+        subprocess.run(['openssl', 'pkey', '-in', private, '-pubout', '-out', public], check=True, capture_output=True)
+    library = host / 'verified-root.so'
+    kit = ROOT / 'kits/VerifiedRoot'
+    subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror', '-shared', '-fPIC', '-I', kit / 'include',
+                    kit / 'src/verified_root.c', kit / 'tests/openssl_provider.c', '-lcrypto', '-o', library], check=True)
+    return library
+
+
 def main():
     host = ROOT / 'build/verified-root-host'
-    openssl = subprocess.check_output(['brew', '--prefix', 'openssl@3'], text=True).strip()
-    subprocess.run(['python3', ROOT / 'kits/VerifiedRoot/tests/check.py', '--output', host, '--openssl-prefix', openssl],
-                   cwd=ROOT, check=True)
+    library = host_verifier(host)
     spec = importlib.util.spec_from_file_location('verified_manifest', ROOT / 'kits/VerifiedRoot/tools/manifest.py')
     manifest = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(manifest)
-    native = ctypes.CDLL(str(host / 'verified-root.dylib'))
+    native = ctypes.CDLL(str(library))
     native.vr_host_open.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_uint64, ctypes.POINTER(View)]
     native.vr_host_block.argtypes = [ctypes.POINTER(View), ctypes.c_uint64, ctypes.c_void_p, ctypes.c_size_t]
     for image in IMAGES:
