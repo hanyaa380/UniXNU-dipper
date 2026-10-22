@@ -170,9 +170,9 @@ static void write32 (uintptr_t base, unsigned offset, uint32_t value)
 // system barks 16 s later and must show "FAJITA BARK" in the log (then the panic screen resets); a bite instead means the bark
 // does not reach the CPU. 0 (default) = pet forever.
 // armcpu_wdog_live (BootReset's probe text, refreshed every log slot): cntfrq, stop, first and last pet (mach_absolute_time), STS,
-// raw CNTVCT/CNTPCT, then IPIs sent and taken and timer interrupts. The stop runs on mach_absolute_time: an inline CNTVCT read in a kext came back as a constant (0 or 3) on
+// raw CNTVCT/CNTPCT, then IPIs sent and taken and timer interrupts (and the CPU0 debug probe). The stop runs on mach_absolute_time: an inline CNTVCT read in a kext came back as a constant (0 or 3) on
 // fajita (runH-barkctl2), so a CNTVCT-based stop never fired.
-extern "C" { volatile uint64_t armcpu_wdog_live[10] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }; }
+extern "C" { volatile uint64_t armcpu_wdog_live[14] = { 0 }; }   // [10..13]: CPU0 debug CIDR1, EDDEVARCH, EDPRSR, one EDPCSR sample
 // fajita-wdog-stop-panic=1 checks the capture path alone: at the stop time the timer interrupt calls barkCapture() itself, so
 // "FAJITA BARK" in the log and a panic-screen reset prove the panic flush works from interrupt context without the watchdog.
 static uint64_t gWdogStopTicks = 0;
@@ -274,6 +274,21 @@ static void spiConfigure (uintptr_t dist, uint32_t id, uint64_t aff)
   __asm__ volatile ("dsb sy" ::: "memory");
 }
 
+// fajita-wdog-bark-cpu=<n>: the logical CPU the bark is routed to (default 0). With SMP, 1 makes a live secondary the observer of a
+// frozen boot CPU (in a 2-core run CPU1 stayed alive while CPU0 froze). fajita-cpu0-debug=1 maps CPU0's external debug block (CoreSight
+// per-core stride 0x100000 from 0x7000000: ETM at +0x40000 is sdm845.dtsi's etm@7040000, debug assumed at +0x10000) so the capture can
+// read CPU0's PC sample register EDPCSR (0x0A0, then EDPCSRhi 0x0AC) and EDPRSR (0x314), which work while CPU0 cannot take interrupts.
+static unsigned gBarkCpu = 0;
+static OSSharedPtr<IOMemoryMap> gCpu0DebugMap;
+static uintptr_t gCpu0Debug = 0;
+static uint64_t cpu0PcSample (void)
+{
+  if (!gCpu0Debug) return 0;
+  const uint32_t lo = read32 (gCpu0Debug, 0xa0);
+  const uint32_t hi = read32 (gCpu0Debug, 0xac);
+  return (static_cast<uint64_t> (hi) << 32) | lo;
+}
+
 static void barkCapture (void)
 {
   // The bark is level-triggered and stays asserted until the next pet: mask it at the distributor first (ICENABLER), so the panic
@@ -295,12 +310,19 @@ static void barkCapture (void)
     // The boot CPU's SGI/PPI frame: ISPENDR0 0x200, ISACTIVER0 0x300, ISENABLER0 0x100.
     timerEnable = read32 (gFrames + 0x10000, 0x100); timerPend = read32 (gFrames + 0x10000, 0x200); timerActive = read32 (gFrames + 0x10000, 0x300);
   }
-  panic ("FAJITA BARK: elr=%llx spsr=%llx far=%llx esr=%llx sp=%llx | vct=%llx cval=%llx (cval-vct=%lld) ctl=%llx daif=%llx | "
-         "ppi19 en=%u pend=%u act=%u (raw %x/%x/%x) | timer irqs=%llu ipis=%llu pets=%llu",
-         elr, spsr, far, esr, sp0, vct, cval, (long long)(cval - vct), ctl, daif,
+  uint64_t pc0[4] = { 0, 0, 0, 0 };
+  uint32_t prsr0 = 0;
+  if (gCpu0Debug) {
+    prsr0 = read32 (gCpu0Debug, 0x314);
+    for (unsigned i = 0; i < 4; i++) pc0[i] = cpu0PcSample ();
+  }
+  panic ("FAJITA BARK cpu%d: cpu0 edpcsr=%llx %llx %llx %llx edprsr=%x | elr=%llx spsr=%llx far=%llx esr=%llx sp=%llx | vct=%llx "
+         "cval=%llx (cval-vct=%lld) ctl=%llx daif=%llx | cpu0 ppi19 en=%u pend=%u act=%u (raw %x/%x/%x) | timer irqs=%llu ipis=%llu "
+         "pets=%llu core0 timer=%llu",
+         cpu_number (), pc0[0], pc0[1], pc0[2], pc0[3], prsr0, elr, spsr, far, esr, sp0, vct, cval, (long long)(cval - vct), ctl, daif,
          (timerEnable >> gTimerIntid) & 1, (timerPend >> gTimerIntid) & 1, (timerActive >> gTimerIntid) & 1, timerEnable, timerPend,
          timerActive, (unsigned long long)armcpu_timer_interrupts, (unsigned long long)armcpu_ipi_interrupts,
-         (unsigned long long)armcpu_wdog_pets);
+         (unsigned long long)armcpu_wdog_pets, (unsigned long long)armcpu_core_timer[0]);
 }
 
 static IOCPUInterruptController *gController = nullptr;
@@ -560,6 +582,20 @@ bool ArmCpu::start (IOService *provider)
       armcpu_wdog[2] = read32 (gWdog, 0x8);
       armcpu_wdog[4] = read32 (gWdog, 0x10);
       armcpu_wdog[5] = read32 (gWdog, 0x14);
+      PE_parse_boot_argn ("fajita-wdog-bark-cpu", &gBarkCpu, sizeof (gBarkCpu));
+      unsigned debug = 0;
+      if (PE_parse_boot_argn ("fajita-cpu0-debug", &debug, sizeof (debug)) && debug) {
+        // After arming: if this APB read stalls the bus, the watchdog bites.
+        OSSharedPtr<IOMemoryDescriptor> d (IOMemoryDescriptor::withPhysicalAddress (0x7010000, 0x1000, kIODirectionInOut), OSNoRetain);
+        if (d) gCpu0DebugMap = OSSharedPtr<IOMemoryMap> (d->map (kIOMapAnywhere | kIOMapInhibitCache), OSNoRetain);
+        if (gCpu0DebugMap) {
+          gCpu0Debug = static_cast<uintptr_t> (gCpu0DebugMap->getVirtualAddress ());
+          armcpu_wdog_live[10] = read32 (gCpu0Debug, 0xff4);   // CIDR1: 0x90 or 0xf0 for a CoreSight/debug component
+          armcpu_wdog_live[11] = read32 (gCpu0Debug, 0xfbc);   // EDDEVARCH: 0x47706a15 (v8.0 debug) .. 0x47708a15 (v8.2)
+          armcpu_wdog_live[12] = read32 (gCpu0Debug, 0x314);   // EDPRSR
+          armcpu_wdog_live[13] = cpu0PcSample ();              // 0xffffffff: sampling prohibited (NIDEN off)
+        }
+      }
     }
   }
   unsigned wdogStop = 0;
@@ -755,7 +791,7 @@ void ArmCpu::initCPU (bool boot)
   }
   enableGic ();
   if (gSpiIpi) { spiIpiConfigure (gDist, logicalId, affinity); }
-  if (gWdog && gWdogMode >= 3 && gDist) { spiConfigure (gDist, kBarkIntid, affinity); }   // the watchdog bark to the boot CPU
+  if (gWdog && gWdogMode >= 3 && gDist && logicalId == gBarkCpu) { spiConfigure (gDist, kBarkIntid, affinity); }   // see gBarkCpu
   enableCPUTimeBase (true);
   setCPUState (kIOCPUStateRunning);
   if (gSelfIpi) { signalCPU (this); }

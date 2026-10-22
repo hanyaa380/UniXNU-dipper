@@ -11,7 +11,7 @@
 extern volatile uint32_t armcpu_wdog[6], armcpu_imem[4];
 extern volatile int64_t armcpu_scm[8];
 extern volatile uint64_t armcpu_wdog_pets, armcpu_deadline_start, armcpu_deadline_ticks, armcpu_deadline_seen;
-extern volatile uint64_t armcpu_wdog_live[10] __attribute__((weak_import));   // cntfrq, stop, first/last pet, STS, CNTVCT, CNTPCT, IPIs sent/taken, timer IRQs
+extern volatile uint64_t armcpu_wdog_live[14] __attribute__((weak_import));   // cntfrq, stop, first/last pet, STS, CNTVCT, CNTPCT, IPIs sent/taken, timer IRQs
 extern void armcpu_wdog_sample(void) __attribute__((weak_import));
 
 enum { PsciVersion = 0x84000000u, PsciFeatures = 0x8400000au, PsciSystemReset = 0x84000009u };
@@ -39,11 +39,12 @@ int boot_reset_probe(char *text, unsigned cap)
     armcpu_wdog_sample();
     size_t used = strlen(text);
     if (used < cap)
-      snprintf(text + used, cap - used, " | live frq=%llu stop=%llx first=%llx last=%llx now=%llx sts=%llx vct=%llx pct=%llx ipi=%llu/%llu tmr=%llu",
+      snprintf(text + used, cap - used, " | live frq=%llu stop=%llx first=%llx last=%llx now=%llx sts=%llx vct=%llx pct=%llx ipi=%llu/%llu tmr=%llu dbg0 cidr1=%llx arch=%llx prsr=%llx pc=%llx",
                (unsigned long long)armcpu_wdog_live[0], (unsigned long long)armcpu_wdog_live[1], (unsigned long long)armcpu_wdog_live[2],
                (unsigned long long)armcpu_wdog_live[3], (unsigned long long)mach_absolute_time(), (unsigned long long)armcpu_wdog_live[4],
                (unsigned long long)armcpu_wdog_live[5], (unsigned long long)armcpu_wdog_live[6], (unsigned long long)armcpu_wdog_live[7],
-               (unsigned long long)armcpu_wdog_live[8], (unsigned long long)armcpu_wdog_live[9]);
+               (unsigned long long)armcpu_wdog_live[8], (unsigned long long)armcpu_wdog_live[9], (unsigned long long)armcpu_wdog_live[10],
+               (unsigned long long)armcpu_wdog_live[11], (unsigned long long)armcpu_wdog_live[12], (unsigned long long)armcpu_wdog_live[13]);
   }
   // PSCI 0.2+ always implements SYSTEM_RESET; PSCI_FEATURES only exists from 1.0.
   return version >= 0x2 ? 0 : 1;
