@@ -858,8 +858,10 @@ void boot_log_panic_flush(void) {
 }
 
 // Called by the board page's monitor once a second; starts the writer the first time when sheng-log=1.
+extern void armcpu_wdog_pet(void) __attribute__((weak_import));
 void boot_log_tick(unsigned now) {
   (void)now;
+  if (&armcpu_wdog_pet) armcpu_wdog_pet();   // fajita: once a second from the monitor thread (see ArmCpu fajita-wdog)
   if (boot_log_started) return;
   boot_log_started = 1;
   uint32_t mode = 0;

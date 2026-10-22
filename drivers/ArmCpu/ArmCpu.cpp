@@ -162,6 +162,18 @@ static void write32 (uintptr_t base, unsigned offset, uint32_t value)
   *reinterpret_cast<volatile uint32_t *>(base + offset) = value;
 }
 
+// Also petted from the boot-progress monitor (BootLog's once-a-second tick): XNU's timer is tickless, so an idle system can go
+// longer than the 32 s bite without a timer interrupt (an idle kernel-only run bit falsely). A real freeze stops both.
+// Only the boot CPU pets: with SMP a healthy secondary kept the watchdog alive while CPU0 was frozen (fajita, 2-core run, 2026-10-22).
+extern "C" int cpu_number (void);
+extern "C" void armcpu_wdog_pet (void)
+{
+  if (gWdog && gWdogMode >= 2 && cpu_number () == 0) {
+    write32 (gWdog, 0x4, 1);
+    armcpu_wdog_pets = armcpu_wdog_pets + 1;
+  }
+}
+
 // Distributor side of the software IPI of logical core `core`: group 1, edge-triggered, priority 0x80, routed to affinity `aff`, enabled.
 static void spiIpiConfigure (uintptr_t dist, uint32_t core, uint64_t aff)
 {
@@ -208,6 +220,50 @@ static bool waitClear (uintptr_t base, unsigned offset, uint32_t mask)
 static OSSharedPtr<IOMemoryMap> gDistMap, gRedistMap;
 static uintptr_t gDist = 0, gFrames = 0;
 static uint64_t gFramesSize = 0;
+
+// fajita-wdog=3: the watchdog's bark (SPI 0, INTID 32, BARK_TIME = 16 s after the last pet, before the 32 s bite) as a normal
+// non-secure IRQ to the boot CPU. If it is taken, the CPU was alive with interrupts on while nothing petted (the timer interrupt had
+// stopped); the handler records where it interrupted (ELR_EL1/SPSR_EL1), the virtual timer and the GIC state of the timer INTID, and
+// panics so the panic screen flushes the text to the UFS log and resets. If the board bites instead, interrupts were masked or a
+// higher exception level held the CPU (fajita-soc-reset-freeze-research.md).
+static const uint32_t kBarkIntid = 32;
+static void spiConfigure (uintptr_t dist, uint32_t id, uint64_t aff)
+{
+  write32 (dist, 0x80 + (id / 32) * 4, read32 (dist, 0x80 + (id / 32) * 4) | (1U << (id % 32)));        // group 1 (non-secure)
+  write32 (dist, 0xc00 + (id / 16) * 4, read32 (dist, 0xc00 + (id / 16) * 4) | (2U << ((id % 16) * 2))); // edge (rising)
+  *reinterpret_cast<volatile uint8_t *>(dist + 0x400 + id) = 0x80;
+  *reinterpret_cast<volatile uint64_t *>(dist + 0x6000 + 8ULL * id) = aff & 0xff00ffffffULL;
+  __asm__ volatile ("dsb sy" ::: "memory");
+  write32 (dist, 0x100 + (id / 32) * 4, 1U << (id % 32));
+  __asm__ volatile ("dsb sy" ::: "memory");
+}
+
+static void barkCapture (void) __attribute__ ((noreturn));
+static void barkCapture (void)
+{
+  uint64_t elr, spsr, vct, cval, ctl, daif, far, esr, sp0;
+  __asm__ volatile ("mrs %0, elr_el1" : "=r" (elr));
+  __asm__ volatile ("mrs %0, spsr_el1" : "=r" (spsr));
+  __asm__ volatile ("mrs %0, far_el1" : "=r" (far));
+  __asm__ volatile ("mrs %0, esr_el1" : "=r" (esr));
+  __asm__ volatile ("mrs %0, sp_el0" : "=r" (sp0));
+  __asm__ volatile ("isb; mrs %0, cntvct_el0" : "=r" (vct));
+  __asm__ volatile ("mrs %0, cntv_cval_el0" : "=r" (cval));
+  __asm__ volatile ("mrs %0, cntv_ctl_el0" : "=r" (ctl));
+  __asm__ volatile ("mrs %0, daif" : "=r" (daif));
+  uint32_t timerPend = 0, timerActive = 0, timerEnable = 0;
+  if (gFrames) {
+    // The boot CPU's SGI/PPI frame: ISPENDR0 0x200, ISACTIVER0 0x300, ISENABLER0 0x100.
+    timerEnable = read32 (gFrames + 0x10000, 0x100); timerPend = read32 (gFrames + 0x10000, 0x200); timerActive = read32 (gFrames + 0x10000, 0x300);
+  }
+  panic ("FAJITA BARK: elr=%llx spsr=%llx far=%llx esr=%llx sp0=%llx | vct=%llx cval=%llx (cval-vct=%lld) ctl=%llx daif=%llx | "
+         "ppi19 en=%u pend=%u act=%u (raw %x/%x/%x) | timer irqs=%llu ipis=%llu pets=%llu",
+         elr, spsr, far, esr, sp0, vct, cval, (long long)(cval - vct), ctl, daif,
+         (timerEnable >> gTimerIntid) & 1, (timerPend >> gTimerIntid) & 1, (timerActive >> gTimerIntid) & 1, timerEnable, timerPend,
+         timerActive, (unsigned long long)armcpu_timer_interrupts, (unsigned long long)armcpu_ipi_interrupts,
+         (unsigned long long)armcpu_wdog_pets);
+}
+
 static IOCPUInterruptController *gController = nullptr;
 static volatile uint32_t gGicShared = 0;
 static uint64_t gRedistStride = 0; // DT redistributor-stride; 0 = infer from GICR_TYPER.VLPIS
@@ -467,11 +523,11 @@ bool ArmCpu::start (IOService *provider)
   }
   unsigned deadline = 0;
   if (!armcpu_deadline_ticks && PE_parse_boot_argn ("fajita-deadline", &deadline, sizeof (deadline)) && deadline >= 60) {
-    uint64_t frequency = 0, now = 0;
+    uint64_t frequency = 0;
     __asm__ volatile ("mrs %0, cntfrq_el0" : "=r" (frequency));
-    __asm__ volatile ("isb; mrs %0, cntvct_el0" : "=r" (now));
-    // Elapsed time from now, never an absolute value: the counter keeps running across warm resets.
-    armcpu_deadline_start = now;
+    // Elapsed time from the first timer interrupt (which records armcpu_deadline_start), never an absolute value: the counter keeps
+    // running across warm resets. (A start read here came back as garbage on hardware.)
+    armcpu_deadline_start = 0;
     armcpu_deadline_ticks = (frequency >= 1000000 && frequency <= 100000000 ? frequency : 19200000) * (uint64_t)deadline;
   }
   uint32_t physical;
@@ -649,6 +705,7 @@ void ArmCpu::initCPU (bool boot)
   }
   enableGic ();
   if (gSpiIpi) { spiIpiConfigure (gDist, logicalId, affinity); }
+  if (gWdog && gWdogMode >= 3 && gDist) { spiConfigure (gDist, kBarkIntid, affinity); }   // the watchdog bark to the boot CPU
   enableCPUTimeBase (true);
   setCPUState (kIOCPUStateRunning);
   if (gSelfIpi) { signalCPU (this); }
@@ -672,7 +729,7 @@ void ArmCpu::interrupt (void)
     if ((id & 0xffffff) == gTimerIntid) {
       armcpu_timer_interrupts = armcpu_timer_interrupts + 1;
       armcpu_core_timer[logicalId & 7] = armcpu_core_timer[logicalId & 7] + 1;
-      if (gWdog && gWdogMode >= 2) {
+      if (gWdog && gWdogMode >= 2 && logicalId == 0) {   // boot CPU only (see armcpu_wdog_pet)
         write32 (gWdog, 0x4, 1);   // WDT_RST: restart the count
         armcpu_wdog_pets = armcpu_wdog_pets + 1;
       }
@@ -680,6 +737,7 @@ void ArmCpu::interrupt (void)
         uint64_t now;
         __asm__ volatile ("isb; mrs %0, cntvct_el0" : "=r" (now));
         armcpu_deadline_seen = now;
+        if (!armcpu_deadline_start) armcpu_deadline_start = now;
         // Unsigned difference: correct across the wrap (fajita's virtual counter starts near 2^64 and wraps ~20 minutes in).
         if (now - armcpu_deadline_start >= armcpu_deadline_ticks) {
           register uint64_t x0 __asm__ ("x0") = 0x84000009ULL;   // PSCI SYSTEM_RESET
@@ -689,6 +747,8 @@ void ArmCpu::interrupt (void)
       armcpu_irq_phase=2;
       rtclock_intr (0);
       armcpu_irq_phase=3;
+    } else if ((id & 0xffffff) == kBarkIntid && gWdogMode >= 3) {
+      barkCapture ();
     } else if ((id & 0xffffff) == 0) {
       armcpu_ipi_interrupts = armcpu_ipi_interrupts + 1;
       armcpu_core_sgi[logicalId & 7] = armcpu_core_sgi[logicalId & 7] + 1;
