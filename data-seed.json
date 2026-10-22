@@ -24,6 +24,7 @@
     ["db/dslocal/nodes/Default/users", 0, 0, "0700"],
     ["db/dslocal/nodes/Default/groups", 0, 0, "0755"],
     ["db/dslocal/nodes/Default/config", 0, 0, "0755"],
+    ["db/timezone", 0, 0, "0755"],
     ["empty", 0, 0, "0555"],
     ["folders", 0, 0, "0755"],
     ["hardware", 0, 0, "0755"],
