@@ -48,7 +48,6 @@ archives = [
   "build-arm-driver.py ArmCpu",
   "build-arm-driver.py NativeAES",
   "build-native-aes-bindings.py",
-  "build-arm-driver.py NativeUfs",
   "build-mockfs-fixture.py",
   "build-libpthread-kernel.py",
 ]
