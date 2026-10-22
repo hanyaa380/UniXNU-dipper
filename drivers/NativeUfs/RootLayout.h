@@ -105,21 +105,11 @@ static bool findRootLayout (RootLayout *layout, const char **why)
   }
   static const char wanted[] = "userdata";
   bool found = false;
+  uint32_t userdataIndex = 0;
   for (uint32_t index = 0; index < count; index++) {
     const uint8_t *entry = gScratch + index * 128;
     if (!rootEntryUsed (entry)) continue;
     uint64_t entryFirst = le64 (entry + 32), entryLast = le64 (entry + 40);
-    if (entryFirst < first || entryLast < entryFirst || entryLast > last) {
-      *why = "GPT partition bounds";
-      return false;
-    }
-    for (uint32_t prior = 0; prior < index; ++prior) {
-      const uint8_t *other = gScratch + prior * 128;
-      if (rootEntryUsed (other) && entryFirst <= le64 (other + 40) && le64 (other + 32) <= entryLast) {
-        *why = "GPT partition overlap";
-        return false;
-      }
-    }
     bool match = true;
     for (unsigned c = 0; c < sizeof (wanted); c++) {
       if (entry[56 + 2 * c] != static_cast<uint8_t> (wanted[c]) || entry[57 + 2 * c] != 0) {
@@ -127,14 +117,37 @@ static bool findRootLayout (RootLayout *layout, const char **why)
         break;
       }
     }
+    if (entryFirst < first || entryLast < entryFirst || entryLast > last) {
+      // Only userdata is ever read; another partition outside the usable range (fajita's LUN 0 has one) is reported, not fatal.
+      ROOT_LOG ("GPT entry %u %llx..%llx outside usable %llx..%llx%s\n", index, entryFirst, entryLast, first, last,
+                match ? " (userdata)" : "");
+      if (match) {
+        *why = "GPT partition bounds";
+        return false;
+      }
+      continue;
+    }
     if (match) {
       if (found) {
         *why = "duplicate userdata partition";
         return false;
       }
-      layout->userdataFirst = le64 (entry + 32);
-      layout->userdataLast = le64 (entry + 40);
+      layout->userdataFirst = entryFirst;
+      layout->userdataLast = entryLast;
+      userdataIndex = index;
       found = true;
+    }
+  }
+  if (found) {
+    // The window must not alias any other partition.
+    for (uint32_t index = 0; index < count; index++) {
+      const uint8_t *other = gScratch + index * 128;
+      if (index == userdataIndex || !rootEntryUsed (other)) continue;
+      if (layout->userdataFirst <= le64 (other + 40) && le64 (other + 32) <= layout->userdataLast) {
+        ROOT_LOG ("GPT entry %u %llx..%llx overlaps userdata\n", index, le64 (other + 32), le64 (other + 40));
+        *why = "GPT partition overlap";
+        return false;
+      }
     }
   }
   if (!found || layout->userdataLast < layout->userdataFirst) {
@@ -167,6 +180,40 @@ static bool findRootLayout (RootLayout *layout, const char **why)
       SHA256_Update (&context, gScratch, 4064);
       SHA256_Final (digest, &context);
       layout->manifestStatus = 3;
+      uint32_t chunk[8];
+      for (unsigned c = 0; c < 8; ++c) chunk[c] = rootCrc32 (gScratch + 512 * c, 512);
+      // Shown on the failure page (log lines scroll away under it): per-512-byte CRCs and the computed/stored digest prefixes.
+      snprintf (gRootManifestText, sizeof (gRootManifestText),
+                "MANIFEST crc %08x %08x %08x %08x %08x %08x %08x %08x\nsha calc %02x%02x%02x%02x%02x%02x%02x%02x stored "
+                "%02x%02x%02x%02x%02x%02x%02x%02x\n", chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6],
+                chunk[7], digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7], gScratch[4064],
+                gScratch[4065], gScratch[4066], gScratch[4067], gScratch[4068], gScratch[4069], gScratch[4070], gScratch[4071]);
+      // Bytes 0..279 matched the image file on hardware; list the nonzero bytes after the entries (expected none), then read the
+      // block again: unchanged bytes are on the disk, changed ones are stale cache lines.
+      for (unsigned pass = 0; pass < 2; ++pass) {
+        size_t used = strlen (gRootManifestText);
+        used += snprintf (gRootManifestText + used, sizeof (gRootManifestText) - used, "%s crc0 %08x nz:", pass ? "reread" : "read",
+                          rootCrc32 (gScratch, 512));
+        for (unsigned at = 280, shown = 0; at < 4064 && shown < 24 && used + 12 < sizeof (gRootManifestText); ++at)
+          if (gScratch[at]) {
+            used += snprintf (gRootManifestText + used, sizeof (gRootManifestText) - used, " %x=%02x", at, gScratch[at]);
+            ++shown;
+          }
+        strlcat (gRootManifestText, "\n", sizeof (gRootManifestText));
+        if (pass || hostRead4k (0, layout->userdataFirst, 1, gScratch) != kIOReturnSuccess) break;
+      }
+      if (memcmp (digest, gScratch + 4064, 32) != 0) {
+        // Hardware 2026-10-22 (fajita): something stamps a protective MBR (0xEE entry at 0x1BE, 55AA at 0x1FE) on the
+        // partition's first sector. The manifest never uses 0x1BE..0x1FF, so accept it only if the hash holds with that
+        // region zeroed; any other change is still rejected.
+        static uint8_t copy[4064];  // off the kernel stack
+        memcpy (copy, gScratch, sizeof (copy));
+        bzero (copy + 0x1be, 0x200 - 0x1be);
+        SHA256_Init (&context);
+        SHA256_Update (&context, copy, sizeof (copy));
+        SHA256_Final (digest, &context);
+        if (memcmp (digest, gScratch + 4064, 32) == 0) ROOT_LOG ("root manifest: ignoring a protective MBR stamped on it\n");
+      }
       if (memcmp (digest, gScratch + 4064, 32) == 0) {
         uint64_t partitionBytes = (layout->userdataLast - layout->userdataFirst + 1) * 4096ULL;
         layout->manifestStatus = 4;

@@ -9,8 +9,22 @@ struct HardwareTransferPort {
     cacheInvalidate (gHost.virt, 64);
     return *reinterpret_cast<volatile uint32_t *> (gHost.virt + 8) & 0xff;
   }
+  uint32_t paced = 0;
   bool expired () { return mach_absolute_time () >= deadline; }
-  void delay () { IODelay (2); }
+  void delay ()
+  {
+    // Power-of-two trace of a slow completion: shows whether time, the doorbell or the SMMU moves.
+    if (++paced == 1 || !(paced & (paced - 1)))
+      ROOT_TRACE ("poll %u cpu %d irq %d now %llx deadline %llx DB %x IS %x HCS %x GFSR %x FSR %x\n", paced, cpu_number (),
+                int (ml_get_interrupts_enabled ()), (unsigned long long) mach_absolute_time (), (unsigned long long) deadline,
+                read32 (gHost.hc, 0x58), read32 (gHost.hc, 0x20), read32 (gHost.hc, 0x30), read32 (gHost.smmu, 0x48),
+                read32 (gHost.cb, 0x58));
+    // A timebase spin, not IODelay: XNU's delay waits in WFE, and on fajita the poll never came back from it.
+    uint64_t pause = 0;
+    nanoseconds_to_absolutetime (2000, &pause);
+    for (uint64_t until = mach_absolute_time () + pause; mach_absolute_time () < until;) {}
+    if (paced == 1) ROOT_TRACE ("poll 1 delay returned\n");
+  }
 };
 
 static void putBe32 (uint8_t *at, uint32_t value)
@@ -79,9 +93,15 @@ static IOReturn hostSubmit (uint32_t direction, uint32_t dataBytes, uint32_t tim
   hostWrite (0x20, 1);  // Acknowledge completion only; preserve error evidence.
   HardwareTransferPort port;
   clock_interval_to_deadline (timeoutUs, kMicrosecondScale, &port.deadline);
+  ROOT_TRACE ("submit UTRD %x/%x/%x UCD %llx UTRLBA %x:%x RS %x HCS %x IS %x GFSR %x FSR %x\n", words[0], words[2],
+            words[6], (unsigned long long) ucdPhys, read32 (gHost.hc, 0x54), read32 (gHost.hc, 0x50), read32 (gHost.hc, 0x60),
+            read32 (gHost.hc, 0x30), read32 (gHost.hc, 0x20), read32 (gHost.smmu, 0x48), read32 (gHost.cb, 0x58));
   hostWrite (0x58, 1);
   UfsTransferPoll state;
   UfsTransferEnd end = pollUfsTransfer (port, state);
+  ROOT_TRACE ("end %u polls %u DBseen %x ISseen %x OCS %x IS %x GFSR %x FSR %x\n", unsigned (end), state.polls,
+            state.doorbellSeen, state.interruptSeen, state.ocs, read32 (gHost.hc, 0x20), read32 (gHost.smmu, 0x48),
+            read32 (gHost.cb, 0x58));
   gRootDiagnostic.polls = state.polls;
   gRootDiagnostic.dbSeen = state.doorbellSeen;
   gRootDiagnostic.isSeen = state.interruptSeen;

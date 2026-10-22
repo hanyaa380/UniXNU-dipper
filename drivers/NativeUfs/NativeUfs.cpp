@@ -36,12 +36,14 @@ extern const uint8_t verified_root_key[];
 
 static UfsRootDiagnostics gRootDiagnostic;
 static bool gRootDiagnosticEnabled;
+static bool gRootTraceEnabled;  // native-ufs-trace=1: a console line per UFS command (slow: the framebuffer console is synchronous)
 // Each step of the root path; with native-ufs-diagnostics=1 it is also printed on the console as it happens.
 // printf, not IOLog: the iOS kernel's IOLog may reach only the log buffer, and the verbose console is what a board without a
 // serial port shows.
 #define ROOT_STAGE(name) do { gRootDiagnostic.stage = (name); \
     if (gRootDiagnosticEnabled) printf ("NATIVE_UFS: %s\n", gRootDiagnostic.stage); } while (0)
 #define ROOT_LOG(...) do { if (gRootDiagnosticEnabled) printf ("NATIVE_UFS: " __VA_ARGS__); } while (0)
+#define ROOT_TRACE(...) do { if (gRootTraceEnabled) printf ("NATIVE_UFS: " __VA_ARGS__); } while (0)
 static void rootDiagnosticFailure (const char *reason);
 
 extern "C" {
@@ -908,6 +910,8 @@ static void hostWrite (unsigned offset, uint32_t value)
 
 #include "RootQueue.h"
 
+extern "C" int cpu_number (void);
+extern "C" boolean_t ml_get_interrupts_enabled (void);
 #include "RootCommands.h"
 
 // Bring the live controller up for reading: map, SMMU pass-through for the UFS stream, take over
@@ -1020,6 +1024,7 @@ static uint32_t be32w (const uint8_t *at)
   return (uint32_t (at[0]) << 24) | (uint32_t (at[1]) << 16) | (uint32_t (at[2]) << 8) | at[3];
 }
 
+static char gRootManifestText[900];
 #include "RootLayout.h"
 #include "RootWindowRead.h"
 #include "RootPublication.h"
@@ -1311,6 +1316,7 @@ static void rootDiagnosticFailure (const char *reason)
   gRootDiagnostic.reads = native_ufs_block_reads;
   gRootDiagnostic.failures = native_ufs_block_failures;
   formatUfsRootDiagnostics (gRootDiagnosticText, sizeof (gRootDiagnosticText), gRootDiagnostic, reason);
+  strlcat (gRootDiagnosticText, gRootManifestText, sizeof (gRootDiagnosticText));
   strlcat (gRootDiagnosticText, gRootMediaText, sizeof (gRootDiagnosticText));
   panic ("%s", gRootDiagnosticText);
 }
@@ -1773,6 +1779,9 @@ bool NativeUfs::start (IOService *provider)
   unsigned diagnostic = 0;
   PE_parse_boot_argn ("native-ufs-diagnostics", &diagnostic, sizeof (diagnostic));
   gRootDiagnosticEnabled = diagnostic == 1;
+  unsigned trace = 0;
+  PE_parse_boot_argn ("native-ufs-trace", &trace, sizeof (trace));
+  gRootTraceEnabled = trace == 1;
   if (probe == 2) {
     inspect ();
   }
