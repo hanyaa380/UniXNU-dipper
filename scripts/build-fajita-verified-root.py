@@ -201,6 +201,9 @@ def main():
     native.vr_host_block.argtypes = [ctypes.POINTER(View), ctypes.c_uint64, ctypes.c_void_p, ctypes.c_size_t]
     for image in IMAGES:
         policy(manifest, native, host / 'keys', *image)
+    # The probe's compile flags come from the bsd_init.o record, which names EXPORT_HDRS/libsa; a Linux kernel build has no such
+    # directory, and upstream clang treats a missing include directory as an error under -Werror.
+    (ROOT / 'build/xnu/ios-obj/EXPORT_HDRS/libsa').mkdir(parents=True, exist_ok=True)
     subprocess.run(['python3', ROOT / 'scripts/build-verified-root-probe.py', '--component', 'os', '--include-systemos'],
                    cwd=ROOT, check=True)
 
