@@ -162,7 +162,7 @@ trust_cache_sha256 = [
 kernel_args = [
   "debug=0x14e",
   "kt_fixed_zones=120",
-  "armcpu-timer-intid=19","-apfs_shared_datavolume","ml-timeout-lock-panic-scale=40","sheng-staged-apps=1","sheng-disable-watchdogd=1","sheng-lite=1","sheng-data-persist=2","boot-progress=2","sheng-log=1","sheng-autoreset=600","pcpu=0xf0","fajita-wdog=3","sheng-smp=1","cpus=8","armcpu-self-ipi=1","fajita-cpufreq=2","native-data-writeback=1",
+  "armcpu-timer-intid=19","-apfs_shared_datavolume","ml-timeout-lock-panic-scale=40","sheng-staged-apps=1","sheng-disable-watchdogd=1","sheng-lite=1","sheng-data-persist=2","boot-progress=2","sheng-log=1","sheng-autoreset=2400","pcpu=0xf0","fajita-wdog=3","sheng-smp=1","cpus=8","armcpu-self-ipi=1","fajita-cpufreq=2","native-data-writeback=1",
   "-no_slto_panic",
   "native-ufs-root=1",
   

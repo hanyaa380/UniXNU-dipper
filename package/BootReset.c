@@ -13,6 +13,13 @@ extern volatile int64_t armcpu_scm[8];
 extern volatile uint64_t armcpu_wdog_pets, armcpu_deadline_start, armcpu_deadline_ticks, armcpu_deadline_seen;
 extern volatile uint64_t armcpu_wdog_live[14] __attribute__((weak_import));   // cntfrq, stop, first/last pet, STS, CNTVCT, CNTPCT, IPIs sent/taken, timer IRQs
 extern void armcpu_wdog_sample(void) __attribute__((weak_import));
+// Data volume persistence (NativeRamBlock.cpp): state 1 blank 2 resumed 3 fresh 4 refused 5 degraded; header = checkHeader result.
+extern volatile uint32_t native_data_persist_state __attribute__((weak_import));
+extern volatile uint32_t native_data_persist_header __attribute__((weak_import));
+extern volatile uint64_t native_data_persist_present __attribute__((weak_import));
+extern volatile uint64_t native_data_persist_writes __attribute__((weak_import));
+extern volatile uint64_t native_data_persist_errors __attribute__((weak_import));
+extern volatile uint64_t native_data_writeback_flushes __attribute__((weak_import));
 // Display frame copies (LegacyDisplayProbe.cpp), CNTPCT ticks.
 extern volatile uint64_t native_legacy_copy_n __attribute__((weak_import));
 extern volatile uint64_t native_legacy_copy_last __attribute__((weak_import));
@@ -58,6 +65,15 @@ int boot_reset_probe(char *text, unsigned cap)
       snprintf(text + used, cap - used, " | fbcopy n=%llu last=%llums max=%llums mean=%llums", (unsigned long long)n,
                (unsigned long long)(native_legacy_copy_last / per_ms), (unsigned long long)(native_legacy_copy_max / per_ms),
                (unsigned long long)(native_legacy_copy_sum / n / per_ms));
+  }
+  if (&native_data_persist_state && &native_data_persist_present && &native_data_persist_writes && &native_data_persist_errors &&
+      &native_data_persist_header) {
+    size_t used = strlen(text);
+    if (used < cap)
+      snprintf(text + used, cap - used, " | data state=%u hdr=%u present=%llu writes=%llu errors=%llu flushes=%llu",
+               native_data_persist_state, native_data_persist_header, (unsigned long long)native_data_persist_present,
+               (unsigned long long)native_data_persist_writes, (unsigned long long)native_data_persist_errors,
+               &native_data_writeback_flushes ? (unsigned long long)native_data_writeback_flushes : 0ULL);
   }
   // PSCI 0.2+ always implements SYSTEM_RESET; PSCI_FEATURES only exists from 1.0.
   return version >= 0x2 ? 0 : 1;
