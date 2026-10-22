@@ -55,7 +55,8 @@ archives = [
   "build-native-virtio-bindings.py --component NativeRamBlock --directory build/native-ram-block",
   "build-fajita-verified-root.py",    # owner keys, OS and SystemOS policies, libVerifiedRootProbe.a (needs the OS images)
   "build-arm-driver.py NativeUfs",
-  "build-sheng-platform-power.py",    # the PMGR the original AMFI needs, from UniXNU-sheng
+  "build-sheng-platform-power.py",
+  "build-boot-progress.py",          # kits/fajita (from UniXNU-sheng d92e799): boot progress, fault probe, watchdog/lite job policy, diag export    # the PMGR the original AMFI needs, from UniXNU-sheng
 ]
 
 # The pin and early initializer are the sheng values: the same 21H461 kernelcache. The roots are the sheng list,
@@ -154,7 +155,7 @@ kernel_args = [
   "-v",
   "debug=0x14e",
   "kt_fixed_zones=120",
-  "armcpu-diagnostics=1","armcpu-timer-intid=19","-apfs_shared_datavolume","ml-timeout-lock-panic-scale=40","sheng-staged-apps=1",
+  "armcpu-diagnostics=1","armcpu-timer-intid=19","-apfs_shared_datavolume","ml-timeout-lock-panic-scale=40","sheng-staged-apps=1","sheng-disable-watchdogd=1","sheng-lite=1",
   "-no_slto_panic",
   "native-ufs-root=1",
   "native-ufs-diagnostics=1",
