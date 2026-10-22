@@ -23,8 +23,9 @@ Contents (sheng's list without its board parts):
 - kits/fajita LegacyDisplayProbe.cpp, HidInputProbe.cpp, KeyStoreProbe.cpp, BootProcessProbe.c and BootUiTraceProbe.c, copies of
   UniXNU-sheng package/ (d92e799); LegacyDisplayProbe.cpp without the cpufreq, GPU power and touch probe calls.
 Left out: BootLog.c and BootReset.c (scripts/build-boot-progress.py links fajita's own), and sheng's TouchProbe.cpp with the Novatek
-and GENI SPI libraries, CpuFreqProbe.cpp and GpuPowerProbe.cpp (SM8550 hardware). In place of TouchProbe.cpp, kits/fajita TouchState.c
-defines the touch snapshot NativeHidInput reads, which nothing writes, so no touch report is ever sent. The other diagnostics that
+and GENI SPI libraries, CpuFreqProbe.cpp and GpuPowerProbe.cpp (SM8550 hardware). The touch snapshot NativeHidInput reads
+(native_touch_seq/count/xs/ys/ids, native_touch_set_sink) is defined by libFajitaTouch.a (scripts/build-fajita-touch.py, force-loaded
+through CONFIG_XNU_EXTRA_LD_ARCHIVES), which writes it only with fajita-touch=4. The other diagnostics that
 BootProgress.c reads from sheng's touch, Adreno and cpufreq code stay the weak stand-ins of kits/fajita/BootProgressStubs.c.
 
 The 21H461 kernelcache addresses below are sheng's; fajita prelinks the same kernelcache (board.toml [kernel.prelink]
@@ -358,7 +359,7 @@ def compile_with(template, record, source, extra=()):
 
 probes = [KIT / 'LegacyDisplayProbe.cpp', KIT / 'HidInputProbe.cpp', KIT / 'KeyStoreProbe.cpp']
 probe_objs = [compile_with(cpp, r, source) for source in probes]
-c_sources = [KIT / 'BootProcessProbe.c', KIT / 'BootUiTraceProbe.c', KIT / 'TouchState.c']
+c_sources = [KIT / 'BootProcessProbe.c', KIT / 'BootUiTraceProbe.c']
 probe_objs += [compile_with(c, pr, source) for source in c_sources]
 
 # The drivers: NativeHidInput through UniXNU's qualification of the original IOHIDDevice, then NativeKeyStoreEvents and the presenter.

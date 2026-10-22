@@ -1,0 +1,65 @@
+Proposal, not applied by any build: let a board name its touch panel and axis maxima for drivers/NativeHidInput of UniXNU.
+Apply in the UniXNU checkout with: git apply patches/NativeHidInput/0001-panel-and-axis-boot-args.patch (paths are relative to UniXNU).
+fajita boot arguments with it: native-touch-panel-w=1080 native-touch-panel-h=2340 native-touch-edge-px=64 (axes unchanged: the
+fajita probe publishes in the 30480 x 20320 units NativeHidInput already uses). See NOTES-touch.md.
+
+--- a/drivers/NativeHidInput/NativeHidInput.cpp
++++ b/drivers/NativeHidInput/NativeHidInput.cpp
+@@ -57,8 +57,18 @@
+ namespace edge {
+ enum {kSlots=256,kDispatch=198,kGetType=18,kGetInteger=23,kSetInteger=24,kGetFixed=25,kContacts=256};
+ enum : uint32_t {kDigitizer=11,kX=0xB0000,kY=0xB0001,kIndex=0xB0005,kMask=0xB0007,kTouch=0xB0009,kMaskTouch=2,kFromEdgeTip=0x800};
+-// 48 panel pixels of 3048 x 2032 (the sweet reference uses 48 px), in the driver's normalised IOFixed coordinates.
+-static const int32_t kEdgeX=48*65536/3048,kEdgeY=48*65536/2032;
++// 48 panel pixels of 3048 x 2032 (the sweet reference uses 48 px), in the driver's normalised IOFixed coordinates. A board with
++// another panel names it: native-touch-panel-w/-h (pixels) and native-touch-edge-px (fajita: 1080, 2340 and about 64 for the
++// same ~4 mm at 402 ppi). Set once in NativeHidInput::start, before the event driver is wrapped.
++static int32_t kEdgeX=48*65536/3048,kEdgeY=48*65536/2032;
++static void configureEdges() {
++    unsigned w=3048,h=2032,px=48;
++    PE_parse_boot_argn("native-touch-panel-w",&w,sizeof(w));
++    PE_parse_boot_argn("native-touch-panel-h",&h,sizeof(h));
++    PE_parse_boot_argn("native-touch-edge-px",&px,sizeof(px));
++    if(w<64 || w>16384)w=3048;if(h<64 || h>16384)h=2032;if(px<1 || px>w/4 || px>h/4)px=48;
++    kEdgeX=(int32_t)(px*65536u/w);kEdgeY=(int32_t)(px*65536u/h);
++}
+ static uintptr_t originalDispatch;
+ static bool fromEdge[kContacts];
+ extern "C" {volatile uint32_t native_touch_edge_stats[4];}   // [0] installed, [1] contacts begun, [2] of them at an edge, [3] skipped events
+@@ -129,6 +139,9 @@
+     // Fingers sent as down in the previous report; a vanished identifier gets one explicit tip-up report.
+     int prevIds[TOUCH_FINGERS]={-1,-1,-1,-1,-1,-1,-1,-1,-1,-1};
+     int prevX[TOUCH_FINGERS]={},prevY[TOUCH_FINGERS]={};
++    // Axis maxima of the published coordinates: sheng's Novatek core (30480 long, 20320 short) unless the board names its own
++    // (native-touch-axis-x/-y). fajita's probe publishes in the sheng units, so it needs neither.
++    int axisX=30480,axisY=20320;
+     static unsigned transformCoordinate(int value,int maximum) {
+         if(value<0)value=0;if(value>=maximum)value=maximum-1;
+         return (unsigned)((long long)value*32767/(maximum-1));
+@@ -156,11 +169,11 @@
+         __asm__ volatile("dmb ish":::"memory");
+         if(native_touch_seq!=before)return;      // torn read: retry on the next tick
+         self->lastSeq=before;
+-        // Sizes follow the axis maxima of the touch core: 30480 long, 20320 short, mapped to the same 0..32767 range.
++        // Sizes follow the axis maxima of the touch core (30480 long, 20320 short by default), mapped to the same 0..32767 range.
+         unsigned char report[1+TOUCH_FINGERS*6+1]={3};
+         unsigned slot=0;
+         for(unsigned i=0;i<count && slot<TOUCH_FINGERS;++i,++slot) {
+-            unsigned x=transformCoordinate(xs[i],30480),y=transformCoordinate(ys[i],20320);
++            unsigned x=transformCoordinate(xs[i],axisX),y=transformCoordinate(ys[i],axisY);
+             unsigned char *f=report+1+slot*6;
+             f[0]=1;f[1]=(unsigned char)(ids[i]&0xff);f[2]=(unsigned char)x;f[3]=(unsigned char)(x>>8);f[4]=(unsigned char)y;f[5]=(unsigned char)(y>>8);
+             self->prevIds[slot]=ids[i];self->prevX[slot]=(int)x;self->prevY[slot]=(int)y;
+@@ -256,6 +269,12 @@
+         unsigned touch=0;
+         touchEnabled=PE_parse_boot_argn("sheng-touch-hid",&touch,sizeof(touch)) && touch==1;
+         if(touchOnly||touchEnabled){setProperty("Built-In",true);setProperty("DisplayIntegrated",true);}
++        {
++            unsigned ax=0,ay=0;
++            if(PE_parse_boot_argn("native-touch-axis-x",&ax,sizeof(ax)) && ax>=2 && ax<=65536)axisX=(int)ax;
++            if(PE_parse_boot_argn("native-touch-axis-y",&ay,sizeof(ay)) && ay>=2 && ay<=65536)axisY=(int)ay;
++            edge::configureEdges();
++        }
+         if(!IOHIDDevice::start(provider))return false;
+         timer=IOTimerEventSource::timerEventSource(this,tick);
+         if(!timer || inputLoop->addEventSource(timer)!=kIOReturnSuccess) {

@@ -97,6 +97,10 @@ extern volatile uint32_t native_adreno_map_fail[7][2] __attribute__((weak_import
 extern volatile uint32_t native_adreno_pool_stats[8] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_wc_audit[6] __attribute__((weak_import));
 extern volatile uint32_t native_touch_edge_stats[4] __attribute__((weak_import));
+// fajita touch bring-up (FajitaTouchProbe.cpp): the requested stage, its summary row and one row per stage plus the last I2C error.
+extern volatile unsigned native_touch_stage_req __attribute__((weak_import));
+extern char native_touch_rows[4][120] __attribute__((weak_import));
+extern char fajita_touch_rows[10][120] __attribute__((weak_import));
 extern volatile uint64_t native_adreno_reassert_ticks __attribute__((weak_import));
 extern volatile uint64_t native_adreno_cache_stats[5] __attribute__((weak_import));
 // NativeAdrenoPublish.cpp: per process name that opened the GPU, and the processes that asked the Metal discovery for its plugin.
@@ -567,6 +571,11 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
     snprintf(row, sizeof row, "[touch edge] installed=%u contacts=%u from_edge=%u skipped=%u", native_touch_edge_stats[0],
              native_touch_edge_stats[1], native_touch_edge_stats[2], native_touch_edge_stats[3]);
     at = put(out, at, cap, row, sizeof row);
+  }
+  if (&native_touch_stage_req && native_touch_stage_req && &native_touch_rows && &fajita_touch_rows) {
+    at = put(out, at, cap, "[fajita touch]", 16);
+    at = put(out, at, cap, native_touch_rows[0], sizeof native_touch_rows[0]);
+    for (unsigned i = 0; i < 10; ++i) if (fajita_touch_rows[i][0]) at = put(out, at, cap, fajita_touch_rows[i], sizeof fajita_touch_rows[i]);
   }
   // The submissions' write-combine work: audits, IB lines compared and found dirty, pages set back to write-combined, the re-assertion's
   // total time, and the CPU cache maintenance passes (count, total ms, MiB).

@@ -26,6 +26,41 @@ volatile int native_hid_input_results[8]={-1,-1,-1,-1,-1,-1,-1,-1};
 volatile uint32_t native_hid_input_command;
 char native_hid_input_registry[2048];
 char native_hid_input_props[1024];
+// The event service of the digitizer as backboardd's event system sees it (fajita touch, FajitaTouchProbe.cpp prints it as FT5):
+// [0] checkpoints that found the IOHIDEventDriver, [1] 1 while it is open (IOService::isOpen: the event system's user client
+// opened it), [2] 1 once DeviceOpenedByEventSystem is true on it (the event system sets it when it takes the service), [3] its
+// user clients, [4] TouchDetectionMode | 1 << 31 once set (backboardd: 1 report touches, 0xfe wake on tap, 0xff off),
+// [5] 1 once Built-In/DisplayIntegrated/PrimaryUsage Digitizer-Touch Screen are published on it, [6] open transitions.
+volatile uint32_t native_hid_touch_service[8];
+static bool opened(OSObject *value) {return value==kOSBooleanTrue || (OSDynamicCast(OSNumber,value) && OSDynamicCast(OSNumber,value)->unsigned32BitValue());}
+static void observeService(IORegistryEntry *device,IORegistryEntry *driver) {
+    volatile uint32_t *v=native_hid_touch_service;
+    v[0]=v[0]+1;
+    IOService *service=OSDynamicCast(IOService,driver);
+    const uint32_t open=service && service->isOpen()?1:0;
+    if(open && !v[1]){v[6]=v[6]+1;IOLog("fajita-touch: the HID event service %s is open (event system)\n",driver->getName());}
+    v[1]=open;
+    bool eso=false;
+    IORegistryEntry *entries[3]={driver,driver->getParentEntry(gIOServicePlane),device};
+    for(IORegistryEntry *entry:entries) {
+        if(!entry)continue;
+        OSObject *value=entry->copyProperty("DeviceOpenedByEventSystem");
+        eso|=value && opened(value);
+        OSSafeReleaseNULL(value);
+    }
+    if(eso && !v[2])IOLog("fajita-touch: DeviceOpenedByEventSystem set on the HID event service\n");
+    v[2]=eso;
+    uint32_t clients=0;
+    if(OSIterator *it=driver->getChildIterator(gIOServicePlane)) {
+        while(OSObject *child=it->getNextObject())if(child->metaCast("IOUserClient"))++clients;
+        it->release();
+    }
+    v[3]=clients;
+    OSObject *mode=driver->copyProperty("TouchDetectionMode");
+    if(!mode)mode=device->copyProperty("TouchDetectionMode");
+    if(OSNumber *number=OSDynamicCast(OSNumber,mode))v[4]=(number->unsigned32BitValue()&0x7fffffffu)|(1u<<31);
+    OSSafeReleaseNULL(mode);
+}
 extern volatile uint32_t native_legacy_transfer_calls;
 // Optional unattended Home presses for hardware, which has no external harness writing the mailbox:
 // offline-hid-auto-home=<seconds after the second presented frame>, offline-hid-auto-home-count (default 1)
@@ -131,6 +166,8 @@ __attribute__((noinline)) void native_hid_live_checkpoint(IOService *device) {
                 interface->setProperty("PrimaryUsagePage",(unsigned long long)0x0d,32);interface->setProperty("PrimaryUsage",(unsigned long long)4,32);
             }
         }
+        if(publishedFor==driver)native_hid_touch_service[5]=1;
+        observeService(device,driver);
         // The Digitizer/DebugState dumps (appendProperty) are not read on hardware runs without a photograph and walk
         // driver-internal state from a foreign thread; only the cheap Built-In readback stays.
         appendProperty(driver,"Built-In","BI",props);

@@ -14,6 +14,7 @@ boot_ui_trace_ready
 boot_ui_trace_role_rows
 boot_ui_trace_rows
 boot_ui_trace_snapshot
+fajita_touch_rows
 native_adreno_audit_attr
 native_adreno_audit_ticks
 native_adreno_cached_read32
@@ -66,6 +67,7 @@ native_gpu_idle_spins
 native_gpu_perf_vote
 native_hid_input_events
 native_hid_input_results
+native_hid_touch_service
 native_legacy_client_calls
 native_legacy_client_class
 native_legacy_client_pid
@@ -121,6 +123,7 @@ native_swipe_stats
 native_touch_count
 native_touch_edge_stats
 native_touch_extent
+native_touch_probe
 native_touch_rows
 native_touch_seq
 native_touch_stage_req
