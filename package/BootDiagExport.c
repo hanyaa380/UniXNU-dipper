@@ -35,6 +35,19 @@ static const char *const diag_roots[] = {
   "/private/var/mobile/Library/Logs/CrashReporter",
 };
 extern volatile uint64_t native_gop_virtual __attribute__((weak_import));
+extern uint64_t armcpu_map_physical(uint64_t physical, uint64_t length) __attribute__((weak_import));
+// The scanout to read: sheng's GOP presenter mapping, or else (fajita: NativeLegacyDisplay copies each frame into the boot framebuffer
+// at the console's physical address) a mapping of that framebuffer made here once.
+static uint64_t shot_scanout(const PE_Video *video) {
+  if (&native_gop_virtual && native_gop_virtual) return native_gop_virtual;
+  static uint64_t mapped, mapped_phys;
+  // Not ml_io_map: its submap has no room for a 10 MB panel ("kmem_alloc failed with 3", fajita).
+  if ((!mapped || mapped_phys != video->v_baseAddr) && &armcpu_map_physical) {
+    mapped = armcpu_map_physical(video->v_baseAddr, (uint64_t)video->v_rowBytes * video->v_height);
+    mapped_phys = video->v_baseAddr;
+  }
+  return mapped;
+}
 extern void qsort(void *, size_t, size_t, int (*)(const void *, const void *));
 static uint32_t shot_width, shot_height;   // the half-resolution screenshot; 0 when there is no scanout
 
@@ -114,7 +127,7 @@ uint64_t boot_diag_scan(uint64_t budget) {
   uint64_t used = 8 + 4 + 1 + 4 + 24 + strlen(note_name) + DiagNote;   // head with root "/", the note file at its full size
   PE_Video video = {};
   shot_width = shot_height = 0;
-  if (&native_gop_virtual && native_gop_virtual && !PE_current_console(&video) && video.v_depth == 32 && video.v_width >= 2 && video.v_height >= 2 &&
+  if (!PE_current_console(&video) && video.v_baseAddr && shot_scanout(&video) && video.v_depth == 32 && video.v_width >= 2 && video.v_height >= 2 &&
       video.v_width <= 16384 && video.v_height <= 16384 && video.v_rowBytes >= video.v_width * 4) {
     const uint64_t cost = 24 + strlen("screen.bgrx") + 16 + (uint64_t)(video.v_width / 2) * (video.v_height / 2) * 4;
     if (used + cost <= budget) {shot_width = (uint32_t)video.v_width / 2; shot_height = (uint32_t)video.v_height / 2; used += cost;}
@@ -161,7 +174,7 @@ int boot_diag_stream(boot_diag_emit_t emit, void *arg) {
     if (!rc) rc = emit(head, sizeof head, arg);
     for (uint32_t y = 0; !rc && y < shot_height; ++y) {
       uint32_t *out = (uint32_t *)chunk;
-      const uint32_t *in = (const uint32_t *)(uintptr_t)(native_gop_virtual + (uint64_t)y * 2 * video.v_rowBytes);
+      const uint32_t *in = (const uint32_t *)(uintptr_t)(shot_scanout(&video) + (uint64_t)y * 2 * video.v_rowBytes);
       for (uint32_t x = 0; x < shot_width; ++x) out[x] = live ? in[x * 2] : 0;
       rc = emit(chunk, row, arg);
     }

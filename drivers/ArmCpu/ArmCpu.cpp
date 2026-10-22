@@ -191,6 +191,15 @@ static void wdogPet (bool fromInterrupt)
   armcpu_wdog_pets = armcpu_wdog_pets + 1;
 }
 
+// A cache-inhibited kernel mapping of a physical range that stays for the boot (BootDiagExport's screenshot of the boot framebuffer);
+// 0 on failure. IOKit maps through the kernel map, not the small ml_io_map submap.
+extern "C" uint64_t armcpu_map_physical (uint64_t physical, uint64_t length)
+{
+  OSSharedPtr<IOMemoryDescriptor> d (IOMemoryDescriptor::withPhysicalAddress (physical, length, kIODirectionIn), OSNoRetain);
+  IOMemoryMap *map = d ? d->map (kIOMapAnywhere | kIOMapInhibitCache) : nullptr;   // kept: never released
+  return map ? static_cast<uint64_t> (map->getVirtualAddress ()) : 0;
+}
+
 extern "C" void armcpu_wdog_sample (void)
 {
   uint64_t vct, pct;
