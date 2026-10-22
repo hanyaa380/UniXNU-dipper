@@ -157,9 +157,11 @@ owned_memory_size = "0xc0000000"   # a 3 GiB DarwinBoot window, as guacamole
 cpu_regs = "0,0x100,0x200,0x300,0x400,0x500,0x600,0x700"
 psci_method = "smc"
 
-# The header of the stock boot image of OxygenOS 11.1.2.2 (scripts/fetch-fajita-boot.py --info).
+# The header of the stock boot image of OxygenOS 11.1.2.2 (scripts/fetch-fajita-boot.py --info), as version 0: after
+# the boot partitions were erased and rewritten, the ABL refused every version 1 image ("Load Error", the stock one
+# too) and kept loading version 0 ones, which is what postmarketOS ships for fajita.
 [bootimg.image]
-header_version = 1
+header_version = 0
 pagesize = 4096
 base = 0x0
 kernel_offset = 0x8000
