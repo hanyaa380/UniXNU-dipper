@@ -15,7 +15,8 @@ A port of UniXNU-sheng scripts/build-native-legacy-display.py (d92e799) that als
   (identity, parent, object size 0x18a0) over from its previous output. A fresh tree has none, so the recorded hash is seeded.
 
 Contents (sheng's list without its board parts):
-- drivers/NativeMobileDisplay NativeLegacyDisplay.cpp and NativeGOPPresenter.cpp (LegacyDisplayProbe registers both metaclasses;
+- drivers/NativeMobileDisplay (fajita's copy in this repository, with fajita-display-logical; see its README) NativeLegacyDisplay.cpp
+  and NativeGOPPresenter.cpp (LegacyDisplayProbe registers both metaclasses;
   the presenter only acts with sheng-fb-gpu=1, which fajita does not set);
 - drivers/NativeHidInput/NativeHidInput.cpp with its original-IOHIDDevice bindings (scripts/build-native-hid-input.py);
 - drivers/NativeKeyStoreEvents/NativeKeyStoreEvents.cpp (the owned AppleKeyStore of sheng-aks=1);
@@ -391,6 +392,7 @@ if progress.is_file():
     require(not clash, 'Strong symbols of libBootProgress.a defined again: ' + ', '.join(clash[:8]))
 
 sources = [ROOT / 'drivers/NativeMobileDisplay/NativeLegacyDisplay.cpp', ROOT / 'drivers/NativeMobileDisplay/NativeLegacyRequest.h',
+           ROOT / 'drivers/NativeMobileDisplay/NativeLegacyScale.h', ROOT / 'drivers/NativeMobileDisplay/FajitaDisplayLogical.h',
            ROOT / 'drivers/NativeMobileDisplay/NativeGOPPresenter.cpp', ROOT / 'drivers/NativeMobileDisplay/NativeGOPWire.h',
            *probes, *c_sources, KIT / 'BootUiTraceCore.h', KIT / 'BootUiTraceDetails.h',
            ROOT / 'drivers/NativeHidInput/NativeHidInput.cpp', ROOT / 'scripts/build-native-hid-input.py',
