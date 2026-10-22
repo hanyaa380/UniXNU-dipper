@@ -4,6 +4,7 @@ struct UfsSmmuPlan {
   unsigned slot = 0xffffffffU, bank = 0, pages = 0;
   uint32_t smr = 0, s2cr = 0;
   bool reuse = false;
+  bool firmware = false;   // the firmware's own entry for the stream, kept as it is (no SMMU write)
   const char *error = nullptr;
 };
 // ARM IHI 0062D.c sections 1.6 and 3.7: VA64=0 still rejects inputs above
@@ -27,7 +28,7 @@ static uint32_t ufsSmmuSmr(uint16_t stream, uint16_t mask)
 // window is the size of the SMMU register mapping, which the context banks must fit in.
 template <class Read>
 static UfsSmmuPlan planUfsSmmuBank(uint16_t stream, uint16_t mask, uint64_t window, uint64_t dma, uint64_t bytes, Read read,
-                                   unsigned bankFromTop)
+                                   unsigned bankFromTop, bool adoptFirmware = false)
 {
   UfsSmmuPlan p;
   uint32_t idr0 = read(0x20), idr2 = read(0x28);
@@ -65,6 +66,20 @@ static UfsSmmuPlan planUfsSmmuBank(uint16_t stream, uint16_t mask, uint64_t wind
     bool ourBank = ((s2cr >> 16) & 3) == 0 && (s2cr & 255) == p.bank;
     if (match) {
       ++matches;
+      // SDM845: the firmware's UFS driver leaves exactly this stream's entry on a context bank of its own, translation off
+      // (its DMA goes through it). That bank already passes physical addresses; adopt it without writing anything.
+      unsigned fwBank = s2cr & 255;
+      if (adoptFirmware && bankFromTop == 0 && matches == 1 && smr == ufsSmmuSmr(stream, mask) && !ourBank &&
+          ((s2cr >> 16) & 3) == 0 && fwBank < banks && fwBank != p.bank &&
+          !(read((p.pages + fwBank) * 4096) & 1)) {
+        bool va64 = read(0x1800 + 4 * fwBank) & 1;
+        if (!va64 && (dma >= (1ULL << 32) || bytes > (1ULL << 32) - dma)) {
+          p.slot = i; p.smr = smr; p.s2cr = s2cr;
+          p.error = "firmware UFS bypass bank is 32-bit and DMA is above 4 GiB"; return p;
+        }
+        p.reuse = true; p.firmware = true; p.slot = i; p.bank = fwBank; p.smr = smr; p.s2cr = s2cr;
+        continue;
+      }
       if (matches > 1 || smr != ufsSmmuSmr(stream, mask) || !ourBank) {
         p.slot = i; p.smr = smr; p.s2cr = s2cr;
         p.error = "conflicting UFS stream mapping"; return p;
@@ -75,6 +90,7 @@ static UfsSmmuPlan planUfsSmmuBank(uint16_t stream, uint16_t mask, uint64_t wind
       p.error = "reserved context bank already used"; return p;
     }
   }
+  if (p.firmware) return p;
   uint32_t sctlr = read((p.pages + p.bank) * 4096);
   if ((sctlr & 1) || (p.reuse && (sctlr || read(0x1000 + 4 * p.bank) != 0x10000 ||
                                 (read(0x1800 + 4 * p.bank) & ~1U)))) {
@@ -89,10 +105,11 @@ static UfsSmmuPlan planUfsSmmuBank(uint16_t stream, uint16_t mask, uint64_t wind
 // (no other valid stream maps it, translation off). Any other refusal (a conflicting mapping of our own stream, no free group, unsupported geometry)
 // is final and is reported as the first attempt saw it.
 template <class Read>
-static UfsSmmuPlan planUfsSmmu(uint16_t stream, uint16_t mask, uint64_t window, uint64_t dma, uint64_t bytes, Read read)
+static UfsSmmuPlan planUfsSmmu(uint16_t stream, uint16_t mask, uint64_t window, uint64_t dma, uint64_t bytes, Read read,
+                               bool adoptFirmware = false)
 {
   enum {kBankAttempts = 8};
-  UfsSmmuPlan first = planUfsSmmuBank(stream, mask, window, dma, bytes, read, 0);
+  UfsSmmuPlan first = planUfsSmmuBank(stream, mask, window, dma, bytes, read, 0, adoptFirmware);
   if (!first.error) return first;
   // "conflicting" is retried too: our own stream may already sit on a lower bank from an earlier run that had to fall back.
   auto retryable = [](const char *e) {
@@ -116,6 +133,12 @@ static const char *configureUfsSmmu(const UfsSmmuPlan &p, uint16_t stream, uint1
 {
   if (p.error) return p.error;
   unsigned cb = (p.pages + p.bank) * 4096;
+  if (p.firmware) {
+    // Nothing is written: the firmware's entry and bank must still be what the plan saw.
+    if (read(0x800 + 4 * p.slot) != ufsSmmuSmr(stream, mask) || read(0xc00 + 4 * p.slot) != p.s2cr || (read(cb) & 1))
+      return "firmware UFS stream mapping changed";
+    return nullptr;
+  }
   if (!p.reuse) write(cb, 0);
   if (read(cb) != 0) return "SMMU bypass disable readback";
   // Set VA64 before exposing a newly allocated stream. Repair an exclusive

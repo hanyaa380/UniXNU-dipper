@@ -159,6 +159,7 @@ kernel_args = [
   "native-ufs-smmu-stream=0x100",     # SDM845: iommus = <&apps_smmu 0x100 0xf>
   "native-ufs-smmu-mask=0xf",
   "native-ufs-smmu-size=0x80000",     # apps_smmu reg size
+  "native-ufs-smmu-adopt=1",          # the firmware leaves 0x800f0100 on its own bank 2 with translation off; keep it
   "sheng-pmgr=2",
 ]
 

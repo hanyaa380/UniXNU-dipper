@@ -94,6 +94,7 @@ int main()
     auto read845=[&](unsigned at){return s.at(at/4);};
     auto write845=[&](unsigned at,uint32_t value){s.at(at/4)=value;};
     auto plan845=[&] {return planUfsSmmu(0x100,0xf,0x80000,0x8cb5e9000ULL,0x22000,read845);};
+    auto adopt845=[&] {return planUfsSmmu(0x100,0xf,0x80000,0xab683000ULL,0x22000,read845,true);}; // the DMA address of the fajita run
     reset845(); auto q=plan845(); assert(!q.error && !q.reuse && q.pages==64 && q.bank==63);
     assert(!configureUfsSmmu(q,0x100,0xf,read845,write845));
     assert(s[(0x800+4*q.slot)/4]==0x800f0100 && s[(0xc00+4*q.slot)/4]==63); // one entry covers all sixteen IDs
@@ -104,6 +105,19 @@ int main()
     reset845(); s[0x800/4]=0x80000110; s[0xc00/4]=5; q=plan845(); assert(!q.error && !q.reuse); // 0x110 is outside the mask
     reset(); assert(planUfsSmmu(0x100,0xf,0x80000,0x8cb5e9000ULL,0x22000,read).error); // the sheng geometry does not fit 0x80000
     assert(ufsSmmuSmr(0x60,0)==0x80000060 && ufsSmmuSmr(0x10f,0xf)==0x800f0100);
+    // Hardware 2026-10-22 (fajita): the firmware left slot 5 = 0x800f0100, S2CR 0x00000002 (translate, bank 2), bank 2 translation off.
+    reset845(); s[(0x800+4*5)/4]=0x800f0100; s[(0xc00+4*5)/4]=2;
+    assert(plan845().error); // without native-ufs-smmu-adopt the firmware's entry is a conflict, as before
+    q=adopt845(); assert(!q.error && q.firmware && q.reuse && q.slot==5 && q.bank==2);
+    { std::vector<unsigned> w; auto wr=[&](unsigned at,uint32_t v){w.push_back(at); s.at(at/4)=v;};
+      assert(!configureUfsSmmu(q,0x100,0xf,read845,wr) && w.empty()); } // adopted without a single SMMU write
+    reset845(); s[(0x800+4*5)/4]=0x800f0100; s[(0xc00+4*5)/4]=2; s[(64+2)*4096/4]=1; assert(adopt845().error); // bank 2 translating
+    reset845(); s[(0x800+4*5)/4]=0x800f0100; s[(0xc00+4*5)/4]=0x10002; assert(adopt845().error);            // S2CR bypass/fault type
+    reset845(); s[(0x800+4*5)/4]=0x800f0100; s[(0xc00+4*5)/4]=2;
+    assert(planUfsSmmu(0x100,0xf,0x80000,0x1ffff0000ULL,0x22000,read845,true).error);  // 32-bit bank, DMA above 4 GiB
+    s[(0x1800+4*2)/4]=1; assert(!planUfsSmmu(0x100,0xf,0x80000,0x1ffff0000ULL,0x22000,read845,true).error); // VA64 bank takes it
+    reset845(); s[(0x800+4*5)/4]=0x800f0100; s[(0xc00+4*5)/4]=2; s[(0x800+4*6)/4]=0x80000101; s[(0xc00+4*6)/4]=3;
+    assert(adopt845().error); // a second overlapping entry is still a conflict
   }
   puts("PASS: SMMU geometry/conflicts, VA64 high-DMA regression, full-range width limits, ordered configuration, reuse/repair, blocked-write refusal and the SDM845 masked stream");
 }

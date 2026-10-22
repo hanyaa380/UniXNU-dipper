@@ -173,6 +173,7 @@ static uintptr_t mapPhys (uint64_t phys, uint64_t length, OSSharedPtr<IOMemoryMa
 // e.g. SDM845: native-ufs-smmu-stream=0x100 native-ufs-smmu-mask=0xf native-ufs-smmu-size=0x80000.
 static uint16_t gSmmuStream = 0x60, gSmmuMask = 0;
 static uint32_t gSmmuSize = 0xd0000;
+static bool gSmmuAdopt = false;   // native-ufs-smmu-adopt=1: keep the firmware's own entry for the stream (SDM845)
 static void ufsSmmuParams (void)
 {
   static bool read = false;
@@ -181,6 +182,7 @@ static void ufsSmmuParams (void)
   uint32_t value = 0;
   if (PE_parse_boot_argn ("native-ufs-smmu-stream", &value, sizeof (value))) gSmmuStream = uint16_t (value & 0x7fff);
   if (PE_parse_boot_argn ("native-ufs-smmu-mask", &value, sizeof (value))) gSmmuMask = uint16_t (value & 0x7fff);
+  if (PE_parse_boot_argn ("native-ufs-smmu-adopt", &value, sizeof (value))) gSmmuAdopt = value != 0;
   if (PE_parse_boot_argn ("native-ufs-smmu-size", &value, sizeof (value)) && value >= 0x10000 && value <= 0x200000 && !(value & 4095)) {
     gSmmuSize = value;
   }
@@ -306,7 +308,8 @@ static void smmuBypassStream (OSSharedPtr<IOMemoryMap> &keep, uint32_t *report, 
   if (!smmu) {
     panic ("NATIVE_UFS smmu: map failed");
   }
-  UfsSmmuPlan plan = planUfsSmmu (stream, mask, gSmmuSize, dma, bytes, [smmu](unsigned offset) { return read32 (smmu, offset); });
+  UfsSmmuPlan plan = planUfsSmmu (stream, mask, gSmmuSize, dma, bytes, [smmu](unsigned offset) { return read32 (smmu, offset); },
+                                  gSmmuAdopt);
   gRootDiagnostic.smmuId1 = read32 (smmu, 0x24);
   gRootDiagnostic.smmuId2 = read32 (smmu, 0x28);
   gRootDiagnostic.smmuSlot = plan.slot;
