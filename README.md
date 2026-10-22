@@ -20,7 +20,7 @@ Build with the `unixnu` driver of [UniXNU](https://github.com/UniXNU/UniXNU).
 ## Bring-up on the phone
 
 - Keep `boot_a` and `boot_b` free of boot images. With an image on the active slot's boot partition the ABL refuses `fastboot boot` ("Load Error"). Every reset also spends a retry of the active slot, and at 0 the ABL refuses as well, so run `fastboot set_active b` before each `fastboot boot`. With empty boot partitions every reset lands in fastboot.
-- The ABL also refuses large ramdisks, so the payload volume is flashed to `boot_a` (64 MiB, the payload size) and the boot image carries no ramdisk: `fastboot flash boot_a out/fajita/payload/payload.img`, then `unixnu bootimg ... --ramdisk none`. UFSDxe, PartitionDxe and Fat expose the volume and UniXNU finds `\EFI\UniXNU\unixnu.toml` on it.
+- The ABL also refuses large ramdisks, so the payload volume is flashed to `system_a` (2.86 GiB, unused with slot b active) and the boot image carries no ramdisk: `fastboot flash system_a out/fajita/payload/payload.img`, then `unixnu bootimg ... --ramdisk none`. UFSDxe, PartitionDxe and Fat expose the volume and UniXNU finds `\EFI\UniXNU\unixnu.toml` on it.
 - Nothing charges the battery while UEFI or XNU runs.
 - `scripts/patch-xnu-entry-probe.py --reset-after SYMBOL --in FUNCTION` puts a timed PSCI reset after a call in the kernel; a reset back to fastboot means the kernel got past it. This bisected the first boot.
 

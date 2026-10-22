@@ -133,9 +133,10 @@ SHIP_MODE = "FALSE"
 # video console and stop at the root device. dram_size is the 8 GiB of the 256 GB model.
 [payload]
 volume = "FAJITAESP"
-# The ABL loads the ramdisk at base + ramdisk_offset (0x81000000); 64 MiB ends at 0x85000000, below the hypervisor
-# region at 0x85700000. A 192 MiB volume crosses it, and the ABL then stays in fastboot.
-size_mib = 64
+# The payload is flashed to a partition, not carried in the boot image (the ABL refuses large ramdisks): system_a
+# (2.86 GiB, unused with slot b active), where UFSDxe, PartitionDxe and Fat expose it to UniXNU. The kernel with the
+# verified root policies is some 124 MiB.
+size_mib = 192
 loader = "firmware"
 title = "fajita first boot: XNU to console"
 dram_size = "0x200000000"
