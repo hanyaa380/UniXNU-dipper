@@ -173,12 +173,19 @@ static void write32 (uintptr_t base, unsigned offset, uint32_t value)
 // raw CNTVCT/CNTPCT, then IPIs sent and taken and timer interrupts. The stop runs on mach_absolute_time: an inline CNTVCT read in a kext came back as a constant (0 or 3) on
 // fajita (runH-barkctl2), so a CNTVCT-based stop never fired.
 extern "C" { volatile uint64_t armcpu_wdog_live[10] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }; }
+// fajita-wdog-stop-panic=1 checks the capture path alone: at the stop time the timer interrupt calls barkCapture() itself, so
+// "FAJITA BARK" in the log and a panic-screen reset prove the panic flush works from interrupt context without the watchdog.
 static uint64_t gWdogStopTicks = 0;
-static void wdogPet (void)
+static unsigned gWdogStopPanic = 0;
+static void barkCapture (void) __attribute__ ((noreturn));
+static void wdogPet (bool fromInterrupt)
 {
   const uint64_t now = mach_absolute_time ();
   if (!armcpu_wdog_live[2]) armcpu_wdog_live[2] = now;
-  if (gWdogStopTicks && now - armcpu_wdog_live[2] >= gWdogStopTicks) return;
+  if (gWdogStopTicks && now - armcpu_wdog_live[2] >= gWdogStopTicks) {
+    if (gWdogStopPanic && fromInterrupt) barkCapture ();
+    return;
+  }
   write32 (gWdog, 0x4, 1);   // WDT_RST: restart the count
   armcpu_wdog_live[3] = now;
   armcpu_wdog_pets = armcpu_wdog_pets + 1;
@@ -200,7 +207,7 @@ extern "C" void armcpu_wdog_sample (void)
 extern "C" int cpu_number (void);
 extern "C" void armcpu_wdog_pet (void)
 {
-  if (gWdog && gWdogMode >= 2 && cpu_number () == 0) wdogPet ();
+  if (gWdog && gWdogMode >= 2 && cpu_number () == 0) wdogPet (false);
 }
 
 // Distributor side of the software IPI of logical core `core`: group 1, edge-triggered, priority 0x80, routed to affinity `aff`, enabled.
@@ -267,15 +274,18 @@ static void spiConfigure (uintptr_t dist, uint32_t id, uint64_t aff)
   __asm__ volatile ("dsb sy" ::: "memory");
 }
 
-static void barkCapture (void) __attribute__ ((noreturn));
 static void barkCapture (void)
 {
+  // The bark is level-triggered and stays asserted until the next pet: mask it at the distributor first (ICENABLER), so the panic
+  // path is not re-entered. The bite still follows 16 s later, after the panic screen has flushed this text.
+  if (gDist) { write32 (gDist, 0x180 + (kBarkIntid / 32) * 4, 1U << (kBarkIntid % 32)); __asm__ volatile ("dsb sy" ::: "memory"); }
+  // No MRS of SP_EL0: XNU runs with SPSel=0, where that read is an undefined instruction (runK-panicctl). The current SP stands in.
   uint64_t elr, spsr, vct, cval, ctl, daif, far, esr, sp0;
   __asm__ volatile ("mrs %0, elr_el1" : "=r" (elr));
   __asm__ volatile ("mrs %0, spsr_el1" : "=r" (spsr));
   __asm__ volatile ("mrs %0, far_el1" : "=r" (far));
   __asm__ volatile ("mrs %0, esr_el1" : "=r" (esr));
-  __asm__ volatile ("mrs %0, sp_el0" : "=r" (sp0));
+  __asm__ volatile ("mov %0, sp" : "=r" (sp0));
   __asm__ volatile ("isb\n\tmrs %0, cntvct_el0" : "=r" (vct));
   __asm__ volatile ("mrs %0, cntv_cval_el0" : "=r" (cval));
   __asm__ volatile ("mrs %0, cntv_ctl_el0" : "=r" (ctl));
@@ -285,7 +295,7 @@ static void barkCapture (void)
     // The boot CPU's SGI/PPI frame: ISPENDR0 0x200, ISACTIVER0 0x300, ISENABLER0 0x100.
     timerEnable = read32 (gFrames + 0x10000, 0x100); timerPend = read32 (gFrames + 0x10000, 0x200); timerActive = read32 (gFrames + 0x10000, 0x300);
   }
-  panic ("FAJITA BARK: elr=%llx spsr=%llx far=%llx esr=%llx sp0=%llx | vct=%llx cval=%llx (cval-vct=%lld) ctl=%llx daif=%llx | "
+  panic ("FAJITA BARK: elr=%llx spsr=%llx far=%llx esr=%llx sp=%llx | vct=%llx cval=%llx (cval-vct=%lld) ctl=%llx daif=%llx | "
          "ppi19 en=%u pend=%u act=%u (raw %x/%x/%x) | timer irqs=%llu ipis=%llu pets=%llu",
          elr, spsr, far, esr, sp0, vct, cval, (long long)(cval - vct), ctl, daif,
          (timerEnable >> gTimerIntid) & 1, (timerPend >> gTimerIntid) & 1, (timerActive >> gTimerIntid) & 1, timerEnable, timerPend,
@@ -558,6 +568,7 @@ bool ArmCpu::start (IOService *provider)
     nanoseconds_to_absolutetime (static_cast<uint64_t> (wdogStop) * NSEC_PER_SEC, &ticks);
     __asm__ volatile ("mrs %0, cntfrq_el0" : "=r" (armcpu_wdog_live[0]));
     gWdogStopTicks = ticks;
+    PE_parse_boot_argn ("fajita-wdog-stop-panic", &gWdogStopPanic, sizeof (gWdogStopPanic));
     armcpu_wdog_live[1] = ticks;
   }
   unsigned deadline = 0;
@@ -768,7 +779,7 @@ void ArmCpu::interrupt (void)
     if ((id & 0xffffff) == gTimerIntid) {
       armcpu_timer_interrupts = armcpu_timer_interrupts + 1;
       armcpu_core_timer[logicalId & 7] = armcpu_core_timer[logicalId & 7] + 1;
-      if (gWdog && gWdogMode >= 2 && logicalId == 0) wdogPet ();   // boot CPU only (see armcpu_wdog_pet)
+      if (gWdog && gWdogMode >= 2 && logicalId == 0) wdogPet (true);   // boot CPU only (see armcpu_wdog_pet)
       if (armcpu_deadline_ticks) {
         uint64_t now;
         __asm__ volatile ("isb\n\tmrs %0, cntvct_el0" : "=r" (now));
