@@ -60,6 +60,8 @@ struct Rig {
     }
 };
 
+static const ftb_view kPanel = {0, 0, 0, 0, 0, 0, 0};   // no logical display: the panel itself
+
 static void testGenuineChain() {
     Rig r(false);
     assert(rmi_scan_pdt(&r.dev) == 0);
@@ -79,8 +81,8 @@ static void testGenuineChain() {
     assert(r.engine.bus == "S40 06 S41 r81 P");   // one 81-byte read of data 0 and data 1
     const ftb_map map = {r.dev.max_x, r.dev.max_y, 0};
     int x, y;
-    ftb_map_point(&map, c[0].x, c[0].y, &x, &y); assert(x == 0 && y == 0 && c[0].id == 1);
-    ftb_map_point(&map, c[1].x, c[1].y, &x, &y); assert(x == FTB_PUBLISH_X - 1 && y == FTB_PUBLISH_Y - 1 && c[1].id == 4);
+    ftb_map_point(&map, &kPanel, c[0].x, c[0].y, &x, &y); assert(x == 0 && y == 0 && c[0].id == 1);
+    ftb_map_point(&map, &kPanel, c[1].x, c[1].y, &x, &y); assert(x == FTB_PUBLISH_X - 1 && y == FTB_PUBLISH_Y - 1 && c[1].id == 4);
     assert(r.i2c.nacks == 0 && r.i2c.errors == 0 && r.i2c.timeouts == 0);
 }
 
@@ -94,8 +96,9 @@ static void testCloneChain() {
     assert(rmi_f12_read_contacts(&r.dev, c, RMI_MAX_OBJECTS) == 1);
     const ftb_map map = {r.dev.max_x, r.dev.max_y, 0};   // no maxima reported: the 1080 x 2340 default
     int x, y;
-    ftb_map_point(&map, c[0].x, c[0].y, &x, &y);
-    assert(x == (int)(540ull * (FTB_PUBLISH_X - 1) / 1080) && y == (int)(1170ull * (FTB_PUBLISH_Y - 1) / 2340));
+    ftb_map_point(&map, &kPanel, c[0].x, c[0].y, &x, &y);
+    const unsigned px = 540u * (FTB_PANEL_W - 1) / 1080, py = 1170u * (FTB_PANEL_H - 1) / 2340;   // panel pixel first
+    assert(x == (int)(px * (FTB_PUBLISH_X - 1ull) / (FTB_PANEL_W - 1)) && y == (int)(py * (FTB_PUBLISH_Y - 1ull) / (FTB_PANEL_H - 1)));
 }
 
 static void testAbsentController() {

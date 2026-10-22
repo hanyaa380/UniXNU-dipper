@@ -78,8 +78,8 @@
 #define FTB_RESET_STEP_MS 10
 #define FTB_STARTUP_MS 200
 // NativeHidInput (UniXNU drivers/NativeHidInput) normalises published coordinates with sheng's Novatek axis maxima, 30480 x 20320,
-// to 0..32767 on each axis. The probe publishes in those units, so the digitizer needs no change: X 0..30479 spans the panel
-// width and Y 0..20319 its height, whatever the panel's aspect.
+// to 0..32767 on each axis. The probe publishes in those units, so the digitizer needs no change: X 0..30479 spans the width of
+// the display userland sees (the panel, or the logical size of fajita-display-logical) and Y 0..20319 its height.
 #define FTB_PUBLISH_X 30480
 #define FTB_PUBLISH_Y 20320
 // Default F12 coordinate range when the controller reports none (the hardcoded clone layout): the 1080 x 2340 panel.
@@ -136,17 +136,65 @@ static inline int ftb_xo_level(uint32_t dfsr, const uint32_t *cfg, const uint32_
 #define FTB_ORIENT_SWAP 1u
 #define FTB_ORIENT_MIRROR_X 2u
 #define FTB_ORIENT_MIRROR_Y 4u
+// The panel: the 1080 x 2340 portrait GOP scanout (sdm845-oneplus-fajita.dts, the s6e3fc2x01 mode).
+#define FTB_PANEL_W 1080u
+#define FTB_PANEL_H 2340u
 struct ftb_map {unsigned max_x, max_y, orient;};
-// Controller coordinates (0..max inclusive) to the published units (0..FTB_PUBLISH_X-1, 0..FTB_PUBLISH_Y-1).
-static inline void ftb_map_point(const struct ftb_map *map, unsigned x, unsigned y, int *ox, int *oy) {
+// Controller coordinates (0..max inclusive) to panel pixels (0..FTB_PANEL_W-1, 0..FTB_PANEL_H-1).
+static inline void ftb_map_panel(const struct ftb_map *map, unsigned x, unsigned y, unsigned *px, unsigned *py) {
     unsigned mx = map->max_x ? map->max_x : FTB_DEFAULT_MAX_X, my = map->max_y ? map->max_y : FTB_DEFAULT_MAX_Y;
     if (map->orient & FTB_ORIENT_SWAP) {unsigned t = x; x = y; y = t; t = mx; mx = my; my = t;}
     if (x > mx) x = mx;
     if (y > my) y = my;
-    int px = (int)((uint64_t)x * (FTB_PUBLISH_X - 1) / mx), py = (int)((uint64_t)y * (FTB_PUBLISH_Y - 1) / my);
-    if (map->orient & FTB_ORIENT_MIRROR_X) px = FTB_PUBLISH_X - 1 - px;
-    if (map->orient & FTB_ORIENT_MIRROR_Y) py = FTB_PUBLISH_Y - 1 - py;
-    *ox = px; *oy = py;
+    unsigned ox = (unsigned)((uint64_t)x * (FTB_PANEL_W - 1) / mx), oy = (unsigned)((uint64_t)y * (FTB_PANEL_H - 1) / my);
+    if (map->orient & FTB_ORIENT_MIRROR_X) ox = FTB_PANEL_W - 1 - ox;
+    if (map->orient & FTB_ORIENT_MIRROR_Y) oy = FTB_PANEL_H - 1 - oy;
+    *px = ox; *py = oy;
+}
+
+// What userland sees of the display (a snapshot of NativeLegacyDisplay's fajita_display_logical, FajitaDisplayLogical.h): with
+// fajita-display-logical=<W>x<H> iOS sees W x H and the frames are fitted into the image rectangle of the panel with a black
+// letterbox; otherwise (valid 0, or a rectangle that does not fit the panel) the logical display is the panel itself.
+struct ftb_view {unsigned valid, logical_w, logical_h, image_x, image_y, image_w, image_h;};
+static inline int ftb_view_usable(const struct ftb_view *v) {
+    return v->valid && v->logical_w && v->logical_h && v->image_w && v->image_h && v->image_x + v->image_w <= FTB_PANEL_W &&
+           v->image_y + v->image_h <= FTB_PANEL_H;
+}
+static inline unsigned ftb_view_w(const struct ftb_view *v) {return ftb_view_usable(v) ? v->logical_w : FTB_PANEL_W;}
+static inline unsigned ftb_view_h(const struct ftb_view *v) {return ftb_view_usable(v) ? v->logical_h : FTB_PANEL_H;}
+// Panel pixel to logical pixel. Returns 1 inside the image, 0 in the letterbox; a letterbox point is clamped to the nearest image
+// edge first (so a drag that leaves the image, or a swipe that starts on the black bar below it, stays on the screen's edge).
+// The arithmetic is the display's (pixel centres: logical = (panel + 0.5) * L / I), so a touch lands on the pixel it covers.
+static inline int ftb_panel_to_logical(const struct ftb_view *v, unsigned px, unsigned py, unsigned *lx, unsigned *ly) {
+    if (!ftb_view_usable(v)) {
+        *lx = px < FTB_PANEL_W ? px : FTB_PANEL_W - 1;
+        *ly = py < FTB_PANEL_H ? py : FTB_PANEL_H - 1;
+        return px < FTB_PANEL_W && py < FTB_PANEL_H;
+    }
+    const int inside = px >= v->image_x && py >= v->image_y && px < v->image_x + v->image_w && py < v->image_y + v->image_h;
+    unsigned x = px < v->image_x ? 0 : px - v->image_x, y = py < v->image_y ? 0 : py - v->image_y;
+    if (x >= v->image_w) x = v->image_w - 1;
+    if (y >= v->image_h) y = v->image_h - 1;
+    *lx = (unsigned)(((uint64_t)x * 2 + 1) * v->logical_w / ((uint64_t)v->image_w * 2));
+    *ly = (unsigned)(((uint64_t)y * 2 + 1) * v->logical_h / ((uint64_t)v->image_h * 2));
+    return inside;
+}
+// Logical pixel to the published units (0..FTB_PUBLISH_X-1 across the logical width, 0..FTB_PUBLISH_Y-1 down its height), which
+// NativeHidInput scales to its 0..32767 axes; the event driver then hands backboardd 0..1 of the logical screen.
+static inline void ftb_logical_to_published(const struct ftb_view *v, unsigned lx, unsigned ly, int *ox, int *oy) {
+    const unsigned w = ftb_view_w(v), h = ftb_view_h(v);
+    if (lx >= w) lx = w - 1;
+    if (ly >= h) ly = h - 1;
+    *ox = w > 1 ? (int)((uint64_t)lx * (FTB_PUBLISH_X - 1) / (w - 1)) : 0;
+    *oy = h > 1 ? (int)((uint64_t)ly * (FTB_PUBLISH_Y - 1) / (h - 1)) : 0;
+}
+// Controller coordinates straight to the published units; returns 1 when the point is on the displayed image.
+static inline int ftb_map_point(const struct ftb_map *map, const struct ftb_view *view, unsigned x, unsigned y, int *ox, int *oy) {
+    unsigned px, py, lx, ly;
+    ftb_map_panel(map, x, y, &px, &py);
+    const int inside = ftb_panel_to_logical(view, px, py, &lx, &ly);
+    ftb_logical_to_published(view, lx, ly, ox, oy);
+    return inside;
 }
 
 // RMI register access over the GENI I2C engine: a read is the 1-byte register address, a repeated START, then the data

@@ -61,24 +61,57 @@ static void testClocks() {
 
 static void testMapping() {
     int x, y;
+    const ftb_view panel = {0, 0, 0, 0, 0, 0, 0};   // no logical display: identity
     ftb_map map = {1079, 2339, 0};
-    ftb_map_point(&map, 0, 0, &x, &y); assert(x == 0 && y == 0);
-    ftb_map_point(&map, 1079, 2339, &x, &y); assert(x == 30479 && y == 20319);
-    ftb_map_point(&map, 5000, 9000, &x, &y); assert(x == 30479 && y == 20319);   // clamped
-    ftb_map_point(&map, 540, 1170, &x, &y); assert(x == (int)(540ull * 30479 / 1079) && y == (int)(1170ull * 20319 / 2339));
+    assert(ftb_map_point(&map, &panel, 0, 0, &x, &y) && x == 0 && y == 0);
+    assert(ftb_map_point(&map, &panel, 1079, 2339, &x, &y) && x == 30479 && y == 20319);
+    ftb_map_point(&map, &panel, 5000, 9000, &x, &y); assert(x == 30479 && y == 20319);   // clamped
+    ftb_map_point(&map, &panel, 540, 1170, &x, &y);
+    assert(x == (int)(540ull * 30479 / 1079) && y == (int)(1170ull * 20319 / 2339));
     map.orient = FTB_ORIENT_MIRROR_X | FTB_ORIENT_MIRROR_Y;
-    ftb_map_point(&map, 0, 0, &x, &y); assert(x == 30479 && y == 20319);
+    ftb_map_point(&map, &panel, 0, 0, &x, &y); assert(x == 30479 && y == 20319);
     map = {2339, 1079, FTB_ORIENT_SWAP};   // a controller whose X runs along the long edge
-    ftb_map_point(&map, 2339, 0, &x, &y); assert(x == 0 && y == 20319);
-    ftb_map_point(&map, 0, 1079, &x, &y); assert(x == 30479 && y == 0);
+    ftb_map_point(&map, &panel, 2339, 0, &x, &y); assert(x == 0 && y == 20319);
+    ftb_map_point(&map, &panel, 0, 1079, &x, &y); assert(x == 30479 && y == 0);
     ftb_map defaults = {0, 0, 0};
-    ftb_map_point(&defaults, 1080, 2340, &x, &y); assert(x == 30479 && y == 20319);
+    ftb_map_point(&defaults, &panel, 1080, 2340, &x, &y); assert(x == 30479 && y == 20319);
+    // A controller with finer units than the panel still spans it.
+    ftb_map fine = {1079 * 4, 2339 * 4, 0};
+    unsigned px, py;
+    ftb_map_panel(&fine, 1079 * 2, 2339 * 2, &px, &py); assert(px == 539 && py == 1169);
+}
+
+static void testLogical() {
+    // fajita-display-logical=2048x2732: the image is 1080 x 1441 at y = 449 (2732 * 1080 / 2048 = 1440.7).
+    const ftb_view v = {1, 2048, 2732, 0, 449, 1080, 1441};
+    assert(ftb_view_usable(&v) && ftb_view_w(&v) == 2048 && ftb_view_h(&v) == 2732);
+    unsigned lx, ly;
+    assert(ftb_panel_to_logical(&v, 0, 449, &lx, &ly) && lx == 0 && ly == 0);
+    assert(ftb_panel_to_logical(&v, 1079, 449 + 1440, &lx, &ly) && lx == 2047 && ly == 2731);
+    assert(ftb_panel_to_logical(&v, 540, 449 + 720, &lx, &ly) && lx == 1024 && ly == 1366);
+    // Letterbox: above and below the image, clamped to its top and bottom rows.
+    assert(!ftb_panel_to_logical(&v, 540, 100, &lx, &ly) && lx == 1024 && ly == 0);
+    assert(!ftb_panel_to_logical(&v, 540, 2339, &lx, &ly) && lx == 1024 && ly == 2731);
+    int x, y;
+    ftb_logical_to_published(&v, 2047, 2731, &x, &y); assert(x == 30479 && y == 20319);
+    ftb_logical_to_published(&v, 0, 0, &x, &y); assert(x == 0 && y == 0);
+    // End to end: a controller reporting 0..1079 x 0..2339.
+    const ftb_map map = {1079, 2339, 0};
+    assert(!ftb_map_point(&map, &v, 540, 2300, &x, &y) && y == 20319);
+    assert(ftb_map_point(&map, &v, 540, 1169, &x, &y) && x == (int)(1024ull * 30479 / 2047) && y == (int)(1366ull * 20319 / 2731));
+    // A rectangle that does not fit the panel is ignored (identity), as is valid 0.
+    const ftb_view bad = {1, 2048, 2732, 0, 1000, 1080, 1441};
+    assert(!ftb_view_usable(&bad) && ftb_view_w(&bad) == FTB_PANEL_W);
+    assert(ftb_panel_to_logical(&bad, 540, 2300, &lx, &ly) && lx == 540 && ly == 2300);
+    const ftb_view off = {0, 2048, 2732, 0, 449, 1080, 1441};
+    assert(!ftb_view_usable(&off));
 }
 
 int main() {
     testPins();
     testClocks();
     testMapping();
-    std::puts("PASS: fajita touch board constants, clock level choice and coordinate mapping");
+    testLogical();
+    std::puts("PASS: fajita touch board constants, clock level choice, coordinate mapping and the logical display transform");
     return 0;
 }

@@ -74,6 +74,7 @@ __attribute__((weak)) char native_gpu_idle_spins[4096] __attribute__((aligned(16
 __attribute__((weak)) char native_gpu_perf_vote[4096] __attribute__((aligned(16)));
 __attribute__((weak)) char native_hid_input_events[4096] __attribute__((aligned(16)));
 __attribute__((weak)) char native_hid_input_results[4096] __attribute__((aligned(16)));
+__attribute__((weak)) char native_hid_touch_service[4096] __attribute__((aligned(16)));
 __attribute__((weak)) char native_legacy_client_calls[4096] __attribute__((aligned(16)));
 __attribute__((weak)) char native_legacy_client_class[4096] __attribute__((aligned(16)));
 __attribute__((weak)) char native_legacy_client_pid[4096] __attribute__((aligned(16)));

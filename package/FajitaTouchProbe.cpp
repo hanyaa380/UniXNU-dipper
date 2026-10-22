@@ -24,14 +24,32 @@ extern "C" {
 #include "Rmi4.h"
 #include "FajitaTouchBoard.h"
 }
+// The display's logical mode (fajita-display-logical=<W>x<H>): NativeLegacyDisplay of fajita's NativeMobileDisplay copy exports
+// the logical size and the image rectangle on the panel. Until that copy is in the tree this file carries the same layout; the
+// weak zero definition below (valid 0: the identity mapping) gives way to the display's strong one when it is linked.
+#if __has_include("FajitaDisplayLogical.h")
+#include "FajitaDisplayLogical.h"
+#else
+struct fajita_display_logical {
+    uint32_t valid;
+    uint32_t logical_width, logical_height;
+    uint32_t panel_width, panel_height;
+    uint32_t image_x, image_y;
+    uint32_t image_width, image_height;
+};
+extern "C" volatile struct fajita_display_logical fajita_display_logical;
+#endif
+extern "C" __attribute__((weak)) volatile struct fajita_display_logical fajita_display_logical = {};
 
 #define TOUCH_SLOTS 12   // the array size NativeHidInput and BootProgress declare
+// fajita_touch_rows: 0-2 FT1, 3 FT2, 4-5 FT3, 6 FT4, 7 FTE (the last error), 8 FT5 (the HID side). BootLog.c declares the same size.
+#define FTB_ROWS 10
 
 extern "C" {
 // Read by package/BootProgress.c (page rows, touch pad overlay) and package/BootLog.c (UFS log); the types are those of their
-// extern declarations. They replace the weak stand-ins of BootProgressStubs.c / BootLogStubs.c.
+// extern declarations. They replace the weak stand-ins of BootProgressStubs.c.
 char native_touch_rows[4][120];
-char fajita_touch_rows[8][120];
+char fajita_touch_rows[FTB_ROWS][120];
 volatile uint32_t native_touch_loop_step;
 volatile unsigned native_touch_stage_req;
 volatile uint32_t native_touch_stage_done, native_touch_step, native_touch_frames, native_touch_valid, native_touch_contacts,
@@ -52,6 +70,15 @@ volatile int32_t native_touch_extent[4] = {0x7fffffff, -1, 0x7fffffff, -1};
 volatile uint32_t native_touch_irq_stats[4];
 // Raw controller coordinates of the last contact and their extent (calibration: fajita-touch-max-x/-y).
 volatile int32_t fajita_touch_raw[6] = {-1, -1, 0x7fffffff, -1, 0x7fffffff, -1};
+// Contacts begun (a slot id that was not down in the previous frame), of them begun in the letterbox, and frames with a contact.
+volatile uint32_t native_touch_downs, fajita_touch_letterbox[2], fajita_touch_contact_frames;
+// The HID side, all read only here (weak: a kernel without the display archive still links, through BootProgressStubs.c):
+// HidInputProbe.cpp's NativeHidInput event counters (index 2 started, 3 event-driver checks, 6 touch reports handled, with the
+// IOReturn of the last), NativeHidInput's edge statistics, and HidInputProbe.cpp's view of the event service backboardd opens.
+extern volatile uint32_t native_hid_input_events[8] __attribute__((weak_import));
+extern volatile int native_hid_input_results[8] __attribute__((weak_import));
+extern volatile uint32_t native_touch_edge_stats[4] __attribute__((weak_import));
+extern volatile uint32_t native_hid_touch_service[8] __attribute__((weak_import));
 }
 
 namespace {
@@ -89,7 +116,7 @@ enum Pin {kSda, kScl, kVio, kRst, kInt, kPins};
 const unsigned kGpio[kPins] = {FTB_GPIO_SDA, FTB_GPIO_SCL, FTB_GPIO_VIO, FTB_GPIO_RST, FTB_GPIO_INT};
 
 struct Options {
-    unsigned stage, hz, power, pdt, rmiReset, maxX, maxY, orient, rate, irq, pollAll;
+    unsigned stage, hz, power, pdt, rmiReset, maxX, maxY, orient, rate, irq, pollAll, letterbox, view;
 };
 
 struct Session {
@@ -113,6 +140,8 @@ struct Session {
     struct ftb_map map;
     // stage 4
     uint32_t polls, irqHits, frames, busErrors, backoffs, reconfigs, lastIrq;
+    uint32_t liveIds, droppedIds;   // F12 slots down in the previous frame; of them, those dropped for starting in the letterbox
+    struct ftb_view view;           // the display mapping of the last frame
     uint8_t lastStatus;
     int lastRc;
 };
@@ -143,8 +172,9 @@ void summary(const Session &s) {
           s.ackRc);
     if (native_touch_stage_done >= 3) o.add(" pdt%c f12 %ux%u%s", r.pdt_mode == RMI_PDT_FALLBACK ? 'F' : 'S', s.map.max_x, s.map.max_y,
                                             r.f12_hardcoded ? " hc" : "");
-    o.add(" fr%u c%u %d,%d err%u hid%u", native_touch_frames, native_touch_contacts, native_touch_last_x, native_touch_last_y,
-          s.busErrors, native_touch_hid_reports);
+    o.add(" fr%u c%u dn%u %d,%d err%u hid%u open%u", native_touch_frames, native_touch_contacts, native_touch_downs,
+          native_touch_last_x, native_touch_last_y, s.busErrors, native_touch_hid_reports,
+          &native_hid_touch_service ? native_hid_touch_service[1] : 0);
     // The other three rows mirror the latest stage rows for the diagnostic page.
     const unsigned latest = native_touch_stage_done >= 4 ? 6 : native_touch_stage_done >= 3 ? 5 : native_touch_stage_done >= 2 ? 3 : 0;
     strlcpy(native_touch_rows[1], fajita_touch_rows[latest], sizeof native_touch_rows[1]);
@@ -387,18 +417,47 @@ extern "C" void native_touch_set_sink(void (*sink)(void *), void *context) {
 }
 
 namespace {
-void publish(const Session &s, unsigned count, const struct rmi_contact *c) {
+// The display mapping now: the identity until NativeLegacyDisplay has published its logical mode (or with fajita-touch-view=0).
+void readView(const Session &s, struct ftb_view &v) {
+    v = ftb_view{};
+    if (!s.opt.view || !__atomic_load_n(&fajita_display_logical.valid, __ATOMIC_ACQUIRE)) return;
+    v.logical_w = fajita_display_logical.logical_width; v.logical_h = fajita_display_logical.logical_height;
+    v.image_x = fajita_display_logical.image_x; v.image_y = fajita_display_logical.image_y;
+    v.image_w = fajita_display_logical.image_width; v.image_h = fajita_display_logical.image_height;
+    v.valid = 1;
+    if (!ftb_view_usable(&v)) v.valid = 0;   // a rectangle off the panel: keep the identity rather than map into nowhere
+}
+
+void publish(Session &s, unsigned count, const struct rmi_contact *c) {
     int ids[TOUCH_SLOTS], xs[TOUCH_SLOTS], ys[TOUCH_SLOTS];
     if (count > TOUCH_SLOTS) count = TOUCH_SLOTS;
+    readView(s, s.view);
+    uint32_t live = 0;
+    unsigned kept = 0;
     for (unsigned i = 0; i < count; ++i) {
-        ids[i] = c[i].id;
-        ftb_map_point(&s.map, c[i].x, c[i].y, &xs[i], &ys[i]);
+        const uint32_t bit = c[i].id < 32 ? 1u << c[i].id : 0;
+        live |= bit;
+        int x, y;
+        const int inside = ftb_map_point(&s.map, &s.view, c[i].x, c[i].y, &x, &y);
+        if (!(s.liveIds & bit)) {   // a contact begins: where it lands decides whether a letterbox start is dropped
+            native_touch_downs = native_touch_downs + 1;
+            if (!inside) {
+                fajita_touch_letterbox[0] = fajita_touch_letterbox[0] + 1;
+                if (s.opt.letterbox == 1) s.droppedIds |= bit;
+            }
+        }
+        if (s.droppedIds & bit) {fajita_touch_letterbox[1] = fajita_touch_letterbox[1] + 1; continue;}
+        ids[kept] = c[i].id; xs[kept] = x; ys[kept] = y; ++kept;
         if (c[i].x < fajita_touch_raw[2]) fajita_touch_raw[2] = c[i].x;
         if (c[i].x > fajita_touch_raw[3]) fajita_touch_raw[3] = c[i].x;
         if (c[i].y < fajita_touch_raw[4]) fajita_touch_raw[4] = c[i].y;
         if (c[i].y > fajita_touch_raw[5]) fajita_touch_raw[5] = c[i].y;
     }
-    if (count) {fajita_touch_raw[0] = c[0].x; fajita_touch_raw[1] = c[0].y; native_touch_last_x = xs[0]; native_touch_last_y = ys[0];}
+    s.liveIds = live;
+    s.droppedIds &= live;   // a dropped contact's slot starts fresh once it lifts
+    if (count) {fajita_touch_raw[0] = c[0].x; fajita_touch_raw[1] = c[0].y; fajita_touch_contact_frames = fajita_touch_contact_frames + 1;}
+    if (kept) {native_touch_last_x = xs[0]; native_touch_last_y = ys[0];}
+    count = kept;
     trackStrokes(count, ids, xs, ys);
     native_touch_seq = native_touch_seq + 1;
     __asm__ volatile("dmb ish" ::: "memory");
@@ -412,10 +471,28 @@ void publish(const Session &s, unsigned count, const struct rmi_contact *c) {
 
 void loopRow(const Session &s) {
     Out o(fajita_touch_rows[6], sizeof fajita_touch_rows[6]);
-    o.add("FT4 polls%u irq%u fr%u c%u raw%d,%d ext x%d..%d y%d..%d st%02x err%u back%u recfg%u hid%u gpio%u/%u",
-          s.polls, s.irqHits, s.frames, native_touch_contacts, fajita_touch_raw[0], fajita_touch_raw[1], fajita_touch_raw[2],
+    o.add("FT4 polls%u irq%u fr%u cf%u c%u dn%u lb%u/%u raw%d,%d ext x%d..%d y%d..%d st%02x err%u back%u recfg%u gpio%u/%u",
+          s.polls, s.irqHits, s.frames, fajita_touch_contact_frames, native_touch_contacts, native_touch_downs,
+          fajita_touch_letterbox[0], fajita_touch_letterbox[1], fajita_touch_raw[0], fajita_touch_raw[1], fajita_touch_raw[2],
           fajita_touch_raw[3], fajita_touch_raw[4], fajita_touch_raw[5], s.lastStatus, s.busErrors, s.backoffs, s.reconfigs,
-          native_touch_hid_reports, native_touch_irq_stats[1], native_touch_irq_stats[2]);
+          native_touch_irq_stats[1], native_touch_irq_stats[2]);
+    // The HID side: NativeHidInput started, its event-driver checks, the touch reports the driver took (and the last IOReturn),
+    // the reports counted here, the edge wrapper (installed, contacts begun, of them at an edge), and the event service:
+    // checkpoints that found it, open (isOpen), DeviceOpenedByEventSystem, user clients, TouchDetectionMode (- = never set),
+    // the published Built-In/PrimaryUsage, and the display mapping in use (L logical W x H, P the panel).
+    Out h(fajita_touch_rows[8], sizeof fajita_touch_rows[8]);
+    const bool ev = &native_hid_input_events && &native_hid_input_results;
+    h.add("FT5 hid up%u chk%u rep%u res%x n%u", ev ? native_hid_input_events[2] : 0, ev ? native_hid_input_events[3] : 0,
+          ev ? native_hid_input_events[6] : 0, ev ? static_cast<unsigned>(native_hid_input_results[6]) : 0u, native_touch_hid_reports);
+    if (&native_touch_edge_stats)
+        h.add(" edge%u/%u/%u", native_touch_edge_stats[0], native_touch_edge_stats[1], native_touch_edge_stats[2]);
+    if (&native_hid_touch_service) {
+        const volatile uint32_t *v = native_hid_touch_service;
+        h.add(" svc%u open%u eso%u uc%u", v[0], v[1], v[2], v[3]);
+        if (v[4] >> 31) h.add(" tdm%x", v[4] & 0x7fffffffu); else h.add(" tdm-");
+        h.add(" pub%u", v[5]);
+    }
+    h.add(" map%c%ux%u", s.view.valid ? 'L' : 'P', ftb_view_w(&s.view), ftb_view_h(&s.view));
 }
 }  // namespace
 
@@ -493,7 +570,7 @@ static void pollLoop(Session &s) {
                 IOSleep(1000);
             }
         } else failures = 0;
-        if ((++rowTick % s.opt.rate) == 0) {loopRow(s); summary(s);}
+        if ((++rowTick % s.opt.rate) == 0) {loopRow(s); summary(s); if (!(rowTick % (s.opt.rate * 10))) logRow(8);}
         native_touch_loop_step = 3;
         if (irqArmed) {
             assert_wait_timeout((event_t)&gTouchIrqEvents, THREAD_UNINT, 100, NSEC_PER_MSEC);
@@ -506,6 +583,12 @@ static void pollLoop(Session &s) {
 
 static void readOptions(Options &o) {
     o.hz = FTB_I2C_HZ; o.power = 1; o.pdt = 0; o.rmiReset = 0; o.maxX = o.maxY = 0; o.orient = 0; o.rate = 100; o.irq = 0; o.pollAll = 0;
+    o.letterbox = 0; o.view = 1;
+    // fajita-touch-letterbox=1 drops a contact that begins outside the displayed image (default 0: clamp it to the image edge, so a
+    // swipe up from the black bar below the image is a swipe from the bottom edge); fajita-touch-view=0 ignores the display's
+    // logical mode and maps onto the whole panel.
+    PE_parse_boot_argn("fajita-touch-letterbox", &o.letterbox, sizeof o.letterbox);
+    PE_parse_boot_argn("fajita-touch-view", &o.view, sizeof o.view);
     PE_parse_boot_argn("fajita-touch-hz", &o.hz, sizeof o.hz);
     if (o.hz != 100000 && o.hz != 400000 && o.hz != 1000000) o.hz = FTB_I2C_HZ;
     PE_parse_boot_argn("fajita-touch-power", &o.power, sizeof o.power);

@@ -67,6 +67,7 @@ native_gpu_idle_spins
 native_gpu_perf_vote
 native_hid_input_events
 native_hid_input_results
+native_hid_touch_service
 native_legacy_client_calls
 native_legacy_client_class
 native_legacy_client_pid

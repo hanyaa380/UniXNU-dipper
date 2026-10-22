@@ -6,7 +6,8 @@ Runs as a [kernel] archives builder, after the bootstrap pass left the compile r
 iokit/IOPlatformExpert.cpo (as build-arm-driver.py does), the two C libraries with those of osfmk/startup.o plus
 -mgeneral-regs-only (as sheng's GENI SPI and Novatek objects). The archive is linked with -force_load through
 CONFIG_XNU_EXTRA_LD_ARCHIVES; it defines the native_touch_* diagnostics and native_touch_probe, which take precedence over the weak
-stand-ins of BootProgressStubs.c and BootLogStubs.c. It needs nothing of the display, HID or keystore archive: NativeHidInput
+stand-ins of BootProgressStubs.c, and the touch snapshot NativeHidInput reads (native_touch_seq/count/xs/ys/ids,
+native_touch_set_sink; the display archive no longer carries a stand-in for it). It needs nothing of the display, HID or keystore archive: NativeHidInput
 consumes its globals and calls native_touch_set_sink when it is linked, and nothing breaks when it is not.
 
 The kernel build does not track this archive (the extra archives carry no make dependency), so a changed archive removes the
@@ -27,7 +28,9 @@ RMI = ROOT / 'drivers/NativeRmi4Touch'
 WARNINGS = ['-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter', '-Wno-c99-designator', '-Wno-reorder-init-list',
             '-Wno-deprecated-enum-enum-conversion', '-Wno-unnecessary-virtual-specifier', '-Wno-unknown-warning-option',
             '-Wno-missing-designated-field-initializers']
-INCLUDES = ['-I', str(KIT), '-I', str(I2C), '-I', str(RMI), '-I', str(ROOT / '.cache/xnu-work/osfmk')]
+# drivers/NativeMobileDisplay last: FajitaDisplayLogical.h (the display's logical mode) once fajita's copy of that driver carries it.
+INCLUDES = ['-I', str(KIT), '-I', str(I2C), '-I', str(RMI), '-I', str(ROOT / '.cache/xnu-work/osfmk'),
+            '-I', str(ROOT / 'drivers/NativeMobileDisplay')]
 
 
 def record(relative):
@@ -89,6 +92,9 @@ def main():
         (OBJ_ROOT / 'mach.development.bcm2837.unstripped.noctf').unlink(missing_ok=True)
     sources = [KIT / 'FajitaTouchProbe.cpp', KIT / 'FajitaTouchBoard.h', I2C / 'GeniI2c.c', I2C / 'GeniI2c.h', RMI / 'Rmi4.c',
                RMI / 'Rmi4.h']
+    display = ROOT / 'drivers/NativeMobileDisplay/FajitaDisplayLogical.h'
+    if display.is_file():
+        sources.append(display)
     (OUT / 'build-report.json').write_text(json.dumps({
         'archive_sha256': digest,
         'source_sha256': {str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest() for p in sources},
