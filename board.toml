@@ -162,10 +162,10 @@ trust_cache_sha256 = [
 kernel_args = [
   "debug=0x14e",
   "kt_fixed_zones=120",
-  "armcpu-diagnostics=1","armcpu-timer-intid=19","-apfs_shared_datavolume","ml-timeout-lock-panic-scale=40","sheng-staged-apps=1","sheng-disable-watchdogd=1","sheng-lite=1","sheng-data-persist=2","boot-progress=2","sheng-log=1","sheng-autoreset=300","fajita-wdog=3",
+  "armcpu-diagnostics=1","armcpu-timer-intid=19","-apfs_shared_datavolume","ml-timeout-lock-panic-scale=40","sheng-staged-apps=1","sheng-disable-watchdogd=1","sheng-lite=1","sheng-data-persist=2","boot-progress=2","sheng-log=1","sheng-autoreset=300","fajita-wdog=3","sheng-smp=1","cpus=8","armcpu-self-ipi=1","fajita-cpufreq=2","native-data-writeback=1",
   "-no_slto_panic",
   "native-ufs-root=1",
-  "native-ufs-diagnostics=1",
+  
   "native-ufs-smmu-stream=0x100",     # SDM845: iommus = <&apps_smmu 0x100 0xf>
   "native-ufs-smmu-mask=0xf",
   "native-ufs-smmu-size=0x80000",     # apps_smmu reg size
@@ -181,7 +181,7 @@ kernel_args = [
   "offline-legacy-validate=1",        # accept one full-screen BGRA IOSurface (or a blank frame) per swap
   "offline-legacy-transfer=1",        # CPU copy of each accepted surface into the framebuffer
   "offline-legacy-cpu-present=1",     # retire each swap after its copy
-  "offline-legacy-unit-scale=1",      # /chosen/display-scale 1: 1080x2340 points, wider than any iPad portrait layout (sheng: 2)
+  "offline-legacy-unit-scale=2","fajita-display-logical=2048x2732","fajita-fb-wc=1","fajita-fb-src-cached=1","sheng-fb-diff=1",      # /chosen/display-scale 1: 1080x2340 points, wider than any iPad portrait layout (sheng: 2)
   "sheng-vsync=60",                   # software vsync for the render server; the s6e3fc2x01 runs at 60 Hz (sheng: 144)
   "sheng-banner=0",                   # no diagnostic painting over the system frames
   "offline-hid-input=1",              # load IOHIDFamily and IOHIDEventDriver
