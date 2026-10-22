@@ -51,6 +51,8 @@ archives = [
   "build-mockfs-fixture.py",
   "build-libpthread-kernel.py",
   "build-fajita-storage.py",          # storage ABI audit and NativeVirtioBlock bindings (needs FAJITA_STORAGE_CANDIDATE)
+  "build-fajita-verified-root.py",    # owner keys, OS and SystemOS policies, libVerifiedRootProbe.a (needs the OS images)
+  "build-arm-driver.py NativeUfs",
   "build-sheng-platform-power.py",    # the PMGR the original AMFI needs, from UniXNU-sheng
 ]
 
@@ -151,10 +153,17 @@ kernel_args = [
   "kt_fixed_zones=120",
   "armcpu-diagnostics=1",
   "-no_slto_panic",
+  "native-ufs-root=1",
+  "native-ufs-diagnostics=1",
+  "native-ufs-smmu-stream=0x100",     # SDM845: iommus = <&apps_smmu 0x100 0xf>
+  "native-ufs-smmu-mask=0xf",
+  "native-ufs-smmu-size=0x80000",     # apps_smmu reg size
+  "sheng-pmgr=2",
 ]
 
 [payload.adt]
 tool = "scripts/make-fajita-adt.py"
+root_match_volume_uuid = "04769D26-2CA0-4825-B443-E2E5F88300F2"   # the 21H461 OS volume, read from the image
 owned_memory_size = "0xc0000000"   # a 3 GiB DarwinBoot window, as guacamole
 cpu_regs = "0,0x100,0x200,0x300,0x400,0x500,0x600,0x700"
 psci_method = "smc"

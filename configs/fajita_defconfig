@@ -1,8 +1,7 @@
 # Kernel configuration of the fajita image. CONFIG_XNU_<NAME> becomes XNU_<NAME> for the kernel build.
-# The generic sheng set without the board power, GPU, display, boot progress and owner/verified root parts, and
-# without storage: NativeRamBlock and NativeUfs link against IOBlockStorageDevice bindings that need the storage ABI
-# audit (build/storage-abi/interface-audit.json), which comes from a live observation, and NativeUfs also needs the
-# VerifiedRoot, boot progress and legacy display archives. This kernel is for entry, platform expert and console.
+# The sheng set without the board's GPU, display, boot progress and Data ramdisk parts. The UFS root uses the
+# NativeUfs copy in drivers/NativeUfs, the NativeVirtioBlock storage bindings and verified root archive built by
+# scripts/build-fajita-storage.py and build-fajita-verified-root.py, and the sheng PMGR stub the original AMFI needs.
 
 CONFIG_XNU_BUILD_ARCHIVES=y
 CONFIG_XNU_SOURCE_CORECRYPTO14=y
@@ -10,6 +9,12 @@ CONFIG_XNU_SOURCE_PTHREAD=y
 CONFIG_XNU_ARM_DT_PLATFORM=y
 CONFIG_XNU_ARMCPU=y
 CONFIG_XNU_NATIVE_AES=y
+CONFIG_XNU_NATIVE_UFS=y
+CONFIG_XNU_NATIVE_VIRTIO_BLOCK=y
+CONFIG_XNU_VERIFIED_ROOT_PROBE=y
+CONFIG_XNU_OWNER_ROOT_AUDIT=y
+CONFIG_XNU_OWNER_ROOT_TRUST=y
+CONFIG_XNU_SHENG_PMGR=y
 CONFIG_XNU_TRUST_CACHE_RUNTIME=y
 CONFIG_XNU_SOURCE_MOCKFS=y
 CONFIG_XNU_NATIVE_CS_HASH_CACHE=y
@@ -19,9 +24,9 @@ CONFIG_XNU_NATIVE_PAN=y
 
 CONFIG_XNU_CRYPTO_BOOTSTRAP="prelinked"
 CONFIG_XNU_EXTRA_LD_ARCHIVES=""
-CONFIG_XNU_NATIVE_VIRTIO_BLOCK=n
+CONFIG_XNU_NATIVE_VIRTIO_BLOCK_ARCHIVE="{tree}/build/native-virtio-block-verified-bundle/libNativeVirtioBlock.a"
+CONFIG_XNU_VERIFIED_ROOT_ARCHIVE="{tree}/build/verified-root-os-xnu-bundle/libVerifiedRootProbe.a"
 CONFIG_XNU_NATIVE_RAM_BLOCK=n
-# CONFIG_XNU_NATIVE_UFS is not set
 CONFIG_XNU_NATIVE_ADRENO=n
 CONFIG_XNU_NATIVE_MOBILE_DISPLAY=n
 CONFIG_XNU_NATIVE_LEGACY_DISPLAY=n
