@@ -571,7 +571,11 @@ public:
            !video.v_width || !video.v_height || video.v_depth!=32 || video.v_rotate ||
            video.v_width>16384 || video.v_height>16384 || video.v_rowBytes<video.v_width*4 ||
            video.v_rowBytes>UINT64_MAX/video.v_height)return false;
-        IOMemoryMap *mapping=provider->mapDeviceMemoryWithIndex(0,kIOMapInhibitCache);
+        // fajita-fb-wc=1: map the boot framebuffer write-combined (normal non-cacheable) instead of device memory, so the per-frame CPU
+        // copy's stores are gathered. With kIOMapInhibitCache that copy was ~59% of all CPU samples on fajita (native_legacy_copy_pixels,
+        // in backboardd). Each copy still ends with dsb sy before the swap completes.
+        unsigned wc=0;PE_parse_boot_argn("fajita-fb-wc",&wc,sizeof wc);
+        IOMemoryMap *mapping=provider->mapDeviceMemoryWithIndex(0,wc==1?kIOMapWriteCombineCache:kIOMapInhibitCache);
         if(!mapping)return false;
         bool valid=mapping->getVirtualAddress() && mapping->getPhysicalAddress()==video.v_baseAddr &&
                    mapping->getLength()==video.v_rowBytes*video.v_height;
