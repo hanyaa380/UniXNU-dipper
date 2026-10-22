@@ -1000,9 +1000,21 @@ void ArmCpu::quiesceCPU (void)
   __asm__ volatile ("msr icc_igrpen1_el1, %0\n\tdsb sy\n\tisb" :: "r" (value) : "memory");
 }
 
+// The boot CPU never parks: a system-sleep request (powerd after the ~2 minute idle timer) reaches IOCPUSleepKernel, which halts the
+// boot CPU last, and with no sleep/wake path here that left CPU0 with its timer, GIC and IRQs off for good: fajita's freeze ~119 s
+// after XNU started (HackiOS saw the same: hackios-xnu-kernel redwood.patch, GenericARMPE.cpp haltCPU). Returning makes the sleep
+// a no-op wake. fajita-halt-panic=1 panics instead, naming the caller.
 void ArmCpu::haltCPU (void)
 {
   armcpu_halt_calls=armcpu_halt_calls+1;
+  if (logicalId == 0) {
+    unsigned haltPanic = 0;
+    if (PE_parse_boot_argn ("fajita-halt-panic", &haltPanic, sizeof (haltPanic)) && haltPanic) {
+      panic ("FAJITA HALT: haltCPU on the boot CPU, caller=%p halts=%u timer irqs=%llu", __builtin_return_address (0),
+             armcpu_halt_calls, (unsigned long long)armcpu_timer_interrupts);
+    }
+    return;
+  }
   quiesceCPU ();
   setCPUState (kIOCPUStateStopped);
   __asm__ volatile ("msr daifset, #15" ::: "memory");
