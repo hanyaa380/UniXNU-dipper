@@ -99,6 +99,16 @@ def main():
             run('sudo', 'mkdir', '-p', target)
             run('sudo', 'chown', f'{uid}:{gid}', target)
             run('sudo', 'chmod', mode, target)
+        # files: [path, uid, gid, mode, "plist", value] — small preference files the system would otherwise write on its first boot
+        # (written here as binary plists; our own content, no Apple files).
+        for path, uid, gid, mode, kind, value in spec.get('files', []):
+            if kind != 'plist':
+                raise SystemExit(f'unsupported file kind {kind!r} for {path}')
+            staged = args.out / ('file-' + path.replace('/', '_'))
+            staged.write_bytes(plistlib.dumps(value, fmt=plistlib.FMT_BINARY))
+            target = mount / path
+            run('sudo', 'install', '-o', str(uid), '-g', str(gid), '-m', mode, staged, target)
+            staged.unlink()
         for name in MAC_EXTRAS:
             if (mount / name).exists() or (mount / name).is_symlink():
                 run('sudo', 'rm', '-rf', mount / name)
@@ -122,6 +132,7 @@ def main():
         'packed_sha256': sha256(packed),
         'packed_bytes': packed.stat().st_size,
         'directories': spec['directories'],
+        'files': [f[:4] for f in spec.get('files', [])],
         'tree': tree,
         'builder': 'macos-diskutil',
     }

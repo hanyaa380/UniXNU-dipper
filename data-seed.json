@@ -5,59 +5,380 @@
   "case_sensitive": true,
   "role": "none",
   "directories": [
-    ["Keychains", 0, 0, "0755"],
-    ["Managed Preferences", 0, 0, "0755"],
-    ["MobileAsset", 0, 0, "0755"],
-    ["MobileDevice", 0, 0, "0755"],
-    ["MobileSoftwareUpdate", 0, 0, "0755"],
-    ["PersonaVolumes", 0, 0, "0755"],
-    ["containers", 0, 0, "0755"],
-    ["containers/Data", 0, 0, "0755"],
-    ["containers/Data/System", 0, 0, "0755"],
-    ["containers/Data/Application", 0, 0, "0755"],
-    ["containers/Shared", 0, 0, "0755"],
-    ["containers/Shared/SystemGroup", 0, 0, "0755"],
-    ["db", 0, 0, "0755"],
-    ["db/dslocal", 0, 0, "0755"],
-    ["db/dslocal/nodes", 0, 0, "0755"],
-    ["db/dslocal/nodes/Default", 0, 0, "0755"],
-    ["db/dslocal/nodes/Default/users", 0, 0, "0700"],
-    ["db/dslocal/nodes/Default/groups", 0, 0, "0755"],
-    ["db/dslocal/nodes/Default/config", 0, 0, "0755"],
-    ["db/timezone", 0, 0, "0755"],
-    ["empty", 0, 0, "0555"],
-    ["folders", 0, 0, "0755"],
-    ["hardware", 0, 0, "0755"],
-    ["installd", 0, 0, "0755"],
-    ["keybags", 0, 0, "0700"],
-    ["keybags/backup", 0, 0, "0700"],
-    ["Library", 0, 0, "0755"],
-    ["local", 0, 0, "0755"],
-    ["lock", 0, 0, "0755"],
-    ["logs", 0, 0, "0755"],
-    ["log", 0, 0, "0755"],
-    ["log/com.apple.xpc.launchd", 0, 0, "0755"],
-    ["db/diagnostics", 0, 0, "0755"],
-    ["db/uuidtext", 0, 0, "0755"],
-    ["mobile", 501, 501, "0755"],
-    ["mobile/Containers", 501, 501, "0755"],
-    ["mobile/Documents", 501, 501, "0755"],
-    ["mobile/Library", 501, 501, "0755"],
-    ["mobile/Library/Caches", 501, 501, "0755"],
-    ["mobile/Library/Logs", 501, 501, "0755"],
-    ["mobile/Library/Logs/CrashReporter", 501, 501, "0755"],
-    ["mobile/Library/Preferences", 501, 501, "0755"],
-    ["mobile/Media", 501, 501, "0755"],
-    ["mobile/tmp", 501, 501, "0755"],
-    ["msgs", 0, 0, "0755"],
-    ["networkd", 0, 0, "0755"],
-    ["preboot", 0, 0, "0755"],
-    ["preferences", 0, 0, "0755"],
-    ["root", 0, 0, "0750"],
-    ["run", 0, 0, "0755"],
-    ["spool", 0, 0, "0755"],
-    ["tmp", 0, 0, "1777"],
-    ["vm", 0, 0, "0755"],
-    ["wireless", 0, 0, "0755"]
-  ]
+    [
+      "Keychains",
+      0,
+      0,
+      "0755"
+    ],
+    [
+      "Managed Preferences",
+      0,
+      0,
+      "0755"
+    ],
+    [
+      "MobileAsset",
+      0,
+      0,
+      "0755"
+    ],
+    [
+      "MobileDevice",
+      0,
+      0,
+      "0755"
+    ],
+    [
+      "MobileSoftwareUpdate",
+      0,
+      0,
+      "0755"
+    ],
+    [
+      "PersonaVolumes",
+      0,
+      0,
+      "0755"
+    ],
+    [
+      "containers",
+      0,
+      0,
+      "0755"
+    ],
+    [
+      "containers/Data",
+      0,
+      0,
+      "0755"
+    ],
+    [
+      "containers/Data/System",
+      0,
+      0,
+      "0755"
+    ],
+    [
+      "containers/Data/Application",
+      0,
+      0,
+      "0755"
+    ],
+    [
+      "containers/Shared",
+      0,
+      0,
+      "0755"
+    ],
+    [
+      "containers/Shared/SystemGroup",
+      0,
+      0,
+      "0755"
+    ],
+    [
+      "db",
+      0,
+      0,
+      "0755"
+    ],
+    [
+      "db/dslocal",
+      0,
+      0,
+      "0755"
+    ],
+    [
+      "db/dslocal/nodes",
+      0,
+      0,
+      "0755"
+    ],
+    [
+      "db/dslocal/nodes/Default",
+      0,
+      0,
+      "0755"
+    ],
+    [
+      "db/dslocal/nodes/Default/users",
+      0,
+      0,
+      "0700"
+    ],
+    [
+      "db/dslocal/nodes/Default/groups",
+      0,
+      0,
+      "0755"
+    ],
+    [
+      "db/dslocal/nodes/Default/config",
+      0,
+      0,
+      "0755"
+    ],
+    [
+      "db/timezone",
+      0,
+      0,
+      "0755"
+    ],
+    [
+      "empty",
+      0,
+      0,
+      "0555"
+    ],
+    [
+      "folders",
+      0,
+      0,
+      "0755"
+    ],
+    [
+      "hardware",
+      0,
+      0,
+      "0755"
+    ],
+    [
+      "installd",
+      0,
+      0,
+      "0755"
+    ],
+    [
+      "keybags",
+      0,
+      0,
+      "0700"
+    ],
+    [
+      "keybags/backup",
+      0,
+      0,
+      "0700"
+    ],
+    [
+      "Library",
+      0,
+      0,
+      "0755"
+    ],
+    [
+      "local",
+      0,
+      0,
+      "0755"
+    ],
+    [
+      "lock",
+      0,
+      0,
+      "0755"
+    ],
+    [
+      "logs",
+      0,
+      0,
+      "0755"
+    ],
+    [
+      "log",
+      0,
+      0,
+      "0755"
+    ],
+    [
+      "log/com.apple.xpc.launchd",
+      0,
+      0,
+      "0755"
+    ],
+    [
+      "db/diagnostics",
+      0,
+      0,
+      "0755"
+    ],
+    [
+      "db/uuidtext",
+      0,
+      0,
+      "0755"
+    ],
+    [
+      "mobile",
+      501,
+      501,
+      "0755"
+    ],
+    [
+      "mobile/Containers",
+      501,
+      501,
+      "0755"
+    ],
+    [
+      "mobile/Documents",
+      501,
+      501,
+      "0755"
+    ],
+    [
+      "mobile/Library",
+      501,
+      501,
+      "0755"
+    ],
+    [
+      "mobile/Library/Caches",
+      501,
+      501,
+      "0755"
+    ],
+    [
+      "mobile/Library/Logs",
+      501,
+      501,
+      "0755"
+    ],
+    [
+      "mobile/Library/Logs/CrashReporter",
+      501,
+      501,
+      "0755"
+    ],
+    [
+      "mobile/Library/Preferences",
+      501,
+      501,
+      "0755"
+    ],
+    [
+      "mobile/Media",
+      501,
+      501,
+      "0755"
+    ],
+    [
+      "mobile/tmp",
+      501,
+      501,
+      "0755"
+    ],
+    [
+      "msgs",
+      0,
+      0,
+      "0755"
+    ],
+    [
+      "networkd",
+      0,
+      0,
+      "0755"
+    ],
+    [
+      "preboot",
+      0,
+      0,
+      "0755"
+    ],
+    [
+      "preferences",
+      0,
+      0,
+      "0755"
+    ],
+    [
+      "root",
+      0,
+      0,
+      "0750"
+    ],
+    [
+      "run",
+      0,
+      0,
+      "0755"
+    ],
+    [
+      "spool",
+      0,
+      0,
+      "0755"
+    ],
+    [
+      "tmp",
+      0,
+      0,
+      "1777"
+    ],
+    [
+      "vm",
+      0,
+      0,
+      "0755"
+    ],
+    [
+      "wireless",
+      0,
+      0,
+      "0755"
+    ]
+  ],
+  "files": [
+    [
+      "mobile/Library/Preferences/com.apple.migration.plist",
+      501,
+      501,
+      "0600",
+      "plist",
+      {
+        "LastSystemVersion": "21H461",
+        "DMLastMigrationResults": {
+          "success": true,
+          "buildVersion": "21H461"
+        }
+      }
+    ],
+    [
+      "mobile/Library/Preferences/com.apple.purplebuddy.plist",
+      501,
+      501,
+      "0600",
+      "plist",
+      {
+        "SetupDone": true,
+        "SetupVersion": 11,
+        "SetupState": "SetupUsingAssistant",
+        "ForceNoBuddy": true
+      }
+    ],
+    [
+      "mobile/Library/Preferences/com.apple.springboard.plist",
+      501,
+      501,
+      "0600",
+      "plist",
+      {
+        "FBLaunchWatchdogScale": 20.0,
+        "BKNoWatchdogs": true
+      }
+    ],
+    [
+      "mobile/Library/Preferences/com.apple.frontboard.plist",
+      501,
+      501,
+      "0600",
+      "plist",
+      {
+        "FBLaunchWatchdogScale": 20.0
+      }
+    ]
+  ],
+  "files_comment": "Preferences iOS writes after its first boot, seeded so it skips them: the data migrators (com.apple.migration LastSystemVersion; without it backboardd reruns them every boot), Setup Assistant, and launch watchdogs scaled for a CPU-rendered display. Values follow HackiOS's userland (iOS 16.5) for build 21H461."
 }
