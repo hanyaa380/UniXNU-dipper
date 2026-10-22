@@ -89,6 +89,10 @@ OSDefineMetaClassAndStructors (ArmCpu, IOCPU)
 // The EL1 virtual timer's INTID: PPI 27 on most SoCs; Qualcomm SDM845 wires it to PPI 3 (INTID 19), so a board passes
 // armcpu-timer-intid=19.
 static uint32_t gTimerIntid = 27;
+// fajita-deadline=<seconds>: an unattended run must come back even when threads stop (memory exhaustion, a stuck kernel thread). The
+// timer interrupt keeps arriving then, so its handler issues PSCI SYSTEM_RESET once the counter passes the deadline; with empty boot
+// slots the OnePlus ABL lands in fastboot. 0 (default) = off.
+static uint64_t gDeadlineTicks = 0;
 // Redistributor ISENABLER0: SGIs 0..15 (only SGI 0 is used by the kernel; the others let the self-SGI probe tell which INTIDs the GIC accepts) and the timer PPI.
 #define kSgiPpiEnable (0xffffU | (1U << gTimerIntid))
 
@@ -377,6 +381,12 @@ bool ArmCpu::start (IOService *provider)
   if (PE_parse_boot_argn ("armcpu-timer-intid", &timerIntid, sizeof (timerIntid)) && timerIntid >= 16 && timerIntid < 32) {
     gTimerIntid = timerIntid;
   }
+  unsigned deadline = 0;
+  if (!gDeadlineTicks && PE_parse_boot_argn ("fajita-deadline", &deadline, sizeof (deadline)) && deadline >= 60) {
+    uint64_t frequency = 0;
+    __asm__ volatile ("mrs %0, cntfrq_el0" : "=r" (frequency));
+    gDeadlineTicks = (frequency ? frequency : 19200000) * deadline;
+  }
   uint32_t physical;
   OSData *reg = OSDynamicCast (OSData, provider->getProperty ("reg"));
   memcpy (&physical, reg->getBytesNoCopy (), sizeof (physical));
@@ -575,6 +585,14 @@ void ArmCpu::interrupt (void)
     if ((id & 0xffffff) == gTimerIntid) {
       armcpu_timer_interrupts = armcpu_timer_interrupts + 1;
       armcpu_core_timer[logicalId & 7] = armcpu_core_timer[logicalId & 7] + 1;
+      if (gDeadlineTicks) {
+        uint64_t now;
+        __asm__ volatile ("isb; mrs %0, cntvct_el0" : "=r" (now));
+        if (now >= gDeadlineTicks) {
+          register uint64_t x0 __asm__ ("x0") = 0x84000009ULL;   // PSCI SYSTEM_RESET
+          __asm__ volatile ("smc #0" : "+r" (x0) :: "memory", "x1", "x2", "x3");
+        }
+      }
       armcpu_irq_phase=2;
       rtclock_intr (0);
       armcpu_irq_phase=3;
