@@ -2,6 +2,8 @@
 # The sheng set without the board's GPU, display, boot progress and Data ramdisk parts. The UFS root uses the
 # NativeUfs copy in drivers/NativeUfs, the NativeVirtioBlock storage bindings and verified root archive built by
 # scripts/build-fajita-storage.py and build-fajita-verified-root.py, and the sheng PMGR stub the original AMFI needs.
+# NATIVE_LEGACY_DISPLAY links the CPU-rendered display, HID input and keystore archive of
+# scripts/build-native-legacy-display.py; NATIVE_MOBILE_DISPLAY (the prototype) and NATIVE_ADRENO (A740 only) stay off.
 
 CONFIG_XNU_BUILD_ARCHIVES=y
 CONFIG_XNU_SOURCE_CORECRYPTO14=y
@@ -29,7 +31,7 @@ CONFIG_XNU_VERIFIED_ROOT_ARCHIVE="{tree}/build/verified-root-os-xnu-bundle/libVe
 CONFIG_XNU_NATIVE_RAM_BLOCK=y
 CONFIG_XNU_NATIVE_ADRENO=n
 CONFIG_XNU_NATIVE_MOBILE_DISPLAY=n
-CONFIG_XNU_NATIVE_LEGACY_DISPLAY=n
+CONFIG_XNU_NATIVE_LEGACY_DISPLAY=y
 CONFIG_XNU_ARMVIRT_PLATFORM=n
 CONFIG_XNU_OWNER_CACHE_MOUNT=y
 CONFIG_XNU_OWNER_CACHE_STARTUP=y

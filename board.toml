@@ -57,6 +57,7 @@ archives = [
   "build-arm-driver.py NativeUfs",
   "build-sheng-platform-power.py",
   "build-boot-progress.py",          # kits/fajita (from UniXNU-sheng d92e799): boot progress, fault probe, watchdog/lite job policy, diag export    # the PMGR the original AMFI needs, from UniXNU-sheng
+  "build-native-legacy-display.py",  # CPU-rendered display (NativeLegacyDisplay over the UEFI framebuffer), HID input, keystore stub
 ]
 
 # The pin and early initializer are the sheng values: the same 21H461 kernelcache. The roots are the sheng list,
