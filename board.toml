@@ -1,0 +1,131 @@
+# Board description of the OnePlus 6T (fajita, SDM845), read by the unixnu build driver.
+#
+# Bring-up stage 1 works: firmware and UniXNU menu. [board], [ipsw], [userdata], [kernel] and [firmware] are active. The
+# prelink and payload sections below are filled in as the later stages are reached.
+
+[board]
+name = "fajita"
+soc = "SDM845"
+description = "OnePlus 6T"
+kit = "fajita"                     # the package/ of this repository appears as kits/fajita in the build tree
+
+# The target OS image: the unchanged iPad7,1 iPadOS 17.7.11 restore image, the sheng target. SDM845 is ARMv8.2 without
+# pointer authentication, so it runs arm64 userlands only; iPadOS 17 on A10X is the newest one the XNU source matches.
+# iOS 16.7.16 for the iPhone X is the planned phone userland; see NOTES-ios16.md. Give --ipsw PATH to use a local file;
+# without it the remote url is read with range requests, only the members that are needed.
+[ipsw]
+url = "https://updates.cdn-apple.com/2025SpringFCS/fullrestores/122-77166/DCA6CFE8-90E9-4B92-880D-3DE171798E40/iPad_Pro_HFR_17.7.11_21H461_Restore.ipsw"
+product = "iPad7,1"
+version = "17.7.11"
+build = "21H461"
+device_class = "j120ap"
+chip_id = 0x8011
+board_id = 12
+fetch = ["KernelCache", "DeviceTree", "StaticTrustCache", "Cryptex1,SystemTrustCache"]   # the small components
+
+[ipsw.sha256]
+"044-76040-038.dmg" = "3f99b859c9728379110b66657c7b15285bcb1925ad8b5726542e2cdcf8b1028d"
+"044-76034-038.dmg" = "b4908cde41d23e6bc05e6af51a2c9eeb00cf0f863a6a18b1600c96a3fd70414f"
+
+# The raw image for the userdata partition: the OS and SystemOS disk images of the IPSW behind a manifest.
+# first_lba and last_lba are the GPT entry "userdata" (sda17) of LUN 0, read from the phone (256 GB model).
+[userdata]
+first_lba = 0x186f40
+last_lba = 0x3ad1ffa
+lba_bytes = 4096
+windows = [
+  { name = "OS", component = "OS" },
+  { name = "SystemOS", component = "Cryptex1,SystemOS" },
+]
+
+[kernel]
+defconfig = "fajita_defconfig"
+# Archive builders of the kernel step, in order: the generic part of the sheng list.
+archives = [
+  "build-corecrypto-14.py",
+  "build-corecrypto-14.py --namespace",
+  "build-arm-driver.py ArmDTPlatform",
+  "build-arm-driver.py ArmCpu",
+  "build-arm-driver.py NativeAES",
+  "build-native-aes-bindings.py",
+  "build-arm-driver.py NativeUfs",
+  "build-arm-driver.py NativeRamBlock",
+  "build-native-virtio-bindings.py --component NativeRamBlock --directory build/native-ram-block",
+  "build-mockfs-fixture.py",
+  "build-libpthread-kernel.py",
+]
+
+# TODO(stage 3): the pin and early initializer are the sheng values for the same kernelcache; the roots are chosen
+# during bring-up.
+# [kernel.prelink]
+# tool = "kits/NativePrelink/emit_prelink.py"
+# kernel = "build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837.unstripped.noctf"
+# kernelcache_sha256 = "f18b4df865405f2a287b84977d7aca745e056d656d9fc9df1662970ce2969de7"
+# slide = "-0x1000000"
+# early_security_init = "com.apple.driver.AppleMobileFileIntegrity=0xfffffff005ab4ae0"
+# roots = [
+#   "com.apple.driver.AppleARMPlatform",
+#   "com.apple.filesystems.apfs",
+# ]
+
+# The Mu-Silicium checkout (--uefi) gets Platforms/OnePlus/fajitaPkg from scripts/make-fajita-uefi.py, which
+# derives it from enchiladaPkg (OnePlus 6, same SoC and memory map).
+[firmware]
+config = "fajita"                  # Resources/Configs/fajita.toml in the Mu-Silicium checkout (--uefi)
+dsc = "Platforms/OnePlus/fajitaPkg/fajita.dsc"
+fd = "Build/fajitaPkg/{target}_CLANGPDB/FV/SILICIUM_UEFI.fd"
+submodules = ["Binaries", "Common/Mu", "Common/Mu_OEM_Sample", "Silicium-ACPI", "Silicon/Silicium/OpensslPkg/Library/OpensslLib/openssl"]
+packages = [
+  "{uefi}",
+  "{uefi}/Platforms/OnePlus",
+  "{tree}/package",
+  "{tree}/drivers/DarwinBoot",
+  "{edk2}",
+  "{uefi}/Common/Mu",
+  "{uefi}/Common/Mu_OEM_Sample",
+  "{uefi}/Silicon/Qualcomm",
+  "{uefi}/Silicon/Silicium",
+  "{uefi}/Silicium-ACPI",
+  "{uefi}/Silicium-ACPI/Platforms/OnePlus",
+  "{uefi}/Silicium-ACPI/Silicon/Qualcomm",
+]
+
+[firmware.defines]
+DEVICE_MODEL = "fajita"
+BUILDID_STRING = "fajita-bringup"
+# Defaults of Mu-Silicium build_uefi.py and DeviceBuild.py, which unixnu does not run.
+ENABLE_SECUREBOOT = 0
+MEMORY_PROTECTION = "TRUE"
+SHIP_MODE = "FALSE"
+
+# TODO(stage 3): the ramdisk of the boot image. Known values: 8 cores with MPIDR 0x000 to 0x700, PSCI over SMC,
+# DRAM at 0x80000000 (6, 8 or 10 GiB by variant).
+# [payload]
+# volume = "FAJITAESP"
+# size_mib = 192
+# loader = "firmware"
+# title = "fajita bring-up"
+# dram_size = ""
+# panic_screen = true
+# trust_cache_sha256 = [             # the static and System trust caches of 21H461
+#   "7416ca4f8377146626bb284e2133c76bee6cb4e3ee0af5d648b186235a7323a7",
+#   "8900d6a93d7a59ce1a872a5c081e559f4240a218f97e12d44d22dda46644d68f",
+# ]
+# kernel_args = ["-v", "serial=3"]
+#
+# [payload.adt]
+# tool = "scripts/make-fajita-adt.py"
+# cpu_regs = "0,0x100,0x200,0x300,0x400,0x500,0x600,0x700"
+# psci_method = "smc"
+
+# The header of the stock boot image of OxygenOS 11.1.2.2 (scripts/fetch-fajita-boot.py --info).
+[bootimg.image]
+header_version = 1
+pagesize = 4096
+base = 0x0
+kernel_offset = 0x8000
+ramdisk_offset = 0x1000000
+tags_offset = 0x100
+
+# The continuous splash framebuffer the stock ABL leaves running, which SimpleFbDxe draws into, is already reserved
+# in Resources/DTBs/fajita.dts as /reserved-memory/cont_splash_region@9d400000, so no [[bootimg.dtb_node]] is added.
