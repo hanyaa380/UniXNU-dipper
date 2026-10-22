@@ -13,8 +13,15 @@ Build with the `unixnu` driver of [UniXNU](https://github.com/UniXNU/UniXNU).
 | Stage | State |
 | --- | --- |
 | UEFI firmware and UniXNU menu | works on hardware with `fastboot boot` and an empty ramdisk (2026-10-21); built on Linux |
-| Payload, ADT, kernel | not started |
+| Payload, ADT, kernel | XNU 23.6.0 (iPadOS 17.7.11 kernelcache, built by the macOS workflow) boots to the root mount on hardware (2026-10-21): VM, scheduler, IOKit, AMFI, Sandbox and APFS come up and the verbose console ends on `Waiting on ... IOMedia ... Apple_HFS`. No storage driver yet. The console needs DarwinBoot to pass `v_display` 0 with `-v` (pending in DarwinBoot) |
 | Userdata | iPadOS 17.7.11 root image (8.74 GiB) built on Linux, block table CRCs checked, flashed (2026-10-21); not read by a kernel yet |
+
+## Bring-up on the phone
+
+- Keep `boot_a` and `boot_b` free of boot images. With an image on the active slot's boot partition the ABL refuses `fastboot boot` ("Load Error"). Every reset also spends a retry of the active slot, and at 0 the ABL refuses as well, so run `fastboot set_active b` before each `fastboot boot`. With empty boot partitions every reset lands in fastboot.
+- The ABL also refuses large ramdisks, so the payload volume is flashed to `boot_a` (64 MiB, the payload size) and the boot image carries no ramdisk: `fastboot flash boot_a out/fajita/payload/payload.img`, then `unixnu bootimg ... --ramdisk none`. UFSDxe, PartitionDxe and Fat expose the volume and UniXNU finds `\EFI\UniXNU\unixnu.toml` on it.
+- Nothing charges the battery while UEFI or XNU runs.
+- `scripts/patch-xnu-entry-probe.py --reset-after SYMBOL --in FUNCTION` puts a timed PSCI reset after a call in the kernel; a reset back to fastboot means the kernel got past it. This bisected the first boot.
 
 ## Firmware
 
