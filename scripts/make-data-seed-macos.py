@@ -36,7 +36,9 @@ def run(*command, capture=False, check=True):
 
 
 def plist(*command):
-    return plistlib.loads(run(*command, '-plist', capture=True))
+    # diskutil wants -plist right after its verb (diskutil info -plist DEV); hdiutil takes it anywhere.
+    at = 3 if command[:2] == ('diskutil', 'apfs') else 2
+    return plistlib.loads(run(*command[:at], '-plist', *command[at:], capture=True))
 
 
 def sha256(path):
