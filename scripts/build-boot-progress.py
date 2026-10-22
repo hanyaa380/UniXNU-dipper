@@ -82,9 +82,16 @@ stub_obj = OUT / 'BootProgressStubs.o'
 stub_command = [str(stub_source) if arg == str(policy_source) else str(stub_obj) if arg == str(policy_obj) else arg for arg in policy_command]
 subprocess.run(stub_command, cwd=policy_record['directory'], check=True, timeout=90)
 
+# Weak stand-ins for the BootLog.c diagnostics read via weak_import from kits fajita does not link yet (ld64 refuses an
+# undefined weak_import in the static kernel link). A real definition, once a kit is linked, takes precedence.
+log_stub_source = ROOT / 'kits/fajita/BootLogStubs.c'
+log_stub_obj = OUT / 'BootLogStubs.o'
+log_stub_command = [str(log_stub_source) if arg == str(policy_source) else str(log_stub_obj) if arg == str(policy_obj) else arg for arg in policy_command]
+subprocess.run(log_stub_command, cwd=policy_record['directory'], check=True, timeout=90)
+
 archive = OUT / 'libBootProgress.a'
 archive.unlink(missing_ok=True)
-subprocess.run(['xcrun', 'ar', 'rcs', str(archive), str(obj), str(fault_obj), str(policy_obj), str(diag_obj), str(stub_obj), *extra_objs], check=True, timeout=30)
+subprocess.run(['xcrun', 'ar', 'rcs', str(archive), str(obj), str(fault_obj), str(policy_obj), str(diag_obj), str(stub_obj), str(log_stub_obj), *extra_objs], check=True, timeout=30)
 (OUT / 'build-report.json').write_text(json.dumps({
     'watchdog_policy_sha256': hashlib.sha256(policy_source.read_bytes()).hexdigest(),
     'diag_sha256': hashlib.sha256(diag_source.read_bytes()).hexdigest(),
