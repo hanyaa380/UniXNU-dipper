@@ -104,6 +104,46 @@ extern "C" { volatile uint64_t armcpu_deadline_start = 0, armcpu_deadline_ticks 
 // ABL lands in fastboot. 0 (default) = untouched.
 extern "C" { volatile uint32_t armcpu_wdog[6] = { 0, 0, 0, 0, 0, 0 }; volatile uint64_t armcpu_wdog_pets = 0;
              volatile uint32_t armcpu_imem[4] = { 0, 0, 0, 0 }; }   // IMEM 0x146bf000: word 0, dload_type 0x1c, restart_reason 0x65c, after write
+// Qualcomm SCM over SMC (SMCCC SIP, the calls Linux qcom_scm makes from EL1 on this firmware). Mode 3 switches off the two things
+// that turn a watchdog bite into "Qualcomm CrashDump Mode" before it arms the watchdog: the SDI debug image (0xC2000109) and the
+// download-mode bit 0x10 of TCSR_BOOT_MISC_DETECT (0x01FD3000), which the stock firmware sets every boot and the OS must clear
+// (0xC2000110, fallback secure write 0xC2000502); TCSR is read back with 0xC2000501. Sources: fajita-soc-reset-freeze-research.md.
+// armcpu_scm[]: avail(SDI) avail(dload) avail(io write) sdi-rc tcsr-before dload-rc write-rc tcsr-after
+extern "C" { volatile int64_t armcpu_scm[8] = { -99, -99, -99, -99, -99, -99, -99, -99 }; }
+struct ScmResult { uint64_t a0, a1; };
+static ScmResult scm (uint64_t fn, uint64_t info, uint64_t a2, uint64_t a3)
+{
+  register uint64_t x0 __asm__ ("x0") = fn;
+  register uint64_t x1 __asm__ ("x1") = info;
+  register uint64_t x2 __asm__ ("x2") = a2;
+  register uint64_t x3 __asm__ ("x3") = a3;
+  register uint64_t x4 __asm__ ("x4") = 0;
+  register uint64_t x5 __asm__ ("x5") = 0;
+  __asm__ volatile ("smc #0" : "+r" (x0), "+r" (x1), "+r" (x2), "+r" (x3), "+r" (x4), "+r" (x5)
+                    :: "memory", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17");
+  return { x0, x1 };
+}
+static int64_t scmAvailable (uint32_t fn)
+{
+  ScmResult r = scm (0xC2000601, 0x1, fn, 0);   // QCOM_SCM_INFO_IS_CALL_AVAIL: a1 = 1 when available
+  return r.a0 ? -static_cast<int64_t> (r.a0 & 0xff) - 100 : static_cast<int64_t> (r.a1);
+}
+static void scmDisableCrashdump (void)
+{
+  armcpu_scm[0] = scmAvailable (0xC2000109);
+  armcpu_scm[1] = scmAvailable (0xC2000110);
+  armcpu_scm[2] = scmAvailable (0xC2000502);
+  armcpu_scm[3] = static_cast<int64_t> (scm (0xC2000109, 0x2, 1, 0).a0);                    // SDI off after a watchdog reset
+  ScmResult before = scm (0xC2000501, 0x1, 0x01FD3000, 0);
+  armcpu_scm[4] = before.a0 ? -1 : static_cast<int64_t> (before.a1);
+  armcpu_scm[5] = static_cast<int64_t> (scm (0xC2000110, 0x2, 0, 0).a0);                    // download mode off
+  ScmResult again = scm (0xC2000501, 0x1, 0x01FD3000, 0);
+  if (!again.a0 && (again.a1 & 0x10)) {
+    armcpu_scm[6] = static_cast<int64_t> (scm (0xC2000502, 0x2, 0x01FD3000, again.a1 & ~0x10ULL).a0);   // secure write fallback
+  }
+  ScmResult after = scm (0xC2000501, 0x1, 0x01FD3000, 0);
+  armcpu_scm[7] = after.a0 ? -1 : static_cast<int64_t> (after.a1);
+}
 static OSSharedPtr<IOMemoryMap> gWdogMap;
 static uintptr_t gWdog = 0;
 static unsigned gWdogMode = 0;
@@ -404,6 +444,7 @@ bool ArmCpu::start (IOService *provider)
       for (unsigned i = 1; i < 6; i++) armcpu_wdog[i] = read32 (gWdog, 4 * i);   // RST, EN, STS, BARK, BITE
     }
     if (gWdog && gWdogMode >= 3) {
+      scmDisableCrashdump ();
       OSSharedPtr<IOMemoryDescriptor> imem (IOMemoryDescriptor::withPhysicalAddress (0x146bf000, 0x1000, kIODirectionInOut), OSNoRetain);
       OSSharedPtr<IOMemoryMap> imemMap = imem ? OSSharedPtr<IOMemoryMap> (imem->map (kIOMapAnywhere | kIOMapInhibitCache), OSNoRetain) : nullptr;
       if (imemMap) {
