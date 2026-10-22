@@ -122,6 +122,9 @@ extern volatile uint32_t native_adreno_io_coherent __attribute__((weak_import));
 extern char native_cpufreq_row[120] __attribute__((weak_import));
 // FajitaCpuFreq.cpp (fajita-cpufreq=<n>): summary, per-core MHz before the vote and latest, LUTs of d0, d1, L3.
 extern char fajita_cpufreq_rows[6][256] __attribute__((weak_import));
+// XNU (patches/xnu/fajita-pcpu.patch): the [sched] rows, refreshed by sched_pcpu_tick() from boot_log_tick.
+extern char sched_pcpu_rows[2][240];
+extern void sched_pcpu_tick(void);
 extern uint32_t native_gpu_perf_vote[2] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_pool_status __attribute__((weak_import));
 extern volatile uint32_t native_adreno_pool_wc __attribute__((weak_import));
@@ -601,6 +604,8 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
   }
   if (&fajita_cpufreq_rows)
     for (unsigned i = 0; i < 6; ++i) if (fajita_cpufreq_rows[i][0]) at = put(out, at, cap, fajita_cpufreq_rows[i], sizeof fajita_cpufreq_rows[i]);
+  // CPU placement (patches/xnu/fajita-pcpu.patch, pcpu=/rcpu=): masks, choose_processor counters, each CPU as XNU sees it, busy shares.
+  for (unsigned i = 0; i < 2; ++i) if (sched_pcpu_rows[i][0]) at = put(out, at, cap, sched_pcpu_rows[i], sizeof sched_pcpu_rows[i]);
   if (&native_adreno_export_stats && (native_adreno_export_stats[0] || native_adreno_export_stats[1])) {
     char row[120];
     snprintf(row, sizeof row, "[export] pieces=%u refused=%u generation=%u bytes=%u | complete generation=%u bytes=%u", native_adreno_export_stats[0],
@@ -876,6 +881,7 @@ extern void armcpu_wdog_pet(void) __attribute__((weak_import));
 void boot_log_tick(unsigned now) {
   (void)now;
   if (&armcpu_wdog_pet) armcpu_wdog_pet();   // fajita: once a second from the monitor thread (see ArmCpu fajita-wdog)
+  sched_pcpu_tick();   // rcpu= as CPUs come online, and the [sched] rows every 5 s
   if (boot_log_started) return;
   boot_log_started = 1;
   uint32_t mode = 0;

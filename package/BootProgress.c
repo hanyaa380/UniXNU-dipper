@@ -143,6 +143,7 @@ extern volatile unsigned boot_ui_trace_index __attribute__((weak_import));
 extern void boot_process_capture(void) __attribute__((weak_import));
 extern void boot_process_snapshot(void) __attribute__((weak_import));
 extern void boot_log_tick(unsigned) __attribute__((weak_import));
+extern uint64_t sched_pcpu_mask, sched_rcpu_mask;   // XNU, patches/xnu/fajita-pcpu.patch (pcpu=, rcpu=)
 extern void sheng_cpufreq_poll(void) __attribute__((weak_import));
 // fajita: the touch bring-up (FajitaTouchProbe.cpp, fajita-touch=<stage>) starts itself from here once IOKit is up; the display
 // kit's late probe may call it first. It returns at once when the argument is absent or the thread already runs.
@@ -1186,6 +1187,9 @@ static void touch_monitor(void *arg, wait_result_t result) {
 }
 static void monitor(void *arg, wait_result_t result) {
   (void)arg;(void)result;
+  // pcpu=/rcpu= (patches/xnu/fajita-pcpu.patch) steer threads away from CPU0, but the watchdog pet of boot_log_tick only counts
+  // on the boot CPU (ArmCpu armcpu_wdog_pet): keep this thread there. A bound thread runs even on a CPU that is not recommended.
+  if(sched_pcpu_mask||sched_rcpu_mask){thread_bind(master_processor);thread_block(THREAD_CONTINUE_NULL);}
   unsigned capture_at=0,capture_attempt=~0U,named=0;
   for (;;) {
     __atomic_fetch_add(&thread_count,1,__ATOMIC_RELAXED);
