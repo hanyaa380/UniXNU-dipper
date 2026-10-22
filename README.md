@@ -61,6 +61,19 @@ Run these commands from the UniXNU checkout. The device repository is `../UniXNU
 ./unixnu bootimg --uefi ../Mu-Silicium --dtb ../Mu-Silicium/Resources/DTBs/fajita.dtb
 ```
 
+## Data volume seed
+
+The writable Data volume (`/private/var`) comes from a RAM disk seed made to `data-seed.json`: one APFS container at offset 0 holding one case-sensitive, unencrypted volume named Data with no role, plus the listed directories with their owners and modes. On Linux, `scripts/make-data-seed-linux.py` builds it without root, FUSE or a kernel module. mkapfs from [apfsprogs](https://github.com/linux-apfs/apfsprogs) formats the image. The script then writes the directories into the volume's catalog itself and checks the result with apfsck and its own read-back. Last, it packs the image with UniXNU's `packed_ramdisk.py`. `--fetch-apfsprogs` clones a pinned apfsprogs commit to `.cache/apfsprogs` and builds it there; `--apfsprogs DIR` uses a build tree you already have.
+
+```sh
+python3 -I scripts/make-data-seed-linux.py \
+  --packer ../UniXNU/drivers/DarwinBoot/Test/packed_ramdisk.py --fetch-apfsprogs \
+  --volume-uuid 0E1D5C2A-7B3F-4C88-9A61-2F4D8E0B6C17 --container-uuid 5A9C3E71-D204-4B6F-8E15-C7A0B9F24D38 \
+  --timestamp 1792540800
+```
+
+The script writes `.cache/data-seed/data-linux.dbr` and `data-linux.json`; `--keep-raw` keeps `data-linux.raw`. Without the UUID options it picks random UUIDs. Either way it prints the volume UUID, which goes to `CONFIG_XNU_OWNER_DATA_VOLUME_UUID`. With fixed UUIDs, a fixed `--timestamp` (or `SOURCE_DATE_EPOCH`) and the same apfsprogs commit, the image is bit-identical on every run. `--apfs-dump DIR` (a build directory with apfs-fuse's `apfsutil` and `apfs-dump-quick`) adds a read-back by a second APFS implementation. `scripts/make-data-seed-macos.py` is the macOS equivalent.
+
 ## Boot
 
 ```sh

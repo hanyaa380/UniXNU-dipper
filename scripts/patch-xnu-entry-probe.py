@@ -199,6 +199,14 @@ def assemble_c(source, va, workdir, symbols):
         if not any(base <= text and text + 256 <= base + size for base, size, _, _ in SEGMENTS):
             raise SystemExit('Invalid _boot_progress_panic_text')
         definitions.append(f'-DPANIC_TEXT={text:#x}UL')
+    # fajita: the boot log's panic flush (package/BootLog.c), when linked, and the reset delay of --panic-reset.
+    flush = symbols.get('_boot_log_panic_flush')
+    if flush is not None and PANIC_RESET_SECONDS:
+        if not any(base <= flush < base + size for base, size, _, _ in SEGMENTS):
+            raise SystemExit('Invalid _boot_log_panic_flush')
+        definitions.append(f'-DPANIC_FLUSH={flush:#x}UL')
+    definitions.append(f'-DPANIC_RESET_S={PANIC_RESET_SECONDS}')
+    print('panic screen:', 'flush' if flush is not None and PANIC_RESET_SECONDS else 'no flush', f'reset {PANIC_RESET_SECONDS}s' if PANIC_RESET_SECONDS else 'no reset')
     subprocess.run([clang, '--target=aarch64-none-elf', '-ffreestanding', '-fno-builtin', '-fno-stack-protector',
                     '-mgeneral-regs-only', '-fno-pic', '-mcmodel=tiny', '-Oz', f'-DVINFO={VINFO_VA:#x}UL',
                     *definitions, f'-I{font_dir}', '-c', source, '-o', obj], check=True)
@@ -350,6 +358,9 @@ def assemble(source, va, symbols, workdir):
     return binary.read_bytes()
 
 
+PANIC_RESET_SECONDS = 0
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('kernel', type=Path, help='the COPY of the kernel to patch in place')
@@ -358,9 +369,14 @@ def main():
     parser.add_argument('--reset-before', action='store_true', help='reset at the call site before invoking SYMBOL (requires --reset-after)')
     parser.add_argument('--panic-screen', action='store_true', help='draw panic() messages on the screen')
     parser.add_argument('--no-reset', action='store_true', help='no reset probe at all')
+    parser.add_argument('--panic-reset', type=int, default=int(os.environ.get('FAJITA_PANIC_RESET', '0')),
+                        help='fajita: after drawing a panic, flush the boot log and reset after this many seconds (0 = stay; '
+                             'default from FAJITA_PANIC_RESET)')
     parser.add_argument('--occurrence', type=int, default=1, help='which call to SYMBOL (1 = first)')
     parser.add_argument('--in', dest='function', default='_arm_init', help='function that makes the call (default _arm_init)')
     args = parser.parse_args()
+    global PANIC_RESET_SECONDS
+    PANIC_RESET_SECONDS = max(0, args.panic_reset)
     if args.reset_before and not args.reset_after:
         raise SystemExit('--reset-before requires --reset-after')
     data = bytearray(args.kernel.read_bytes())

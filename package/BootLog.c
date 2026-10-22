@@ -21,6 +21,7 @@ extern int native_ufs_log_write(uint64_t, uint32_t, const void *) __attribute__(
 extern uint64_t native_ufs_export_blocks(void) __attribute__((weak_import));
 extern int native_ufs_export_write(uint64_t, uint32_t, const void *) __attribute__((weak_import));
 extern int native_ufs_log_sync(void) __attribute__((weak_import));
+extern void native_ufs_panic_mode(void) __attribute__((weak_import));
 extern unsigned native_ufs_store_gpt_check(void) __attribute__((weak_import));
 extern uint32_t cs_text_fixup_parsed __attribute__((weak_import));
 extern uint32_t cs_text_fixup_applied __attribute__((weak_import));
@@ -150,6 +151,8 @@ struct boot_log_header {
 volatile uint32_t boot_log_state, boot_log_rounds, boot_log_errors;
 volatile uint64_t boot_log_first_lba;
 static int boot_log_started;
+static struct boot_log_header *volatile boot_log_live;   // fajita: the writer's header, for boot_log_panic_flush
+static uint32_t boot_log_slot_count;
 static uint8_t *boot_log_buffer;   // LogMsgBlocks blocks: the message buffer, then reused for a slot and the header
 
 // The export: boot_log_export_put takes the blob's pieces in order (any thread) and writes them through a staging buffer straight into
@@ -732,6 +735,8 @@ static void writer(void *arg, wait_result_t result) {
   if (&boot_progress_tag) strlcpy(h.tag, boot_progress_tag(), sizeof h.tag);
   uint64_t f = 0; __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(f)); if (!f) f = 19200000;
   const uint64_t start = log_ticks();
+  boot_log_slot_count = slot_count;
+  boot_log_live = &h;   // the writer never returns while the window is open, so its header outlives any panic flush
   // The reboot-into-fastboot path, read only: PSCI features and the PMIC cell. sheng-autoreset=<seconds of log time> then writes the cell and
   // restarts once, after that round's log is on the medium, but only when the probe found the cell writable.
   uint32_t autoreset = 0;
@@ -779,8 +784,8 @@ static void writer(void *arg, wait_result_t result) {
     ok &= native_ufs_log_write(0, 1, boot_log_buffer);
     ok &= native_ufs_log_sync();
     if (!ok) {boot_log_errors = ++errors;} else errors = 0;
-    if (errors >= LogMaxErrors) {boot_log_state = 3; return;}
-    if (h.gpt_last != h.gpt_open) {boot_log_state = 4; return;}
+    if (errors >= LogMaxErrors) {boot_log_live = 0; boot_log_state = 3; return;}
+    if (h.gpt_last != h.gpt_open) {boot_log_live = 0; boot_log_state = 4; return;}
     if (autoreset && now >= autoreset && !reset_tried && ok) {
       reset_tried = 1;
       if (!reset_ok) strlcpy(boot_log_reset_result, "autoreset skipped: the probe found no writable cell", sizeof boot_log_reset_result);
@@ -793,6 +798,28 @@ static void writer(void *arg, wait_result_t result) {
     }
     IOSleep(LogPeriodMs);
   }
+}
+
+// fajita: the panic screen (scripts/xnu-panic-screen.c) calls this once, with interrupts masked, after it drew the message (which it also
+// copied to boot_progress_panic_text): one last slot with the panic text, the message buffer and the header (state 5), then a cache sync,
+// all through NativeUfs's lock-free panic mode. Nothing that takes a lock runs here; a command in flight makes it give up.
+void boot_log_panic_flush(void) {
+  struct boot_log_header *h = boot_log_live;
+  if (!h || !boot_log_buffer || !boot_log_slot_count || !&native_ufs_panic_mode) return;
+  native_ufs_panic_mode();
+  int ok = 1;
+  memset(boot_log_buffer, 0, LogSlotBlocks * LogBlock);
+  int n = snprintf((char *)boot_log_buffer, LogSlotBlocks * LogBlock, "[panic] round %u\n", h->rounds);
+  if (&boot_progress_panic_text && n > 0) strlcat((char *)boot_log_buffer, boot_progress_panic_text, LogSlotBlocks * LogBlock);
+  ok &= native_ufs_log_write(LogSlotFirst + (uint64_t)(h->slots_written % boot_log_slot_count) * LogSlotBlocks, LogSlotBlocks, boot_log_buffer);
+  h->msg_bytes = copy_msgbuf(boot_log_buffer);
+  ok &= native_ufs_log_write(LogMsgFirst, LogMsgBlocks, boot_log_buffer);
+  if (ok) ++h->slots_written;
+  h->state = 5;
+  memset(boot_log_buffer, 0, LogBlock);
+  memcpy(boot_log_buffer, h, sizeof *h);
+  ok &= native_ufs_log_write(0, 1, boot_log_buffer);
+  native_ufs_log_sync();
 }
 
 // Called by the board page's monitor once a second; starts the writer the first time when sheng-log=1.

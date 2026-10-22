@@ -1217,6 +1217,9 @@ extern "C" int native_ufs_export_write (uint64_t rel, uint32_t blocks, const voi
   return 1;
 }
 
+// Called once by the panic path before its last log round: later commands run lock-free (see hostEnter).
+extern "C" void native_ufs_panic_mode (void) { gPanicMode = true; }
+
 extern "C" int native_ufs_log_sync (void)
 {
   return gLogRegionBlocks && hostSyncCache () == kIOReturnSuccess;
@@ -1643,6 +1646,8 @@ static void discardPendingWindow (unsigned index)
   device->release ();
 }
 
+extern "C" volatile uint64_t armcpu_timer_interrupts;  // ArmCpu
+
 static void publishThread (void *, wait_result_t)
 {
   struct Operations {
@@ -1666,6 +1671,10 @@ static void publishThread (void *, wait_result_t)
       // Diagnostic mode affects reporting only, never the dependency gate.
       for (unsigned tick = 0; tick <= 300; ++tick) {
         ready = mediaWithUuidExists (uuid, device);
+        // Timer evidence: a stall between these lines means IOSleep never wakes (no architectural timer interrupt).
+        if (!(tick % 10))
+          ROOT_LOG ("media wait %s tick %u ready %d now %llx timer irqs %llu\n", device->windowLabel (), tick, int (ready),
+                    (unsigned long long) mach_absolute_time (), (unsigned long long) armcpu_timer_interrupts);
         if (ready || tick == 300) break;
         IOSleep (100);
       }

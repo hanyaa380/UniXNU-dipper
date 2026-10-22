@@ -272,6 +272,25 @@ __attribute__((noreturn, used, section(".text.b_main"))) void panic_screen_main 
   mark[0] = 0xC0FFEE11u;
   mark[1] = 0x5CEEDA7Au;
   __asm__ volatile ("dsb sy");
+#ifdef PANIC_FLUSH
+  /* fajita: write the panic text and the message buffer to the UFS log (BootLog.c boot_log_panic_flush, lock-free). */
+  ((void (*)(void))PANIC_FLUSH) ();
+#endif
+#if defined(PANIC_RESET_S) && PANIC_RESET_S
+  /* fajita: unattended runs must come back. Leave the message on screen for PANIC_RESET_S seconds (the counter runs with
+   * interrupts masked), then PSCI SYSTEM_RESET; with empty boot slots the ABL lands in fastboot. */
+  {
+    u64 freq, start, now;
+    __asm__ volatile ("mrs %0, cntfrq_el0" : "=r" (freq));
+    __asm__ volatile ("isb; mrs %0, cntvct_el0" : "=r" (start));
+    if (!freq) freq = 19200000;
+    do {
+      __asm__ volatile ("isb; mrs %0, cntvct_el0" : "=r" (now));
+    } while (now - start < (u64)PANIC_RESET_S * freq);
+    register u64 x0 __asm__ ("x0") = 0x84000009UL;
+    __asm__ volatile ("smc #0" : "+r" (x0) :: "memory", "x1", "x2", "x3");
+  }
+#endif
   park ();
 }
 

@@ -2,8 +2,10 @@
 // fajita board glue for BootLog.c's "restart into fastboot" (boot argument sheng-autoreset=<seconds>). sheng writes a PMIC
 // reboot-reason cell first; fajita needs none: boot_a and boot_b hold no boot image, so the OnePlus ABL lands in fastboot after any
 // reset. The reset is PSCI SYSTEM_RESET over SMC (the conduit of fajita's device tree). Nothing here runs without BootLog's arguments.
-#include <stdint.h>
-#include <stdio.h>
+#include <kern/thread.h>
+#include <machine/machine_routines.h>
+#include <string.h>
+#include <pexpert/pexpert.h>
 
 enum { PsciVersion = 0x84000000u, PsciFeatures = 0x8400000au, PsciSystemReset = 0x84000009u };
 

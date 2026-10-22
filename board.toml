@@ -155,7 +155,7 @@ kernel_args = [
   "-v",
   "debug=0x14e",
   "kt_fixed_zones=120",
-  "armcpu-diagnostics=1","armcpu-timer-intid=19","-apfs_shared_datavolume","ml-timeout-lock-panic-scale=40","sheng-staged-apps=1","sheng-disable-watchdogd=1","sheng-lite=1",
+  "armcpu-diagnostics=1","armcpu-timer-intid=19","-apfs_shared_datavolume","ml-timeout-lock-panic-scale=40","sheng-staged-apps=1","sheng-disable-watchdogd=1","sheng-lite=1","sheng-data-persist=2","boot-progress=1","sheng-log=1","sheng-autoreset=300",
   "-no_slto_panic",
   "native-ufs-root=1",
   "native-ufs-diagnostics=1",
@@ -188,6 +188,8 @@ root_match_volume_uuid = "04769D26-2CA0-4825-B443-E2E5F88300F2"   # the 21H461 O
 owned_memory_size = "0xc0000000"   # a 3 GiB DarwinBoot window, as guacamole
 # The Data seed (data-seed.json, built by the Data seed workflow) arrives packed (DBRDISK1); NativeRamBlock serves it.
 packed_data_ramdisk = true
+# sheng-data-persist=2: Data writes go through to a store window at the end of userdata (NativeUfs), not to RAM.
+persistent_data = true
 # The iPad identity (model iPad7,1, target-type J120): libMobileGestalt prefix-matches hw.product against iPhone/iPod/iPad.
 ipad_identity = true
 # chip_id and the platform seed (/chosen/unique-chip-id) seed IOPlatformUUID; the seed is per device and kept out of Git

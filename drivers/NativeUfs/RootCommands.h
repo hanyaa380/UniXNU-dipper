@@ -27,6 +27,25 @@ struct HardwareTransferPort {
   }
 };
 
+// Panic mode (native_ufs_panic_mode): the panic path writes its last log round with interrupts masked, where an IOLock must not be
+// taken. Each locked command marks the host busy; in panic mode a command runs without the lock only if no command was in flight.
+static volatile bool gPanicMode = false, gHostBusy = false;
+static bool hostEnter (void)
+{
+  if (gPanicMode) {
+    if (gHostBusy) return false;
+  } else {
+    IOLockLock (gHost.lock);
+  }
+  gHostBusy = true;
+  return true;
+}
+static void hostLeave (void)
+{
+  gHostBusy = false;
+  if (!gPanicMode) IOLockUnlock (gHost.lock);
+}
+
 static void putBe32 (uint8_t *at, uint32_t value)
 {
   at[0] = static_cast<uint8_t> (value >> 24);
@@ -263,7 +282,7 @@ static IOReturn hostRead4k (uint8_t lun, uint64_t lba, uint32_t blocks, void *ds
   if (!gHost.ready || !dst || !blocks || blocks > kDataMax / 4096 || lba > 0xffffffffULL - (blocks - 1)) {
     return kIOReturnBadArgument;
   }
-  IOLockLock (gHost.lock);
+  if (!hostEnter ()) return kIOReturnBusy;
   gRootDiagnostic.lba = lba;
   uint8_t cdb[10] = { 0x28, 0, uint8_t (lba >> 24), uint8_t (lba >> 16), uint8_t (lba >> 8), uint8_t (lba),
                       0, uint8_t (blocks >> 8), uint8_t (blocks), 0 };
@@ -272,7 +291,7 @@ static IOReturn hostRead4k (uint8_t lun, uint64_t lba, uint32_t blocks, void *ds
   if (status == kIOReturnSuccess) {
     memcpy (dst, gHost.virt + kDataOffset, blocks * 4096U);
   }
-  IOLockUnlock (gHost.lock);
+  hostLeave ();
   return status;
 }
 
@@ -315,14 +334,14 @@ static IOReturn hostWrite4k (uint8_t lun, uint64_t lba, uint32_t blocks, const v
   if (!gHost.ready || !src || !blocks || blocks > kDataMax / 4096 || lun != 0 || !hostInWindow (lba, blocks)) {
     return kIOReturnBadArgument;
   }
-  IOLockLock (gHost.lock);
+  if (!hostEnter ()) return kIOReturnBusy;
   gRootDiagnostic.lba = lba;
   memcpy (gHost.virt + kDataOffset, src, blocks * 4096U);
   uint8_t cdb[10] = { 0x2a, uint8_t (fua ? 0x08 : 0), uint8_t (lba >> 24), uint8_t (lba >> 16), uint8_t (lba >> 8), uint8_t (lba),
                       0, uint8_t (blocks >> 8), uint8_t (blocks), 0 };
   uint32_t scsi = 0;
   IOReturn status = hostScsiDir (0, cdb, 10, 1, blocks * 4096U, 2000000, &scsi);
-  IOLockUnlock (gHost.lock);
+  hostLeave ();
   return status;
 }
 
@@ -330,11 +349,11 @@ static IOReturn hostWrite4k (uint8_t lun, uint64_t lba, uint32_t blocks, const v
 static IOReturn hostSyncCache (void)
 {
   if (!gHost.ready || (!gStoreOpen && !gLogOpen)) return kIOReturnNotReady;
-  IOLockLock (gHost.lock);
+  if (!hostEnter ()) return kIOReturnBusy;
   uint8_t cdb[10] = { 0x35 };
   uint32_t scsi = 0;
   IOReturn status = hostScsiDir (0, cdb, 10, 0, 0, 10000000, &scsi);
-  IOLockUnlock (gHost.lock);
+  hostLeave ();
   return status;
 }
 
