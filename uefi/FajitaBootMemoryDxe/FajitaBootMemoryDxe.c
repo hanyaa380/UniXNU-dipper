@@ -386,7 +386,10 @@ STATIC EFI_BLOCK_IO_PROTOCOL  mBlockIo = {
 };
 
 /**
-  Keep the initrd range mapped and out of the allocator before it is read.
+  Map a range the previous stage handed over (its DT, the initrd) when it lies
+  outside the GCD map: it is added as reserved memory and mapped write-back.
+  With Keep, a range that is already system memory is allocated at its
+  address, so nothing is placed over it.
 
   A range outside the GCD map (between the regions of the memory map) is added
   as reserved memory and mapped write-back; a range that is already system
@@ -394,9 +397,11 @@ STATIC EFI_BLOCK_IO_PROTOCOL  mBlockIo = {
 **/
 STATIC
 VOID
-KeepInitrd (
-  IN UINT64  Start,
-  IN UINT64  End
+MapRange (
+  IN CONST CHAR8  *What,
+  IN UINT64       Start,
+  IN UINT64       End,
+  IN BOOLEAN      Keep
   )
 {
   EFI_STATUS                       Status;
@@ -421,12 +426,14 @@ KeepInitrd (
         Status = gDS->SetMemorySpaceAttributes (Base, PieceEnd - Base, EFI_MEMORY_WB);
       }
 
-      DEBUG ((DEBUG_ERROR, "FAJITAMEM: initrd 0x%lx-0x%lx mapped as reserved %r\n", Base, PieceEnd - 1, Status));
-    } else if (Descriptor.GcdMemoryType == EfiGcdMemoryTypeSystemMemory) {
-      Status = gBS->AllocatePages (AllocateAddress, EfiBootServicesData, EFI_SIZE_TO_PAGES (PieceEnd - Base), &Base);
-      DEBUG ((DEBUG_ERROR, "FAJITAMEM: initrd 0x%lx-0x%lx kept from the allocator %r\n", Base, PieceEnd - 1, Status));
+      DEBUG ((DEBUG_ERROR, "FAJITAMEM: %a 0x%lx-0x%lx mapped as reserved %r\n", What, Base, PieceEnd - 1, Status));
+    } else if (Keep && (Descriptor.GcdMemoryType == EfiGcdMemoryTypeSystemMemory)) {
+      EFI_PHYSICAL_ADDRESS  Address = Base;
+
+      Status = gBS->AllocatePages (AllocateAddress, EfiBootServicesData, EFI_SIZE_TO_PAGES (PieceEnd - Base), &Address);
+      DEBUG ((DEBUG_ERROR, "FAJITAMEM: %a 0x%lx-0x%lx kept from the allocator %r\n", What, Base, PieceEnd - 1, Status));
     } else {
-      DEBUG ((DEBUG_ERROR, "FAJITAMEM: initrd 0x%lx-0x%lx is GCD type %u, left as it is\n", Base, PieceEnd - 1, (UINT32)Descriptor.GcdMemoryType));
+      DEBUG ((DEBUG_ERROR, "FAJITAMEM: %a 0x%lx-0x%lx is GCD type %u, attributes 0x%lx\n", What, Base, PieceEnd - 1, (UINT32)Descriptor.GcdMemoryType, Descriptor.Attributes));
     }
 
     Base = PieceEnd;
@@ -471,7 +478,8 @@ PublishInitrd (
     return;
   }
 
-  KeepInitrd (Start, End);
+  DEBUG ((DEBUG_ERROR, "FAJITAMEM: initrd 0x%lx-0x%lx in /chosen\n", Start, End));
+  MapRange ("initrd", Start, End, TRUE);
 
   mRamBase                = (UINT8 *)(UINTN)Start;
   mMedia.MediaId          = 1;
@@ -513,13 +521,23 @@ FajitaBootMemoryDxeEntry (
   }
 
   Dtb = *(UINT64 *)GET_GUID_HOB_DATA (Hob);
-  if ((Dtb == 0) || ((Dtb & 3) != 0) || (FdtCheckHeader ((VOID *)(UINTN)Dtb) != 0)) {
+  DEBUG ((DEBUG_ERROR, "FAJITAMEM: x0 0x%lx\n", Dtb));
+  if ((Dtb == 0) || ((Dtb & 3) != 0)) {
+    DEBUG ((DEBUG_ERROR, "FAJITAMEM: x0 0x%lx is not a device tree\n", Dtb));
+    return EFI_SUCCESS;
+  }
+
+  // The ABL places its DT where it likes; the header page must be mapped before it is read, then the whole tree.
+  MapRange ("dt header", Dtb, Dtb + sizeof (FDT_HEADER), FALSE);
+  if (FdtCheckHeader ((VOID *)(UINTN)Dtb) != 0) {
     DEBUG ((DEBUG_ERROR, "FAJITAMEM: x0 0x%lx is not a device tree\n", Dtb));
     return EFI_SUCCESS;
   }
 
   DEBUG ((DEBUG_ERROR, "FAJITAMEM: device tree at 0x%lx, %u bytes\n", Dtb, (UINT32)FdtTotalSize ((VOID *)(UINTN)Dtb)));
+  MapRange ("dt", Dtb, Dtb + FdtTotalSize ((VOID *)(UINTN)Dtb), FALSE);
 
   PublishInitrd ((VOID *)(UINTN)Dtb);
+  DEBUG ((DEBUG_ERROR, "FAJITAMEM: done\n"));
   return EFI_SUCCESS;
 }

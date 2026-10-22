@@ -135,7 +135,9 @@ size_mib = 64
 loader = "firmware"
 title = "fajita first boot: XNU to console"
 dram_size = "0x200000000"
-# panic_screen stays off: scripts/patch-xnu-entry-probe.py of sheng pins the addresses of the sheng kernel build.
+# Patch a copy of the kernel with the sheng boot probes (scripts/patch-xnu-entry-probe.py --panic-screen --no-reset):
+# a blue band at kernel entry, a magenta band before the MMU is enabled, and panic() drawn on the screen.
+panic_screen = true
 # The static and System trust caches of 21H461, for the userland stages.
 trust_cache_sha256 = [
   "7416ca4f8377146626bb284e2133c76bee6cb4e3ee0af5d648b186235a7323a7",
