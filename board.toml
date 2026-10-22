@@ -152,8 +152,11 @@ trust_cache_sha256 = [
   "7416ca4f8377146626bb284e2133c76bee6cb4e3ee0af5d648b186235a7323a7",
   "8900d6a93d7a59ce1a872a5c081e559f4240a218f97e12d44d22dda46644d68f",
 ]
+# No "-v": DarwinBoot then hands XNU v_display 1 (BootVideo.h), the console is in graphics mode, and NativeLegacyDisplay takes the
+# firmware framebuffer as the main display (startHardware: primary = v_display == 1). With "-v" the local DarwinBoot change clears
+# v_display, so the display never accepts a swap. boot-progress (below) shows the kernel console lines instead, until the display
+# takes the screen at its first presented frame (boot_progress_prepare_scanout).
 kernel_args = [
-  "-v",
   "debug=0x14e",
   "kt_fixed_zones=120",
   "armcpu-diagnostics=1","armcpu-timer-intid=19","-apfs_shared_datavolume","ml-timeout-lock-panic-scale=40","sheng-staged-apps=1","sheng-disable-watchdogd=1","sheng-lite=1","sheng-data-persist=2","boot-progress=1","sheng-log=1","sheng-autoreset=300",
@@ -165,6 +168,24 @@ kernel_args = [
   "native-ufs-smmu-size=0x80000",     # apps_smmu reg size
   "native-ufs-smmu-adopt=1",          # the firmware leaves 0x800f0100 on its own bank 2 with translation off; keep it
   "sheng-pmgr=2",
+  # CPU-rendered UI, the sheng set (UniXNU-sheng board.toml kernel_args) without its GPU, touch, cpufreq and SMP arguments.
+  "offline-mobile-graphics-load=1",   # load IOMobileGraphicsFamily, register NativeLegacyDisplay (offline-component-load-probes.patch)
+  "offline-mobile-graphics-client=1",
+  "offline-legacy-register=1",
+  "offline-legacy-phase=4",           # attach the GOP nub as /arm-io/gop-display (display-subsystem) and start the display there
+  "offline-legacy-gop=1",             # map the UEFI framebuffer (1080x2340, 32 bpp, stride 4320)
+  "offline-legacy-pm=1",
+  "offline-legacy-validate=1",        # accept one full-screen BGRA IOSurface (or a blank frame) per swap
+  "offline-legacy-transfer=1",        # CPU copy of each accepted surface into the framebuffer
+  "offline-legacy-cpu-present=1",     # retire each swap after its copy
+  "offline-legacy-unit-scale=1",      # /chosen/display-scale 1: 1080x2340 points, wider than any iPad portrait layout (sheng: 2)
+  "sheng-vsync=60",                   # software vsync for the render server; the s6e3fc2x01 runs at 60 Hz (sheng: 144)
+  "sheng-banner=0",                   # no diagnostic painting over the system frames
+  "offline-hid-input=1",              # load IOHIDFamily and IOHIDEventDriver
+  "offline-hid-home=1",               # publish NativeHidInput (keyboard/Home collection; no touch until a fajita touch driver)
+  "offline-key-events=1",             # the owned AppleKeyStore (NativeKeyStoreEvents): no SEP on this board
+  "sheng-aks=1",                      # it answers the keybag state queries: no passcode, unlocked
+  "sheng-gpu-addon=1",                # mount the PNG wallpaper of the payload's addon (scripts/make-fajita-wallpaper-addon.py), if any
 ]
 
 # Fixups of signed text, applied by the kernel after signature validation (patches/xnu/native-text-fixup.patch); they reach it as

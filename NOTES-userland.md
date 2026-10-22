@@ -19,7 +19,7 @@ package/). Status: done, todo (needed), later (UI stage), n/a (sheng hardware).
 | sheng builder | What it carries | fajita |
 | --- | --- | --- |
 | build-boot-progress.py | kits/sheng BootProgress.c (boot-progress=), BootFaultProbe.c, **BootWatchdogPolicy.c** (sheng-disable-watchdogd: watchdogd off with no watchdog backend; sheng-lite: ~30 network/iCloud/photo jobs off; sheng-disable-jobs=), BootDiagExport.c | todo: port, Linux toolchain |
-| build-native-legacy-display.py | NativeLegacyDisplay (CPU frames to the framebuffer), NativeHidInput, **NativeKeyStoreEvents** (sheng-aks: AppleKeyStore state events), LegacyDisplayProbe, HidInputProbe, KeyStoreProbe, BootProcessProbe, BootUiTraceProbe, BootLog, BootReset, TouchProbe + Novatek/GENI SPI touch, CpuFreqProbe, GpuPowerProbe, NativeGOPPresenter | todo: port without the sheng touch/GPU/cpufreq parts (macOS-only builder today) |
+| build-native-legacy-display.py | NativeLegacyDisplay (CPU frames to the framebuffer), NativeHidInput, **NativeKeyStoreEvents** (sheng-aks: AppleKeyStore state events), LegacyDisplayProbe, HidInputProbe, KeyStoreProbe, BootProcessProbe, BootUiTraceProbe, BootLog, BootReset, TouchProbe + Novatek/GENI SPI touch, CpuFreqProbe, GpuPowerProbe, NativeGOPPresenter | done (display-port): scripts/build-native-legacy-display.py, Linux-capable; without BootLog/BootReset (build-boot-progress.py has fajita's), TouchProbe + Novatek/GENI SPI, CpuFreqProbe, GpuPowerProbe; kits/fajita TouchState.c stands in for the touch snapshot |
 | build-arm-driver.py NativeVirtioBlock + bindings | the VirtIO storage path | covered by build-fajita-storage.py |
 | NativeAdreno, adreno kits, accelerator | sheng's Adreno 740 | n/a (fajita renders on the CPU) |
 
@@ -31,12 +31,14 @@ package/). Status: done, todo (needed), later (UI stage), n/a (sheng hardware).
 | ml-timeout-lock-panic-scale=40 | stretch lock-timeout panics (slow console, single core) | todo |
 | sheng-staged-apps=1 | copy staged system apps into Data (patch zzy-staged-system-apps) | todo |
 | sheng-disable-watchdogd=1, sheng-lite=1 | see BootWatchdogPolicy | todo (with the archive) |
-| sheng-aks=1 | NativeKeyStoreEvents | todo (with the archive) |
+| sheng-aks=1 | NativeKeyStoreEvents | done (display-port) |
 | boot-progress=2, boot-ui-focus*= | progress/trace diagnostics | todo (with the archive) |
-| offline-legacy-*=1, offline-legacy-phase=4, offline-mobile-graphics-*=1, offline-hid-*=1, offline-key-events=1 | display, HID and key paths | later (UI) |
+| offline-legacy-*=1, offline-legacy-phase=4, offline-mobile-graphics-*=1, offline-hid-*=1, offline-key-events=1 | display, HID and key paths | done (display-port); offline-legacy-unit-scale=1, not sheng's 2; no -v (v_display must stay 1) |
 | offline-apfs-load=1 | load APFS at the offline checkpoint | check: APFS already loads |
 | sheng-smp=1, armcpu-spi-ipi=1 | secondary cores, SPI IPIs | later (single core first) |
-| sheng-cpufreq, sheng-gpu-*, sheng-fb-gpu, sheng-vsync, sheng-banner | sheng clocks/GPU/display | n/a |
+| sheng-cpufreq, sheng-gpu-*, sheng-fb-gpu | sheng clocks/GPU | n/a |
+| sheng-vsync, sheng-banner | software vsync, diagnostic overlay | done (display-port): sheng-vsync=60, sheng-banner=0 |
+| sheng-gpu-addon=1 | addon files into Data, PNG wallpaper mount | done (display-port): wallpaper only, scripts/make-fajita-wallpaper-addon.py |
 | sheng-touch=4, sheng-touch-hid=1 | Novatek touch | n/a (fajita: Synaptics S3706, see research) |
 | sheng-data-persist=2 | Data writes through to the end of userdata | later |
 | serial=3 | UART console | n/a |
