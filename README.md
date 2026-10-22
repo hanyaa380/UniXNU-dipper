@@ -14,6 +14,7 @@ Build with the `unixnu` driver of [UniXNU](https://github.com/UniXNU/UniXNU).
 | --- | --- |
 | UEFI firmware and UniXNU menu | works on hardware with `fastboot boot` and an empty ramdisk (2026-10-21); built on Linux |
 | Payload, ADT, kernel | XNU 23.6.0 (iPadOS 17.7.11 kernelcache, built by the macOS workflow) boots to the root mount on hardware (2026-10-21): VM, scheduler, IOKit, AMFI, Sandbox and APFS come up and the verbose console ends on `Waiting on ... IOMedia ... Apple_HFS`. No storage driver yet. The console needs DarwinBoot to pass `v_display` 0 with `-v` (pending in DarwinBoot) |
+| Kernel built on Linux | the fajita-linux branch of UniXNU builds the same kernel on Fedora (patched clang 21, Apple ld64 and cctools, Apple iig outputs from the macOS workflow): identical exported symbols (22563) and segment order; it boots on the phone to the same `Waiting on ... IOMedia` as the macOS build (2026-10-22) |
 | Userdata | iPadOS 17.7.11 root image (8.74 GiB) built on Linux, block table CRCs checked, flashed (2026-10-21); not read by a kernel yet |
 
 ## Bring-up on the phone
