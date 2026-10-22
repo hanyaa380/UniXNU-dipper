@@ -289,6 +289,8 @@ static uint64_t cpu0PcSample (void)
   return (static_cast<uint64_t> (hi) << 32) | lo;
 }
 
+extern "C" size_t boot_progress_cpu_tail (int cpu, char *out, size_t cap) __attribute__ ((weak_import));
+static char gBarkTail[400];
 static void barkCapture (void)
 {
   // The bark is level-triggered and stays asserted until the next pet: mask it at the distributor first (ICENABLER), so the panic
@@ -316,10 +318,12 @@ static void barkCapture (void)
     prsr0 = read32 (gCpu0Debug, 0x314);
     for (unsigned i = 0; i < 4; i++) pc0[i] = cpu0PcSample ();
   }
-  panic ("FAJITA BARK cpu%d: cpu0 edpcsr=%llx %llx %llx %llx edprsr=%x | elr=%llx spsr=%llx far=%llx esr=%llx sp=%llx | vct=%llx "
+  gBarkTail[0] = 0;
+  if (&boot_progress_cpu_tail) boot_progress_cpu_tail (0, gBarkTail, sizeof (gBarkTail));
+  panic ("FAJITA BARK cpu%d: cpu0 last irqs [%s] mach=%llx | cpu0 edpcsr=%llx %llx %llx %llx edprsr=%x | elr=%llx spsr=%llx far=%llx esr=%llx sp=%llx | vct=%llx "
          "cval=%llx (cval-vct=%lld) ctl=%llx daif=%llx | cpu0 ppi19 en=%u pend=%u act=%u (raw %x/%x/%x) | timer irqs=%llu ipis=%llu "
          "pets=%llu core0 timer=%llu",
-         cpu_number (), pc0[0], pc0[1], pc0[2], pc0[3], prsr0, elr, spsr, far, esr, sp0, vct, cval, (long long)(cval - vct), ctl, daif,
+         cpu_number (), gBarkTail, (unsigned long long)mach_absolute_time (), pc0[0], pc0[1], pc0[2], pc0[3], prsr0, elr, spsr, far, esr, sp0, vct, cval, (long long)(cval - vct), ctl, daif,
          (timerEnable >> gTimerIntid) & 1, (timerPend >> gTimerIntid) & 1, (timerActive >> gTimerIntid) & 1, timerEnable, timerPend,
          timerActive, (unsigned long long)armcpu_timer_interrupts, (unsigned long long)armcpu_ipi_interrupts,
          (unsigned long long)armcpu_wdog_pets, (unsigned long long)armcpu_core_timer[0]);

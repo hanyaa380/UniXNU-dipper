@@ -708,11 +708,40 @@ static void bp_kernel_chain(uint64_t pc) {
     const uint64_t next=frame[0];if(next<=fp)break;fp=next;
   }
 }
+// Per CPU, the last interrupted context of every timer/IRQ entry (any pid, kernel_task included): pc, psr, mach_absolute_time, pid and
+// the first two return addresses of a kernel stack. fajita's watchdog bark handler prints them from a live CPU when another froze.
+struct bp_cpu_last { uint64_t pc, psr, when, lr[2]; int pid; };
+static struct bp_cpu_last bp_cpu_last[8][4];
+static uint32_t bp_cpu_last_head[8];
+extern int cpu_number(void);
+static void bp_cpu_record(uint64_t pc,uint64_t psr) {
+  const int cpu=cpu_number()&7;
+  struct bp_cpu_last *e=&bp_cpu_last[cpu][bp_cpu_last_head[cpu]++&3];
+  e->pc=pc;e->psr=psr;e->when=mach_absolute_time();e->lr[0]=e->lr[1]=0;
+  e->pid=started && nprocs>0 ? proc_selfpid() : -1;
+  const arm_saved_state_t *s=getCpuDatap()->cpu_int_state;thread_t thread=current_thread();
+  if((psr&0x1f)==0 || !s || !thread || !thread->kernel_stack)return;
+  const uint64_t low=(uint64_t)thread->kernel_stack,high=low+(uint64_t)kernel_stack_size;
+  uint64_t fp=(uint64_t)get_saved_state_fp(s);
+  for(unsigned i=0;i<2 && fp>=low && fp+16<=high && !(fp&15);++i){const uint64_t *f=(const uint64_t *)fp;e->lr[i]=f[1];if(f[0]<=fp)break;fp=f[0];}
+}
+size_t boot_progress_cpu_tail(int cpu,char *out,size_t cap) {
+  size_t at=0;if(!cap)return 0;out[0]=0;cpu&=7;
+  const uint32_t head=bp_cpu_last_head[cpu];
+  for(unsigned k=0;k<4 && k<head;k++){
+    const struct bp_cpu_last *e=&bp_cpu_last[cpu][(head-1-k)&3];
+    int w=snprintf(out+at,cap-at,"%s%c%llx<%llx<%llx p%d t%llx",k?" ":"",(e->psr&0x1f)?'k':'u',(unsigned long long)e->pc,
+                   (unsigned long long)e->lr[0],(unsigned long long)e->lr[1],e->pid,(unsigned long long)e->when);
+    if(w<0)break;at+=(size_t)w;if(at>=cap){at=cap-1;break;}
+  }
+  return at;
+}
 void boot_progress_irq(uint64_t pc,uint64_t psr,uint64_t sp) {
   // Independent of the recorder lock. IRQ still performs no pixel stores.
   if(enabled) {
     __atomic_fetch_add(&irq_entries,1,__ATOMIC_RELAXED);
     __atomic_store_n(&irq_entry_pc,pc,__ATOMIC_RELAXED);
+    bp_cpu_record(pc,psr);
     if(started && nprocs>0) {
       const int pid=proc_selfpid();
       if(pid>0) {
