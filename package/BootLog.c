@@ -41,6 +41,22 @@ extern volatile uint64_t native_data_persist_writes __attribute__((weak_import))
 extern volatile uint64_t native_data_persist_syncs __attribute__((weak_import));
 extern volatile uint64_t native_data_persist_errors __attribute__((weak_import));
 extern volatile uint64_t native_data_persist_first_lba __attribute__((weak_import));
+// NativeDwc3 USB device-mode probe (drivers/NativeDwc3): default-off register probe for the SSH-over-USB channel.
+extern volatile uint32_t native_dwc3_stage __attribute__((weak_import));
+extern volatile int32_t native_dwc3_status __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_mode __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gsnpsid __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gctl __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_dsts __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_dcfg __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_dalepena __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_prtcap __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_phy_ready __attribute__((weak_import));
+extern volatile uint32_t native_dwc3_gcc_gdscr __attribute__((weak_import));
+extern volatile int32_t native_dwc3_smmu_slot __attribute__((weak_import));
+extern volatile int32_t native_dwc3_smmu_bank __attribute__((weak_import));
+extern const char *volatile native_dwc3_failure __attribute__((weak_import));
+extern const char *volatile native_dwc3_smmu_error __attribute__((weak_import));
 extern volatile int native_gpu_addon_files __attribute__((weak_import));
 extern volatile int native_gpu_addon_written __attribute__((weak_import));
 extern volatile int native_gpu_addon_same __attribute__((weak_import));
@@ -301,6 +317,25 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
              native_gpu_addon_status, native_gpu_addon2_stage, native_gpu_addon2_status, &native_gpu_addon3_stage ? native_gpu_addon3_stage : 0,
              &native_gpu_addon3_status ? native_gpu_addon3_status : 0);
     at = put(out, at, cap, row, sizeof row);
+  }
+  // NativeDwc3 USB device-mode probe (drivers/NativeDwc3, native-dwc3-probe=1): stage (5 = done), status (0 ok), the probe
+  // mode seen, GSNPSID, GCTL, DCFG, DSTS, DALEPENA, the GCTL current mode (2 = device), the QUSB2 PHY-ready bit, the GCC
+  // USB30 GDSCR, and the read-only apps_smmu plan for stream 0x740 (slot/bank, -1 = none).
+  if (&native_dwc3_stage && native_dwc3_mode) {
+    char row[120];
+    snprintf(row, sizeof row, "U st=%u rc=%d mode=%u id=%08x gctl=%08x dcfg=%08x dsts=%08x alep=%x cap=%u phy=%u gdsc=%08x smmu=%d/%d",
+             native_dwc3_stage, native_dwc3_status, native_dwc3_mode, native_dwc3_gsnpsid, native_dwc3_gctl, native_dwc3_dcfg,
+             native_dwc3_dsts, native_dwc3_dalepena, native_dwc3_prtcap, native_dwc3_phy_ready, native_dwc3_gcc_gdscr,
+             native_dwc3_smmu_slot, native_dwc3_smmu_bank);
+    at = put(out, at, cap, row, sizeof row);
+    if (native_dwc3_failure) {
+      snprintf(row, sizeof row, "U fail: %.100s", native_dwc3_failure);
+      at = put(out, at, cap, row, sizeof row);
+    }
+    if (native_dwc3_smmu_error) {
+      snprintf(row, sizeof row, "U smmu: %.100s", native_dwc3_smmu_error);
+      at = put(out, at, cap, row, sizeof row);
+    }
   }
   // The one-time copy of the OS volume's staged system apps into Data (kern_exec.c native_staged_apps_prepare): stage (2 copied, 3 copied
   // before, -1 no source), directories, files, MiB, failures and the last error.

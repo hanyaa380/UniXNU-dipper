@@ -90,7 +90,7 @@ OSDefineMetaClassAndStructors (ArmCpu, IOCPU)
 // armcpu-timer-intid=19.
 static uint32_t gTimerIntid = 27;
 // fajita-deadline=<seconds>: an unattended run must come back even when threads stop (memory exhaustion, a stuck kernel thread). The
-// timer interrupt keeps arriving then, so its handler issues PSCI SYSTEM_RESET once the counter passes the deadline; with empty boot
+// timer interrupt keeps arriving then, so its handler issues PSCI SYSTEM_RESET <seconds> after ArmCpu starts; with empty boot
 // slots the OnePlus ABL lands in fastboot. 0 (default) = off.
 static uint64_t gDeadlineTicks = 0;
 // Redistributor ISENABLER0: SGIs 0..15 (only SGI 0 is used by the kernel; the others let the self-SGI probe tell which INTIDs the GIC accepts) and the timer PPI.
@@ -385,7 +385,11 @@ bool ArmCpu::start (IOService *provider)
   if (!gDeadlineTicks && PE_parse_boot_argn ("fajita-deadline", &deadline, sizeof (deadline)) && deadline >= 60) {
     uint64_t frequency = 0;
     __asm__ volatile ("mrs %0, cntfrq_el0" : "=r" (frequency));
-    gDeadlineTicks = (frequency ? frequency : 19200000) * deadline;
+    // The counter keeps running across warm resets (it was already past 600 s at a fresh boot on fajita), so the deadline is
+    // relative to now, not to zero.
+    uint64_t now;
+    __asm__ volatile ("isb; mrs %0, cntvct_el0" : "=r" (now));
+    gDeadlineTicks = now + (frequency ? frequency : 19200000) * deadline;
   }
   uint32_t physical;
   OSData *reg = OSDynamicCast (OSData, provider->getProperty ("reg"));
