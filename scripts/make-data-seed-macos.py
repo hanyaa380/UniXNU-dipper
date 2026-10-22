@@ -4,7 +4,7 @@
   make-data-seed-macos.py --packer PATH/packed_ramdisk.py [--spec data-seed.json] [--out DIR]
 
 A raw image of size_mib MiB is attached without mounting; diskutil makes an APFS container on it and adds one
-case-sensitive, unencrypted volume with the Data role. The volume is mounted with ownership enabled, the directories
+case-sensitive, unencrypted volume with the spec's role (none: iOS refuses an unencrypted Data-role volume). The volume is mounted with ownership enabled, the directories
 of the spec are created with their owners and modes, and anything macOS adds on mount (.fseventsd, Spotlight) is
 removed before the image is detached. The raw image is packed with packed_ramdisk.pack (only nonzero pages kept).
 Writes data-macos.dbr and data-macos.json (volume UUID for CONFIG_XNU_OWNER_DATA_VOLUME_UUID) to --out.
@@ -79,7 +79,8 @@ def main():
         container_disk = next(c['ContainerReference'] for c in listing['Containers']
                               if any(s['DeviceIdentifier'] == name or s['DeviceIdentifier'].startswith(name + 's') for s in c['PhysicalStores']))
         fs = 'Case-sensitive APFS' if spec['case_sensitive'] else 'APFS'
-        run('diskutil', 'apfs', 'addVolume', container_disk, fs, spec['volume_name'], '-role', 'D')
+        role = [] if spec.get('role', 'none') == 'none' else ['-role', spec['role']]
+        run('diskutil', 'apfs', 'addVolume', container_disk, fs, spec['volume_name'], *role)
         listing = plist('diskutil', 'apfs', 'list')
         volumes = [v for c in listing['Containers'] if c['ContainerReference'] == container_disk
                    for v in c['Volumes']]

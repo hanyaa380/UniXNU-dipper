@@ -1,8 +1,9 @@
 {
-  "comment": "The writable Data volume (/private/var) seed for fajita. One APFS container on a raw disk image, one case-sensitive unencrypted volume named Data (role Data where the tool supports it), these empty directories and nothing else: no keys, no user records, no Apple files. Built by scripts/make-data-seed-macos.sh (CI) or scripts/make-data-seed-linux.py, packed to DBRDISK1 with drivers/DarwinBoot/Test/packed_ramdisk.py; the volume UUID goes to CONFIG_XNU_OWNER_DATA_VOLUME_UUID.",
+  "comment": "The writable Data volume (/private/var) seed for fajita. One APFS container on a raw disk image, one case-sensitive unencrypted volume named Data with no role (iOS APFS panics on an unencrypted volume with the Data role: \"unencrypted data volume is not allowed\", apfs_vfsops.c:2276, fajita 2026-10-22), these empty directories and nothing else: no keys, no user records, no Apple files. Built by scripts/make-data-seed-macos.sh (CI) or scripts/make-data-seed-linux.py, packed to DBRDISK1 with drivers/DarwinBoot/Test/packed_ramdisk.py; the volume UUID goes to CONFIG_XNU_OWNER_DATA_VOLUME_UUID.",
   "size_mib": 512,
   "volume_name": "Data",
   "case_sensitive": true,
+  "role": "none",
   "directories": [
     ["Keychains", 0, 0, "0755"],
     ["Managed Preferences", 0, 0, "0755"],
