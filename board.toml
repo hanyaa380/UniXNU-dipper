@@ -34,8 +34,8 @@ fetch = ["KernelCache", "DeviceTree", "StaticTrustCache", "Cryptex1,SystemTrustC
 # The generated root image is about 8.74 GiB and replaces Android data only if
 # explicitly flashed to the userdata partition.
 [userdata]
-first_lba = 4063232
-last_lba = 14397914
+first_lba = 11776256
+last_lba = 14397695
 lba_bytes = 4096
 windows = [
   { name = "OS", component = "OS" },
