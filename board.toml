@@ -135,9 +135,10 @@ SHIP_MODE = "FALSE"
 # video console and stop at the root device. dram_size is the 8 GiB of the 256 GB model.
 [payload]
 volume = "DIPPERESP"
-# The payload is flashed to a partition, not carried in the boot image (the ABL refuses large ramdisks): system_a
-# (2.86 GiB, unused with slot b active), where UFSDxe, PartitionDxe and Fat expose it to UniXNU. The kernel with the
-# verified root policies is some 124 MiB.
+# The payload is flashed to a dedicated FAT volume, not carried in the boot image
+# (the ABL refuses large ramdisks). Use the backed-up 256 MiB cache partition for
+# this 192 MiB image. Dipper has no A/B slots: never use system_a, which contains
+# the active Android system.
 size_mib = 192
 loader = "firmware"
 title = "dipper first boot: XNU to console"
