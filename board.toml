@@ -159,7 +159,9 @@ trust_cache_sha256 = [
 kernel_args = [
   "debug=0x14e",
   "kt_fixed_zones=120",
-  "armcpu-timer-intid=19","-apfs_shared_datavolume","ml-timeout-lock-panic-scale=40","sheng-staged-apps=1","sheng-disable-watchdogd=1","sheng-lite=1","sheng-data-persist=2","boot-progress=2","sheng-log=1","sheng-autoreset=2400","pcpu=0xf0","fajita-wdog=3","sheng-smp=1","cpus=8","armcpu-self-ipi=1","fajita-cpufreq=2","native-data-writeback=1",
+  # First hardware boot stays read-only: inspect the live OSM LUT without
+  # voting, and prove the Data-store window without writing Android userdata.
+  "armcpu-timer-intid=19","-apfs_shared_datavolume","ml-timeout-lock-panic-scale=40","sheng-staged-apps=1","sheng-disable-watchdogd=1","sheng-lite=1","sheng-data-persist=1","boot-progress=2","sheng-log=1","sheng-autoreset=2400","pcpu=0xf0","fajita-wdog=3","sheng-smp=1","cpus=8","armcpu-self-ipi=1","fajita-cpufreq=1","native-data-writeback=0",
   "-no_slto_panic",
   "native-ufs-root=1",
   
@@ -167,6 +169,7 @@ kernel_args = [
   "native-ufs-smmu-mask=0xf",
   "native-ufs-smmu-size=0x80000",     # apps_smmu reg size
   "native-ufs-smmu-adopt=1",          # the firmware leaves 0x800f0100 on its own bank 2 with translation off; keep it
+  "native-ufs-diagnostics=1",
   "sheng-pmgr=2",
   # CPU-rendered UI, the sheng set (UniXNU-sheng board.toml kernel_args) without its GPU, touch, cpufreq and SMP arguments.
   "offline-mobile-graphics-load=1",   # load IOMobileGraphicsFamily, register NativeLegacyDisplay (offline-component-load-probes.patch)
