@@ -129,6 +129,15 @@ IOService *NativeUfs::probe (IOService *provider, SInt32 *score)
     }
     return this;
   }
+  if (provider->metaCast ("IOResources")) {
+    // Published after IOBSD; keeps the read-only probe reachable when the
+    // platform-expert personality was already consumed by another driver.
+    native_ufs_matched = 1;
+    if (score) {
+      *score = 450;
+    }
+    return this;
+  }
   OSObject *property = provider->getProperty ("compatible");
   OSData *data = OSDynamicCast (OSData, property);
   OSString *string = OSDynamicCast (OSString, property);
@@ -1786,7 +1795,7 @@ bool NativeUfs::start (IOService *provider)
   native_ufs_probe_requested = probe != 0;
   // Default: match for observability only, never touch the controller. Hardware work runs once,
   // from the root-device personality; the ufshc nub match stays observation-only.
-  if ((!probe && !rootMode) || !OSDynamicCast (IOPlatformExpertDevice, provider)) {
+  if (!probe && !rootMode) {
     return false;
   }
   unsigned diagnostic = 0;

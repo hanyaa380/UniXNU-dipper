@@ -9,8 +9,15 @@ Applies after native-aes-personality.patch, which adds the NativeUfs block above
 diff --git a/iokit/KernelConfigTables.cpp b/iokit/KernelConfigTables.cpp
 --- a/iokit/KernelConfigTables.cpp
 +++ b/iokit/KernelConfigTables.cpp
-@@ -105,4 +105,10 @@
+@@ -105,11 +105,17 @@
      "     'IOProbeScore'    = 500:32;"
+     "   }"
+     "   ,{"
+     "     'IOClass'         = NativeUfs;"
+     "     'IOMatchCategory' = NativeUfsEarly;"
+     "     'IOProviderClass' = IOResources;"
+     "     'IOResourceMatch' = IOBSD;"
+     "     'IOProbeScore'    = 450:32;"
      "   }"
  #endif
 +    "   ,{"
