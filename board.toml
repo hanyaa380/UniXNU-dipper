@@ -30,8 +30,17 @@ fetch = ["KernelCache", "DeviceTree", "StaticTrustCache", "Cryptex1,SystemTrustC
 "044-76040-038.dmg" = "3f99b859c9728379110b66657c7b15285bcb1925ad8b5726542e2cdcf8b1028d"
 "044-76034-038.dmg" = "b4908cde41d23e6bc05e6af51a2c9eeb00cf0f863a6a18b1600c96a3fd70414f"
 
-# The userdata geometry is deliberately not copied from another phone. Read the dipper GPT entry named "userdata"
-# and add [userdata] here before running "unixnu build userdata".
+# Measured from the primary GPT saved before the cache partition type change.
+# The generated root image is about 8.74 GiB and replaces Android data only if
+# explicitly flashed to the userdata partition.
+[userdata]
+first_lba = 4063232
+last_lba = 14397914
+lba_bytes = 4096
+windows = [
+  { name = "OS", component = "OS" },
+  { name = "SystemOS", component = "Cryptex1,SystemOS" },
+]
 
 [kernel]
 defconfig = "dipper_defconfig"
