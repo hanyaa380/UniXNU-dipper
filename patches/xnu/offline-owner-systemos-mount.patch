@@ -1,0 +1,321 @@
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -183,7 +183,7 @@
+ 
+ #include "kern_exec_internal.h"
+ 
+-#include <CodeSignature/Entitlements.h>
++#include <CoreEntitlements/CoreEntitlements.h>
+ 
+ #include <mach/exclaves.h>
+ 
+@@ -7013,8 +7013,256 @@
+  *		word width of the kernel. Once the self-exec completes, the
+  *		initproc might be different.
+  */
++#if defined(XNU_OWNER_CACHE_MOUNT) && XNU_OWNER_CACHE_MOUNT
++#if !DEVELOPMENT && !DEBUG
++#error The offline owner cache mount is a development instrument
++#endif
++extern int native_verified_block_volume_device(const char *, dev_t *, char *, size_t);
++#if defined(XNU_OWNER_BOOT_MANIFEST) && XNU_OWNER_BOOT_MANIFEST
++extern int native_owner_publish_boot_manifest(dev_t, const char *, dev_t, const char *);
++#endif
++#if defined(XNU_OWNER_CACHE_STARTUP) && XNU_OWNER_CACHE_STARTUP
++extern void commpage_update_dyld_flags(uint64_t);
++volatile uint64_t native_owner_cache_dyld_flags = 0;
++#endif
++extern int native_verified_block_root_authorized(dev_t);
++volatile int native_owner_cache_stage = 0;
++volatile int native_owner_cache_status = -1;
++volatile int native_owner_cache_mount_status = -1;
++volatile int native_owner_cache_readonly = 0;
++volatile int native_owner_cache_authorized = 0;
++volatile int native_owner_cache_root_recheck = 0;
++volatile uint64_t native_owner_cache_actual_mount_flags = 0;
++volatile uintptr_t native_owner_cache_original_root = 0;
++volatile uintptr_t native_owner_cache_current_root = 0;
++volatile int native_owner_cache_native_union = 0;
++volatile dev_t native_owner_cache_selected_device = NODEV;
++volatile dev_t native_owner_cache_mounted_device = NODEV;
++char native_owner_cache_device_path[64];
++void native_owner_cache_checkpoint(int, int);
++__attribute__((noinline)) void
++native_owner_cache_checkpoint(int status, int authorized)
++{
++	__asm__ volatile("" : : "r"(status), "r"(authorized) : "memory");
++}
++
+ static int
+-load_init_program_at_path(proc_t p, user_addr_t scratch_addr, const char* path)
++native_owner_cache_prepare(proc_t p, user_addr_t scratch, user_addr_t *envp)
++{
++#ifndef XNU_OWNER_CACHE_VOLUME_UUID
++#define XNU_OWNER_CACHE_VOLUME_UUID "8846FE78-2910-4297-AF97-D59BB6F8FC16"
++#endif
++	const char *volume = XNU_OWNER_CACHE_VOLUME_UUID;
++#if defined(XNU_OWNER_UNION_SYSTEMOS) && XNU_OWNER_UNION_SYSTEMOS
++#if !CONFIG_UNION_MOUNTS
++#error The owner composition requires the original native union-mount implementation
++#endif
++	const char *mountpoint = "/";
++#else
++	const char *mountpoint = "/private/preboot";
++#endif
++#if !defined(XNU_OWNER_UNION_SYSTEMOS) || !XNU_OWNER_UNION_SYSTEMOS
++	const char *environment = "DYLD_SHARED_CACHE_DIR=/private/preboot/System/Library/Caches/com.apple.dyld";
++#endif
++	vnode_t original_os_root = rootvnode;
++	native_owner_cache_original_root = (uintptr_t)original_os_root;
++	mount_t root_mount = vnode_mount(original_os_root);
++	vnode_t device_vnode = vfs_devvp(root_mount);
++	dev_t root_device = device_vnode ? vnode_specrdev(device_vnode) : NODEV;
++	dev_t selected = NODEV;
++	vnode_t mounted_root = NULLVP;
++	int error = EAUTH, root_authorized = 0, cache_authorized = 0;
++	int32_t result = 0;
++	user64_addr_t spec = scratch + 0x160;
++	char device_path[64] = {0};
++	uint8_t mount_data[0x150] = {0};
++	uint64_t mount_flags = MNT_RDONLY;
++	uint16_t mount_mode = 1;
++	uint32_t anonymous_owner = 99;
++#if !defined(XNU_OWNER_UNION_SYSTEMOS) || !XNU_OWNER_UNION_SYSTEMOS
++#if defined(XNU_OWNER_CRYPTEX_FILES) && XNU_OWNER_CRYPTEX_FILES
++	const char *fallback = "DYLD_FALLBACK_LIBRARY_PATH=/private/preboot/usr/lib";
++	user64_addr_t environment_vector[3] = {scratch + 0x400, scratch + 0x600, USER_ADDR_NULL};
++#else
++	user64_addr_t environment_vector[2] = {scratch + 0x400, USER_ADDR_NULL};
++#endif
++#endif
++	struct mount_args request = {.type = scratch + 0x100, .path = scratch + 0x120,
++	    .flags = MNT_RDONLY, .data = scratch + 0x200};
++	request.flags = (int)mount_flags;
++#if defined(XNU_OWNER_UNION_SYSTEMOS) && XNU_OWNER_UNION_SYSTEMOS
++	request.flags |= MNT_UNION;
++#endif
++	if (device_vnode) vnode_put(device_vnode);
++	root_authorized = (vfs_flags(root_mount) & MNT_RDONLY) && root_device != NODEV &&
++	    native_verified_block_root_authorized(root_device);
++	if (!root_authorized) goto done;
++	native_owner_cache_stage = 1;
++	if (!native_verified_block_volume_device(volume, &selected, device_path,
++	    sizeof(device_path))) goto done;
++	strlcpy(native_owner_cache_device_path, device_path, sizeof(native_owner_cache_device_path));
++	native_owner_cache_selected_device = selected;
++	native_owner_cache_stage = 2;
++	/* Exact user-mount payload already qualified against this original APFS. */
++	memcpy(mount_data, &spec, sizeof(spec));
++	memcpy(mount_data + 8, &mount_flags, sizeof(mount_flags));
++	memcpy(mount_data + 16, &mount_mode, sizeof(mount_mode));
++	memcpy(mount_data + 0x144, &anonymous_owner, sizeof(anonymous_owner));
++	memcpy(mount_data + 0x148, &anonymous_owner, sizeof(anonymous_owner));
++	if ((error = copyout("apfs", request.type, 5)) != 0 ||
++	    (error = copyout(mountpoint, request.path, strlen(mountpoint) + 1)) != 0 ||
++	    (error = copyout(device_path, spec, strlen(device_path) + 1)) != 0 ||
++	    (error = copyout(mount_data, request.data, sizeof(mount_data))) != 0) goto done;
++	native_owner_cache_stage = 3;
++	error = mount(p, &request, &result);
++	native_owner_cache_mount_status = error;
++	if (error) goto done;
++	native_owner_cache_stage = 4;
++	error = vnode_lookup(mountpoint, 0, &mounted_root, vfs_context_current());
++	if (error) goto done;
++	mount_t cache_mount = vnode_mount(mounted_root);
++	device_vnode = vfs_devvp(cache_mount);
++	dev_t actual = device_vnode ? vnode_specrdev(device_vnode) : NODEV;
++	if (device_vnode) vnode_put(device_vnode);
++	native_owner_cache_mounted_device = actual;
++	int readonly = (vfs_flags(cache_mount) & MNT_RDONLY) != 0;
++	native_owner_cache_readonly = readonly;
++	native_owner_cache_actual_mount_flags = vfs_flags(cache_mount);
++	native_owner_cache_current_root = (uintptr_t)rootvnode;
++	int native_union = (vfs_flags(cache_mount) & MNT_UNION) &&
++	    vnode_mountedhere(original_os_root) == cache_mount && rootvnode == mounted_root;
++	native_owner_cache_native_union = native_union;
++	cache_authorized = readonly && actual == selected &&
++	    !strcmp(vfs_statfs(cache_mount)->f_fstypename, "apfs") && native_verified_block_root_authorized(actual);
++#if defined(XNU_OWNER_UNION_SYSTEMOS) && XNU_OWNER_UNION_SYSTEMOS
++	cache_authorized = cache_authorized && native_union;
++#endif
++	if (!cache_authorized) { error = EAUTH; goto done; }
++	native_owner_cache_stage = 5;
++#if !defined(XNU_OWNER_UNION_SYSTEMOS) || !XNU_OWNER_UNION_SYSTEMOS
++	if ((error = copyout(environment, environment_vector[0], strlen(environment) + 1)) != 0 ||
++	    (error = copyout(environment_vector, scratch + 0x500, sizeof(environment_vector))) != 0) goto done;
++#if defined(XNU_OWNER_CRYPTEX_FILES) && XNU_OWNER_CRYPTEX_FILES
++	if ((error = copyout(fallback, scratch + 0x600, strlen(fallback) + 1)) != 0) goto done;
++#endif
++	*envp = scratch + 0x500;
++#else
++	*envp = USER_ADDR_NULL;
++#endif
++	native_owner_cache_stage = 6;
++done:
++	if (mounted_root) vnode_put(mounted_root);
++	int root_recheck = root_authorized && native_verified_block_root_authorized(root_device);
++	native_owner_cache_root_recheck = root_recheck;
++	if (!root_recheck) error = EAUTH;
++#if defined(XNU_OWNER_BOOT_MANIFEST) && XNU_OWNER_BOOT_MANIFEST
++	if (!error && cache_authorized && root_recheck &&
++	    !native_owner_publish_boot_manifest(root_device, "04769D26-2CA0-4825-B443-E2E5F88300F2",
++	        selected, volume)) error = EAUTH;
++#endif
++#if defined(XNU_OWNER_CACHE_STARTUP) && XNU_OWNER_CACHE_STARTUP
++	if (!error && cache_authorized && root_recheck) {
++		/* Original dyld bit 3 selects no ignition; the owner chain and actual
++		 * readonly mounts above supply image authentication in this mode. */
++		dyld_flags |= UINT64_C(8);
++		commpage_update_dyld_flags(dyld_flags);
++		native_owner_cache_dyld_flags = dyld_flags;
++	}
++#endif
++	native_owner_cache_authorized = cache_authorized;
++	native_owner_cache_status = error;
++	native_owner_cache_checkpoint(error, cache_authorized);
++	return error;
++}
++#endif
++
++#if defined(XNU_OWNER_DATA_MOUNT) && XNU_OWNER_DATA_MOUNT
++#if !defined(XNU_OWNER_BOOT_MANIFEST) || !XNU_OWNER_BOOT_MANIFEST
++#error Scratch Data mounting requires the authenticated original OS startup path
++#endif
++#if defined(XNU_NATIVE_RAM_BLOCK) && XNU_NATIVE_RAM_BLOCK
++#ifndef XNU_OWNER_DATA_VOLUME_UUID
++#error Supply the observed scratch volume UUID for the IOKit backend
++#endif
++extern int native_ram_block_volume_seed(const char *, dev_t *, char *, size_t, uint64_t *, uint64_t *, uint8_t *);
++#endif
++extern dev_t mdevlookup(int);
++extern int mdevgetrange(int, uint64_t *, uint64_t *);
++volatile int native_owner_data_status = -1;
++volatile int native_owner_data_stage = 0;
++volatile int native_owner_data_readonly = -1;
++volatile dev_t native_owner_data_device = NODEV;
++uint64_t native_owner_data_seed_base, native_owner_data_seed_size;
++uint8_t native_owner_data_seed_sha256[32];
++char native_owner_data_device_path[64];
++
++static int
++native_owner_data_prepare(proc_t p, user_addr_t scratch)
++{
++	uint64_t base = 0, size = 0;
++	dev_t device = NODEV;
++	int error = EINVAL;
++	vnode_t data_root = NULLVP;
++	char device_path[64] = "/dev/md0";
++#if defined(XNU_NATIVE_RAM_BLOCK) && XNU_NATIVE_RAM_BLOCK
++	/* The typed provider supplies logical seed identity for both dense and
++	 * sparse media. A sparse disk has no contiguous logical-byte address. */
++	if (!native_ram_block_volume_seed(XNU_OWNER_DATA_VOLUME_UUID, &device, device_path,
++	    sizeof(device_path), &base, &size, native_owner_data_seed_sha256)) { error = ENOENT; goto done; }
++	/* The typed provider's disk may be far larger than 2 GiB (a persistent Data disk keeps only its seed's nonzero pages). */
++	if (!size || size > UINT64_C(0x10000000000) || (size & 4095)) goto done;
++#else
++	device = mdevlookup(0);
++	if (device == NODEV || mdevgetrange(0, &base, &size) || base < VM_MIN_KERNEL_ADDRESS ||
++	    !size || size > UINT64_C(0x80000000) || (base & 4095) || (size & 4095)) goto done;
++	SHA256_CTX context;
++	SHA256_Init(&context);
++	SHA256_Update(&context, (const void *)base, size);
++	SHA256_Final(native_owner_data_seed_sha256, &context);
++#endif
++	native_owner_data_seed_base = base;
++	native_owner_data_seed_size = size;
++	native_owner_data_stage = 1;
++	strlcpy(native_owner_data_device_path, device_path, sizeof(native_owner_data_device_path));
++	uint8_t payload[0x150] = {0};
++	user64_addr_t spec = scratch + 0x160;
++	uint16_t mode = 1;
++	uint32_t anonymous_owner = 99;
++	memcpy(payload, &spec, sizeof(spec));
++	memcpy(payload + 16, &mode, sizeof(mode));
++	memcpy(payload + 0x144, &anonymous_owner, sizeof(anonymous_owner));
++	memcpy(payload + 0x148, &anonymous_owner, sizeof(anonymous_owner));
++	struct mount_args request = {.type = scratch + 0x100, .path = scratch + 0x120,
++	    .flags = 0, .data = scratch + 0x200};
++	int32_t result = 0;
++	if ((error = copyout("apfs", request.type, 5)) ||
++	    (error = copyout("/private/var", request.path, 13)) ||
++	    (error = copyout(device_path, spec, strlen(device_path) + 1)) ||
++	    (error = copyout(payload, request.data, sizeof(payload)))) goto done;
++	native_owner_data_stage = 2;
++	error = mount(p, &request, &result);
++	if (error) goto done;
++	native_owner_data_stage = 3;
++	error = vnode_lookup("/private/var", 0, &data_root, vfs_context_current());
++	if (error) goto done;
++	mount_t data_mount = vnode_mount(data_root);
++	vnode_t device_node = vfs_devvp(data_mount);
++	dev_t actual = device_node ? vnode_specrdev(device_node) : NODEV;
++	if (device_node) vnode_put(device_node);
++	native_owner_data_device = actual;
++	native_owner_data_readonly = (vfs_flags(data_mount) & MNT_RDONLY) != 0;
++	if (actual != device || (vfs_flags(data_mount) & MNT_RDONLY) ||
++	    strcmp(vfs_statfs(data_mount)->f_fstypename, "apfs")) error = EINVAL;
++	if (!error) native_owner_data_stage = 4;
++done:
++	if (data_root) vnode_put(data_root);
++	native_owner_data_status = error;
++	return error;
++}
++#endif
++
++static int
++load_init_program_at_path(proc_t p, user_addr_t scratch_addr, const char* path, user_addr_t envp)
+ {
+ 	int retval[2];
+ 	int error;
+@@ -7086,7 +7329,7 @@
+ 	 */
+ 	init_exec_args.fname = argv0;
+ 	init_exec_args.argp = scratch_addr;
+-	init_exec_args.envp = USER_ADDR_NULL;
++	init_exec_args.envp = envp;
+ 
+ 	/*
+ 	 * So that init task is set with uid,gid 0 token
+@@ -7148,6 +7391,15 @@
+ 	mach_vm_size_t map_page_size = vm_map_page_size(map);
+ 
+ 	(void) mach_vm_allocate_kernel(map, &scratch_addr, map_page_size, VM_FLAGS_ANYWHERE, VM_KERN_MEMORY_NONE);
++	user_addr_t init_envp = USER_ADDR_NULL;
++#if defined(XNU_OWNER_CACHE_MOUNT) && XNU_OWNER_CACHE_MOUNT
++	int cache_error = native_owner_cache_prepare(p, (user_addr_t)scratch_addr, &init_envp);
++	if (cache_error) panic("offline owner SystemOS mount failed: %d", cache_error);
++#endif
++#if defined(XNU_OWNER_DATA_MOUNT) && XNU_OWNER_DATA_MOUNT
++	int data_error = native_owner_data_prepare(p, (user_addr_t)scratch_addr);
++	if (data_error) panic("offline scratch Data mount failed: %d", data_error);
++#endif
+ #if CONFIG_MEMORYSTATUS
+ 	(void) memorystatus_init_at_boot_snapshot();
+ #endif /* CONFIG_MEMORYSTATUS */
+@@ -7162,7 +7414,7 @@
+ 
+ 		if (is_release_suffix) {
+ 			printf("load_init_program: attempting to load /sbin/launchd\n");
+-			error = load_init_program_at_path(p, (user_addr_t)scratch_addr, "/sbin/launchd");
++			error = load_init_program_at_path(p, (user_addr_t)scratch_addr, "/sbin/launchd", init_envp);
+ 			if (!error) {
+ 				return;
+ 			}
+@@ -7173,7 +7425,7 @@
+ 			strlcat(launchd_path, launchd_suffix, sizeof(launchd_path));
+ 
+ 			printf("load_init_program: attempting to load %s\n", launchd_path);
+-			error = load_init_program_at_path(p, (user_addr_t)scratch_addr, launchd_path);
++			error = load_init_program_at_path(p, (user_addr_t)scratch_addr, launchd_path, init_envp);
+ 			if (!error) {
+ 				return;
+ 			} else if (error != ENOENT) {
+@@ -7186,7 +7438,7 @@
+ 	error = ENOENT;
+ 	for (i = 0; i < sizeof(init_programs) / sizeof(init_programs[0]); i++) {
+ 		printf("load_init_program: attempting to load %s\n", init_programs[i]);
+-		error = load_init_program_at_path(p, (user_addr_t)scratch_addr, init_programs[i]);
++		error = load_init_program_at_path(p, (user_addr_t)scratch_addr, init_programs[i], init_envp);
+ 		if (!error) {
+ 			return;
+ 		} else if (error != ENOENT) {

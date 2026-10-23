@@ -1,0 +1,78 @@
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -987,9 +987,41 @@
+ 		if (require_rootauth) {
+ 			/* enforce sealedness */
+ 			int autherr = VNOP_IOCTL(rootvnode, FSIOC_KERNEL_ROOTAUTH, NULL, 0, vfs_context_kernel());
+-			if (autherr) {
++			int owner_authorized = 0;
++#if defined(XNU_OWNER_ROOT_AUDIT) && XNU_OWNER_ROOT_AUDIT
++			{
++				extern int native_verified_block_root_authorized(dev_t);
++				extern volatile int native_owner_root_apple_autherr, native_owner_root_decision, native_owner_root_readonly;
++				extern volatile dev_t native_owner_root_mount_device, native_owner_root_selected_device;
++				extern void native_owner_root_checkpoint(int, int, dev_t);
++				mount_t root_mount = vnode_mount(rootvnode);
++				vnode_t device_vnode = vfs_devvp(root_mount);
++				dev_t device = device_vnode ? vnode_specrdev(device_vnode) : NODEV;
++				int readonly = (vfs_flags(root_mount) & MNT_RDONLY) != 0;
++				int owner = readonly && device_vnode && native_verified_block_root_authorized(device);
++				if (device_vnode) vnode_put(device_vnode);
++				native_owner_root_mount_device = device;
++				native_owner_root_selected_device = rootdev;
++				native_owner_root_apple_autherr = autherr;
++				native_owner_root_decision = owner;
++				native_owner_root_readonly = readonly;
++#if defined(XNU_OWNER_ROOT_TRUST) && XNU_OWNER_ROOT_TRUST
++				owner_authorized = owner;
++#endif
++				native_owner_root_checkpoint(autherr, owner, device);
++			}
++#endif
++			if (autherr && !owner_authorized) {
+ 				panic("rootvp not authenticated after mounting");
+ 			}
++#if defined(XNU_OWNER_ROOT_TRUST) && XNU_OWNER_ROOT_TRUST
++			{
++				extern volatile int native_owner_root_accepted;
++				extern void native_owner_root_accepted_checkpoint(int, int);
++				native_owner_root_accepted = owner_authorized;
++				native_owner_root_accepted_checkpoint(autherr, owner_authorized);
++			}
++#endif
+ 		}
+ 	}
+ 
+@@ -1114,6 +1146,32 @@
+ 
+ 	bsd_init_kprintf("done\n");
+ }
++
++#if defined(XNU_OWNER_ROOT_AUDIT) && XNU_OWNER_ROOT_AUDIT
++#if defined(XNU_OWNER_ROOT_TRUST) && XNU_OWNER_ROOT_TRUST
++volatile int native_owner_root_trust_enabled = 1;
++#else
++volatile int native_owner_root_trust_enabled = 0;
++#endif
++volatile int native_owner_root_accepted = 0;
++volatile int native_owner_root_apple_autherr = -1;
++volatile int native_owner_root_decision = -1;
++volatile int native_owner_root_readonly = -1;
++volatile dev_t native_owner_root_mount_device = NODEV;
++volatile dev_t native_owner_root_selected_device = NODEV;
++void native_owner_root_accepted_checkpoint(int, int);
++__attribute__((noinline)) void
++native_owner_root_accepted_checkpoint(int apple, int owner)
++{
++	__asm__ volatile("" : : "r"(apple), "r"(owner) : "memory");
++}
++void native_owner_root_checkpoint(int, int, dev_t);
++__attribute__((noinline)) void
++native_owner_root_checkpoint(int apple, int owner, dev_t device)
++{
++	__asm__ volatile("" : : "r"(apple), "r"(owner), "r"(device) : "memory");
++}
++#endif
+ 
+ void
+ bsdinit_task(void)

@@ -1,0 +1,20 @@
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -7400,6 +7400,17 @@
+ 	(void) memorystatus_init_at_boot_snapshot();
+ #endif /* CONFIG_MEMORYSTATUS */
+ 
++#if (DEBUG || DEVELOPMENT) && defined(XNU_NATIVE_AIR_INIT) && XNU_NATIVE_AIR_INIT
++	int offline_air = 0;
++	if (PE_parse_boot_argn("offline-air-init", &offline_air, sizeof(offline_air)) && offline_air) {
++		if (offline_air != 1) panic("offline AIR init invalid selector");
++		error = load_init_program_at_path(p, (user_addr_t)scratch_addr,
++		    "/private/var/tmp/air-native", init_envp);
++		if (error) panic("offline signed AIR instrument exec failed: %d", error);
++		return;
++	}
++#endif
++
+ #if DEBUG || DEVELOPMENT
+ 	/* Check for boot-arg suffix first */
+ 	char launchd_suffix[64];

@@ -1,0 +1,19 @@
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -1282,7 +1282,15 @@ bsd_autoconf(void)
+ 		}
+ 	}
+ 
+-	return IOKitBSDInit();
++	kern_return_t result = IOKitBSDInit();
++#if (DEVELOPMENT || DEBUG) && defined(XNU_NATIVE_LEGACY_DISPLAY) && XNU_NATIVE_LEGACY_DISPLAY
++	/* The original IOSurface personality requires the genuine IOBSD resource.
++	 * The default-off framebuffer instrument may start only after publication.
++	 */
++	extern void native_legacy_display_late_probe(void);
++	native_legacy_display_late_probe();
++#endif
++	return result;
+ }
+ 
+ 

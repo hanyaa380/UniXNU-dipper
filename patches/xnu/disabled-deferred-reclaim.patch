@@ -1,0 +1,11 @@
+diff --git a/osfmk/vm/vm_user.c b/osfmk/vm/vm_user.c
+--- a/osfmk/vm/vm_user.c
++++ b/osfmk/vm/vm_user.c
+@@ -4503,7 +4503,6 @@
+ 	(void) task;
+ 	(void) address;
+ 	(void) size;
+-	(void) indices;
+ 	return KERN_NOT_SUPPORTED;
+ #endif /* CONFIG_DEFERRED_RECLAIM */
+ }

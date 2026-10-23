@@ -1,0 +1,46 @@
+--- a/bsd/vfs/vfs_lookup.c
++++ b/bsd/vfs/vfs_lookup.c
+@@ -100,6 +100,33 @@
+ #if NAMEDRSRCFORK
+ #include <sys/xattr.h>
+ #endif
++/*
++ * Board bring-up diagnostic: the distinct lookups that failed for MobileSafari (path and errno), read by the boot log.
++ */
++char native_lookup_log[96][112];
++volatile unsigned native_lookup_count;
++static void
++native_lookup_note(const char *path, int error)
++{
++	char name[MAXCOMLEN + 1];
++	proc_selfname(name, sizeof(name));
++	if (strcmp(name, "MobileSafari") != 0) {
++		return;
++	}
++	char entry[112];
++	snprintf(entry, sizeof(entry), "e%d %s", error, path);
++	unsigned seen = native_lookup_count < 96 ? native_lookup_count : 96;
++	for (unsigned i = 0; i < seen; ++i) {
++		if (strncmp(native_lookup_log[i], entry, sizeof(entry)) == 0) {
++			return;
++		}
++	}
++	unsigned slot = os_atomic_inc_orig(&native_lookup_count, relaxed);
++	if (slot < 96) {
++		strlcpy(native_lookup_log[slot], entry, sizeof(native_lookup_log[slot]));
++	}
++}
++
+ /*
+  * The minimum volfs-style pathname is 9.
+  * Example:  "/.vol/1/2"
+@@ -526,6 +553,9 @@
+ 		vnode_put(ndp->ni_vp);
+ 	}
+ error_out:
++	if (error && error != ERECYCLE && cnp->cn_pnbuf) {
++		native_lookup_note(cnp->cn_pnbuf, error);
++	}
+ 	if (startdir_with_usecount) {
+ 		vnode_rele(startdir_with_usecount);
+ 		startdir_with_usecount = NULLVP;

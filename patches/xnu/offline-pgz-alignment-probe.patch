@@ -1,0 +1,94 @@
+--- a/osfmk/kern/zalloc.c
++++ b/osfmk/kern/zalloc.c
+@@ -5629,6 +5629,91 @@
+ 	}
+ }
+ STARTUP(EARLY_BOOT, STARTUP_RANK_MIDDLE, pgz_init);
++
++#if (DEVELOPMENT || DEBUG) && defined(XNU_ZONE_PGZ_ALIGNMENT_PROBE) && XNU_ZONE_PGZ_ALIGNMENT_PROBE
++volatile uint32_t native_zone_pgz_probe_case;
++volatile uint32_t native_zone_pgz_probe_stage;
++volatile uint32_t native_zone_pgz_probe_zone;
++volatile uint32_t native_zone_pgz_probe_expected_zone;
++volatile uint32_t native_zone_pgz_probe_metadata;
++volatile uintptr_t native_zone_pgz_probe_backing;
++volatile uintptr_t native_zone_pgz_probe_alias;
++volatile uintptr_t native_zone_pgz_probe_argument;
++
++__attribute__((noinline)) void
++native_zone_pgz_probe_checkpoint(void)
++{
++	__asm__ volatile ("" ::: "memory");
++}
++
++__startup_func static void
++native_zone_pgz_alignment_probe(void)
++{
++	uint32_t mode = 0;
++	void *objects[128] = { 0 };
++	void *backing = NULL;
++	zone_t other = ZONE_NULL;
++	unsigned count = 0;
++
++	if (!PE_parse_boot_argn("offline-zone-pgz-case", &mode, sizeof(mode)) || !mode) return;
++	if (mode > 4 || !zone_info.zi_pgz_meta || pgz_slot_avail <= 0) {
++		panic("offline PGZ alignment fixture unavailable");
++	}
++	zone_t zone = zone_create("native.pgz.alignment", 192, ZC_NOPGZ | ZC_DESTRUCTIBLE);
++	native_zone_pgz_probe_case = mode;
++	native_zone_pgz_probe_zone = zone_index(zone);
++	for (; count < 128;) {
++		void *obj = zalloc_flags(zone, Z_WAITOK | Z_ZERO);
++		objects[count++] = obj;
++		vm_offset_t offset = ((vm_offset_t)obj & PAGE_MASK) - zone_elem_inner_offs(zone);
++		if (zone_meta_from_addr((vm_offset_t)obj)->zm_chunk_len == ZM_SECONDARY_PAGE &&
++		    !Z_FAST_ALIGNED(offset, zone->z_align_magic)) {
++			backing = obj;
++			break;
++		}
++	}
++	if (!backing || pgz_owned((vm_offset_t)backing)) panic("offline PGZ fixture lacks secondary-page element");
++	zone_id_require_aligned(zone_index(zone), backing);
++	native_zone_pgz_probe_stage = 1;
++	native_zone_pgz_probe_backing = (uintptr_t)backing;
++	*(volatile uint64_t *)backing = 0x50475a344b50524fULL;
++	vm_offset_t alias = pgz_protect(zone, (vm_offset_t)backing, __builtin_frame_address(0));
++	if (alias == (vm_offset_t)backing || *(volatile uint64_t *)alias != *(volatile uint64_t *)backing) {
++		panic("offline PGZ fixture did not protect actual backing");
++	}
++	native_zone_pgz_probe_alias = alias;
++	native_zone_pgz_probe_metadata = zone_meta_from_addr(alias)->zm_bits;
++	native_zone_pgz_probe_stage = 2;
++	zone_id_t expected = zone_index(zone);
++	vm_offset_t argument = alias;
++	if (mode == 2) argument++;
++	if (mode == 3) {
++		other = zone_create("native.pgz.other", 192, ZC_NOPGZ | ZC_DESTRUCTIBLE);
++		expected = zone_index(other);
++	}
++	if (mode == 4) {
++		if (pgz_unprotect(alias, __builtin_frame_address(0)) != (vm_offset_t)backing) panic("offline PGZ fixture backing changed");
++		zfree(zone, objects[count - 1]);
++		objects[count - 1] = NULL;
++		native_zone_pgz_probe_stage = 3;
++	}
++	native_zone_pgz_probe_expected_zone = expected;
++	native_zone_pgz_probe_argument = argument;
++	zone_id_require_aligned(expected, (void *)argument);
++	if (mode != 1) panic("offline PGZ negative case unexpectedly returned");
++	*(volatile uint64_t *)alias ^= 1;
++	if (*(volatile uint64_t *)backing != 0x50475a344b50524eULL ||
++	    pgz_unprotect(alias, __builtin_frame_address(0)) != (vm_offset_t)backing) {
++		panic("offline PGZ backing identity or write failed");
++	}
++	for (unsigned i = 0; i < count; i++) zfree(zone, objects[i]);
++	if (other) zdestroy(other);
++	zdestroy(zone);
++	native_zone_pgz_probe_stage = 4;
++	native_zone_pgz_probe_checkpoint();
++}
++STARTUP(EARLY_BOOT, STARTUP_RANK_LAST, native_zone_pgz_alignment_probe);
++#endif
+ 
+ static void
+ panic_display_pgz_bt(bool has_syms, uint32_t slot, bool free)

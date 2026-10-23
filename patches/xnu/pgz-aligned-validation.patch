@@ -1,0 +1,15 @@
+--- a/osfmk/kern/zalloc.c
++++ b/osfmk/kern/zalloc.c
+@@ -1474,10 +1474,10 @@ zone_id_require_aligned(zone_id_t zid, void *addr)
+ 	zone_t zone = zone_by_id(zid);
+ 	vm_offset_t elem, offs;
+ 
+-	elem = (vm_offset_t)addr;
++	elem = pgz_decode((vm_offset_t)addr, 1);
+ 	offs = (elem & PAGE_MASK) - zone_elem_inner_offs(zone);
+ 
+-	if (from_zone_map(addr, 1)) {
++	if (from_zone_map(elem, 1)) {
+ 		struct zone_page_metadata *meta;
+ 
+ 		meta = zone_meta_from_addr(elem);
