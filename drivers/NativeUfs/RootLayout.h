@@ -54,8 +54,9 @@ static bool rootEntryUsed (const uint8_t *entry)
   return used != 0;
 }
 
-// Find the partition named "userdata" in LUN 0's primary GPT (4096-byte sectors), then read the
-// manifest at its first block. Read-only. Returns false only if the GPT itself is unusable.
+// Find the dedicated "unixnu" partition, or fall back to "userdata", in LUN 0's primary GPT
+// (4096-byte sectors), then read the manifest at its first block. Read-only. Returns false only
+// if the GPT itself is unusable.
 static bool findRootLayout (RootLayout *layout, const char **why)
 {
   ROOT_STAGE ("GPT header");
@@ -103,40 +104,60 @@ static bool findRootLayout (RootLayout *layout, const char **why)
     *why = "GPT entries CRC";
     return false;
   }
-  static const char wanted[] = "userdata";
-  bool found = false;
-  uint32_t userdataIndex = 0;
+  auto named = [] (const uint8_t *entry, const char *wanted) {
+    for (unsigned c = 0;; c++) {
+      if (entry[56 + 2 * c] != static_cast<uint8_t> (wanted[c]) || entry[57 + 2 * c] != 0) return false;
+      if (!wanted[c]) return true;
+    }
+  };
+  bool unixnuFound = false, userdataFound = false;
+  uint32_t unixnuIndex = 0, userdataIndex = 0;
+  uint64_t unixnuFirst = 0, unixnuLast = 0, userdataFirst = 0, userdataLast = 0;
   for (uint32_t index = 0; index < count; index++) {
     const uint8_t *entry = gScratch + index * 128;
     if (!rootEntryUsed (entry)) continue;
     uint64_t entryFirst = le64 (entry + 32), entryLast = le64 (entry + 40);
-    bool match = true;
-    for (unsigned c = 0; c < sizeof (wanted); c++) {
-      if (entry[56 + 2 * c] != static_cast<uint8_t> (wanted[c]) || entry[57 + 2 * c] != 0) {
-        match = false;
-        break;
-      }
-    }
+    bool unixnu = named (entry, "unixnu");
+    bool userdata = named (entry, "userdata");
     if (entryFirst < first || entryLast < entryFirst || entryLast > last) {
-      // Only userdata is ever read; another partition outside the usable range (fajita's LUN 0 has one) is reported, not fatal.
+      // Only the selected root partition is ever read; another partition outside the usable range is reported, not fatal.
       ROOT_LOG ("GPT entry %u %llx..%llx outside usable %llx..%llx%s\n", index, entryFirst, entryLast, first, last,
-                match ? " (userdata)" : "");
-      if (match) {
+                unixnu ? " (unixnu)" : userdata ? " (userdata)" : "");
+      if (unixnu || userdata) {
         *why = "GPT partition bounds";
         return false;
       }
       continue;
     }
-    if (match) {
-      if (found) {
+    if (unixnu) {
+      if (unixnuFound) {
+        *why = "duplicate unixnu partition";
+        return false;
+      }
+      unixnuFirst = entryFirst;
+      unixnuLast = entryLast;
+      unixnuIndex = index;
+      unixnuFound = true;
+    } else if (userdata) {
+      if (userdataFound) {
         *why = "duplicate userdata partition";
         return false;
       }
-      layout->userdataFirst = entryFirst;
-      layout->userdataLast = entryLast;
+      userdataFirst = entryFirst;
+      userdataLast = entryLast;
       userdataIndex = index;
-      found = true;
+      userdataFound = true;
     }
+  }
+  bool found = unixnuFound || userdataFound;
+  const char *selected = unixnuFound ? "unixnu" : "userdata";
+  if (unixnuFound) {
+    layout->userdataFirst = unixnuFirst;
+    layout->userdataLast = unixnuLast;
+    userdataIndex = unixnuIndex;
+  } else if (userdataFound) {
+    layout->userdataFirst = userdataFirst;
+    layout->userdataLast = userdataLast;
   }
   if (found) {
     // The window must not alias any other partition.
@@ -144,19 +165,19 @@ static bool findRootLayout (RootLayout *layout, const char **why)
       const uint8_t *other = gScratch + index * 128;
       if (index == userdataIndex || !rootEntryUsed (other)) continue;
       if (layout->userdataFirst <= le64 (other + 40) && le64 (other + 32) <= layout->userdataLast) {
-        ROOT_LOG ("GPT entry %u %llx..%llx overlaps userdata\n", index, le64 (other + 32), le64 (other + 40));
+        ROOT_LOG ("GPT entry %u %llx..%llx overlaps %s\n", index, le64 (other + 32), le64 (other + 40), selected);
         *why = "GPT partition overlap";
         return false;
       }
     }
   }
   if (!found || layout->userdataLast < layout->userdataFirst) {
-    *why = "no userdata partition";
+    *why = "no unixnu or userdata partition";
     return false;
   }
   gRootDiagnostic.first = layout->userdataFirst;
   gRootDiagnostic.last = layout->userdataLast;
-  ROOT_LOG ("userdata LBA %llx..%llx\n", layout->userdataFirst, layout->userdataLast);
+  ROOT_LOG ("%s root LBA %llx..%llx\n", selected, layout->userdataFirst, layout->userdataLast);
   ROOT_STAGE ("root manifest");
   // First block of the partition: manifest if the root image was flashed, ext4 otherwise.
   if (hostRead4k (0, layout->userdataFirst, 1, gScratch) != kIOReturnSuccess) {
