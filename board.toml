@@ -1,15 +1,16 @@
-# Board description of the OnePlus 6T (fajita, SDM845), read by the unixnu build driver.
+# Board description of the Xiaomi Mi 8 (dipper, SDM845), read by the unixnu build driver.
 #
-# Bring-up stage 1 works (firmware and UniXNU menu) and the userdata image is flashed. The kernel, prelink and payload
-# sections target the first kernel boot: XNU to the video console, no storage yet.
+# Bring-up milestone 1 is the UEFI firmware and UniXNU menu. Kernel, UFS, touch, charging and userdata stay staged
+# until each stage is verified on the standard dipper hardware.
 
 [board]
-name = "fajita"
+name = "dipper"
 soc = "SDM845"
-description = "OnePlus 6T"
-kit = "fajita"                     # the package/ of this repository appears as kits/fajita in the build tree
+description = "Xiaomi Mi 8"
+kit = "dipper"                     # the package/ of this repository appears as kits/dipper in the build tree
 
-# The target OS image: the unchanged iPad7,1 iPadOS 17.7.11 restore image, the sheng target. SDM845 is ARMv8.2 without
+# The initial target OS image: the unchanged iPad7,1 iPadOS 17.7.11 restore image, shared with the qualified SDM845
+# bring-up. SDM845 is ARMv8.2 without
 # pointer authentication, so it runs arm64 userlands only; iPadOS 17 on A10X is the newest one the XNU source matches.
 # iOS 16.7.16 for the iPhone X is the planned phone userland; see NOTES-ios16.md. Give --ipsw PATH to use a local file;
 # without it the remote url is read with range requests, only the members that are needed.
@@ -27,19 +28,11 @@ fetch = ["KernelCache", "DeviceTree", "StaticTrustCache", "Cryptex1,SystemTrustC
 "044-76040-038.dmg" = "3f99b859c9728379110b66657c7b15285bcb1925ad8b5726542e2cdcf8b1028d"
 "044-76034-038.dmg" = "b4908cde41d23e6bc05e6af51a2c9eeb00cf0f863a6a18b1600c96a3fd70414f"
 
-# The raw image for the userdata partition: the OS and SystemOS disk images of the IPSW behind a manifest.
-# first_lba and last_lba are the GPT entry "userdata" (sda17) of LUN 0, read from the phone (256 GB model).
-[userdata]
-first_lba = 0x186f40
-last_lba = 0x3ad1ffa
-lba_bytes = 4096
-windows = [
-  { name = "OS", component = "OS" },
-  { name = "SystemOS", component = "Cryptex1,SystemOS" },
-]
+# The userdata geometry is deliberately not copied from another phone. Read the dipper GPT entry named "userdata"
+# and add [userdata] here before running "unixnu build userdata".
 
 [kernel]
-defconfig = "fajita_defconfig"
+defconfig = "dipper_defconfig"
 # Archive builders of the kernel step, in order: the generic part of the sheng list.
 archives = [
   "build-corecrypto-14.py",
@@ -105,16 +98,16 @@ roots = [
   "com.apple.iokit.IOHIDEventDriver",
 ]
 
-# The Mu-Silicium checkout (--uefi) gets Platforms/OnePlus/fajitaPkg from scripts/make-fajita-uefi.py, which
-# derives it from enchiladaPkg (OnePlus 6, same SoC and memory map).
+# The Mu-Silicium checkout (--uefi) gets Platforms/Xiaomi/dipperPkg from scripts/make-dipper-uefi.py, which
+# derives it from equuleusPkg (Xiaomi Mi 8 screen-fingerprint variant, same SDM845 generation).
 [firmware]
-config = "fajita"                  # Resources/Configs/fajita.toml in the Mu-Silicium checkout (--uefi)
-dsc = "Platforms/OnePlus/fajitaPkg/fajita.dsc"
-fd = "Build/fajitaPkg/{target}_CLANGPDB/FV/SILICIUM_UEFI.fd"
+config = "dipper"                  # Resources/Configs/dipper.toml in the Mu-Silicium checkout (--uefi)
+dsc = "Platforms/Xiaomi/dipperPkg/dipper.dsc"
+fd = "Build/dipperPkg/{target}_CLANGPDB/FV/SILICIUM_UEFI.fd"
 submodules = ["Binaries", "Common/Mu", "Common/Mu_OEM_Sample", "Silicium-ACPI", "Silicon/Silicium/OpensslPkg/Library/OpensslLib/openssl"]
 packages = [
   "{uefi}",
-  "{uefi}/Platforms/OnePlus",
+  "{uefi}/Platforms/Xiaomi",
   "{tree}/package",
   "{tree}/drivers/DarwinBoot",
   "{edk2}",
@@ -123,13 +116,13 @@ packages = [
   "{uefi}/Silicon/Qualcomm",
   "{uefi}/Silicon/Silicium",
   "{uefi}/Silicium-ACPI",
-  "{uefi}/Silicium-ACPI/Platforms/OnePlus",
+  "{uefi}/Silicium-ACPI/Platforms/Xiaomi",
   "{uefi}/Silicium-ACPI/Silicon/Qualcomm",
 ]
 
 [firmware.defines]
-DEVICE_MODEL = "fajita"
-BUILDID_STRING = "fajita-bringup"
+DEVICE_MODEL = "dipper"
+BUILDID_STRING = "dipper-bringup"
 # Defaults of Mu-Silicium build_uefi.py and DeviceBuild.py, which unixnu does not run.
 ENABLE_SECUREBOOT = 0
 MEMORY_PROTECTION = "TRUE"
@@ -139,14 +132,16 @@ SHIP_MODE = "FALSE"
 # (DarwinBoot) is part of the firmware volume. First kernel boot: no storage driver, so XNU is expected to reach the
 # video console and stop at the root device. dram_size is the 8 GiB of the 256 GB model.
 [payload]
-volume = "FAJITAESP"
+volume = "DIPPERESP"
 # The payload is flashed to a partition, not carried in the boot image (the ABL refuses large ramdisks): system_a
 # (2.86 GiB, unused with slot b active), where UFSDxe, PartitionDxe and Fat expose it to UniXNU. The kernel with the
 # verified root policies is some 124 MiB.
 size_mib = 192
 loader = "firmware"
-title = "fajita first boot: XNU to console"
-dram_size = "0x200000000"
+title = "dipper first boot: XNU to console"
+# Conservative 6 GiB value so the 6 GiB and 8 GiB models can share this initial board file. Raise it only after
+# reading the real /memory size on the exact phone.
+dram_size = "0x180000000"
 # Patch a copy of the kernel with the sheng boot probes (scripts/patch-xnu-entry-probe.py --panic-screen --no-reset):
 # a blue band at kernel entry, a magenta band before the MMU is enabled, and panic() drawn on the screen.
 panic_screen = true
@@ -176,12 +171,13 @@ kernel_args = [
   "offline-mobile-graphics-client=1",
   "offline-legacy-register=1",
   "offline-legacy-phase=4",           # attach the GOP nub as /arm-io/gop-display (display-subsystem) and start the display there
-  "offline-legacy-gop=1",             # map the UEFI framebuffer (1080x2340, 32 bpp, stride 4320)
+  "offline-legacy-gop=1",             # map the UEFI framebuffer (1080x2248, 32 bpp)
   "offline-legacy-pm=1",
   "offline-legacy-validate=1",        # accept one full-screen BGRA IOSurface (or a blank frame) per swap
   "offline-legacy-transfer=1",        # CPU copy of each accepted surface into the framebuffer
   "offline-legacy-cpu-present=1",     # retire each swap after its copy
-  "offline-legacy-unit-scale=2","fajita-display-logical=2048x2732","fajita-fb-wc=1","fajita-fb-src-cached=1","sheng-fb-diff=1",      # /chosen/display-scale 1: 1080x2340 points, wider than any iPad portrait layout (sheng: 2)
+  # Driver-internal option names still use the inherited fajita prefix until the display implementation is renamed.
+  "offline-legacy-unit-scale=2","fajita-display-logical=2048x2732","fajita-fb-wc=1","fajita-fb-src-cached=1","sheng-fb-diff=1",
   "sheng-vsync=60",                   # software vsync for the render server; the s6e3fc2x01 runs at 60 Hz (sheng: 144)
   "sheng-banner=0",                   # no diagnostic painting over the system frames
   "offline-hid-input=1",              # load IOHIDFamily and IOHIDEventDriver
@@ -208,7 +204,7 @@ text_fixups = [
 ]
 
 [payload.adt]
-tool = "scripts/make-fajita-adt.py"
+tool = "scripts/make-dipper-adt.py"
 root_match_volume_uuid = "04769D26-2CA0-4825-B443-E2E5F88300F2"   # the 21H461 OS volume, read from the image
 owned_memory_size = "0x130000000"   # 4.75 GiB, as sheng: 3 GiB ran out of memory 2 minutes into userland (2026-10-22)
 # The Data seed (data-seed.json, built by the Data seed workflow) arrives packed (DBRDISK1); NativeRamBlock serves it.
@@ -224,10 +220,14 @@ unique_chip_id = "required"
 cpu_regs = "0,0x100,0x200,0x300,0x400,0x500,0x600,0x700"
 psci_method = "smc"
 
-# The header of the stock boot image of OxygenOS 11.1.2.2 (scripts/fetch-fajita-boot.py --info), as version 0, the
-# version postmarketOS ships for fajita. Version 1 images were refused while version 0 ones loaded.
-# The ABL also refuses fastboot boot ("Load Error") once the active slot is unbootable: every reset spends one retry
-# of that slot, so run "fastboot set_active b" (or a) before "fastboot boot" during bring-up.
+# Android boot-image parameters used by the existing dipper UEFI build. dipper is slotless in its stock layout, so
+# do not copy fajita's A/B set_active workaround.
+[bootimg]
+# Qualcomm dipper accepts fastboot boot images but does not leave the Android
+# ramdisk field resident for this UEFI chain. Keep a diagnostic copy in the
+# kernel stream, where BootShim's input buffer is guaranteed to be loaded.
+embed_ramdisk_in_kernel = true
+
 [bootimg.image]
 header_version = 0
 pagesize = 4096
@@ -236,5 +236,12 @@ kernel_offset = 0x8000
 ramdisk_offset = 0x1000000
 tags_offset = 0x100
 
-# The continuous splash framebuffer the stock ABL leaves running, which SimpleFbDxe draws into, is already reserved
-# in Resources/DTBs/fajita.dts as /reserved-memory/cont_splash_region@9d400000, so no [[bootimg.dtb_node]] is added.
+# dipper's inherited DTB names 0x84994000 as the ramdisk base. The current
+# diagnostic FAT is small, so provide the corresponding 64-bit Linux
+# initrd range explicitly. Adjust initrd-end when the payload size changes.
+[[bootimg.dtb_node]]
+path = "/chosen"
+props = [
+  { name = "linux,initrd-start", type = "x", value = ["0x0", "0x84994000"] },
+  { name = "linux,initrd-end", type = "x", value = ["0x0", "0x84d94000"] },
+]

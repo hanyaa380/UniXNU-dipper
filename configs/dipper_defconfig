@@ -1,0 +1,50 @@
+# Kernel configuration of the dipper image. CONFIG_XNU_<NAME> becomes XNU_<NAME> for the kernel build.
+# Start from the qualified fajita SDM845 set. The generic drivers are reusable; fajita-named touch, display and
+# clock probes stay present but disabled until dipper-specific hardware work replaces them.
+# The UFS root uses the
+# NativeUfs copy in drivers/NativeUfs, the NativeVirtioBlock storage bindings and verified root archive built by
+# scripts/build-fajita-storage.py and build-fajita-verified-root.py, and the sheng PMGR stub the original AMFI needs.
+# NATIVE_LEGACY_DISPLAY links the CPU-rendered display, HID input and keystore archive of
+# scripts/build-native-legacy-display.py; NATIVE_MOBILE_DISPLAY (the prototype) and NATIVE_ADRENO (A740 only) stay off.
+
+CONFIG_XNU_BUILD_ARCHIVES=y
+CONFIG_XNU_SOURCE_CORECRYPTO14=y
+CONFIG_XNU_SOURCE_PTHREAD=y
+CONFIG_XNU_ARM_DT_PLATFORM=y
+CONFIG_XNU_ARMCPU=y
+CONFIG_XNU_NATIVE_AES=y
+CONFIG_XNU_NATIVE_UFS=y
+CONFIG_XNU_NATIVE_VIRTIO_BLOCK=y
+CONFIG_XNU_VERIFIED_ROOT_PROBE=y
+CONFIG_XNU_OWNER_ROOT_AUDIT=y
+CONFIG_XNU_OWNER_ROOT_TRUST=y
+CONFIG_XNU_SHENG_PMGR=y
+CONFIG_XNU_TRUST_CACHE_RUNTIME=y
+CONFIG_XNU_SOURCE_MOCKFS=y
+CONFIG_XNU_NATIVE_CS_HASH_CACHE=y
+CONFIG_XNU_DT_PANIC_REGION=y
+CONFIG_XNU_NATIVE_ARCH_TIMER=y
+CONFIG_XNU_NATIVE_PAN=y
+
+CONFIG_XNU_CRYPTO_BOOTSTRAP="prelinked"
+# NativeDwc3 (SDM845 DWC3 USB device-mode probe, scripts/build-fajita-dwc3.py) is force-loaded into the kernel. The
+# driver is default-off: it maps and reads nothing unless the boot argument native-dwc3-probe=1 is present. Its
+# IOKit personality is added unconditionally by patches/xnu/zzv-native-dwc3-personality.patch.
+# The touch bring-up (scripts/build-fajita-touch.py, default off: fajita-touch=<stage>) is force-loaded as well; it defines the
+# touch snapshot NativeHidInput reads. The CPU clock probe (scripts/build-fajita-cpufreq.py, default off: fajita-cpufreq=<n>) too.
+CONFIG_XNU_EXTRA_LD_ARCHIVES="-Wl,-force_load,{tree}/build/fajita-dwc3/libNativeDwc3.a -Wl,-force_load,{tree}/build/fajita-touch/libFajitaTouch.a -Wl,-force_load,{tree}/build/fajita-cpufreq/libFajitaCpuFreq.a"
+CONFIG_XNU_NATIVE_VIRTIO_BLOCK_ARCHIVE="{tree}/build/native-virtio-block-verified-bundle/libNativeVirtioBlock.a"
+CONFIG_XNU_VERIFIED_ROOT_ARCHIVE="{tree}/build/verified-root-os-xnu-bundle/libVerifiedRootProbe.a"
+CONFIG_XNU_NATIVE_RAM_BLOCK=y
+CONFIG_XNU_NATIVE_ADRENO=n
+CONFIG_XNU_NATIVE_MOBILE_DISPLAY=n
+CONFIG_XNU_NATIVE_LEGACY_DISPLAY=y
+CONFIG_XNU_ARMVIRT_PLATFORM=n
+CONFIG_XNU_OWNER_CACHE_MOUNT=y
+CONFIG_XNU_OWNER_CACHE_STARTUP=y
+CONFIG_XNU_OWNER_UNION_SYSTEMOS=y
+CONFIG_XNU_OWNER_BOOT_MANIFEST=y
+CONFIG_XNU_OWNER_DATA_MOUNT=y
+# Placeholder: replace with the UUID printed by dipper's Data seed builder.
+CONFIG_XNU_OWNER_DATA_VOLUME_UUID="6A9E5B18-7DA4-4B67-8A5C-3E2D1190C4F7"
+CONFIG_XNU_BOOT_PROGRESS=y

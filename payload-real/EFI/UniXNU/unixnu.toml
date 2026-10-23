@@ -1,0 +1,26 @@
+# First real XNU boot on dipper. The kernel is the public fajita SDM845
+# prelinked candidate; hardware-specific UFS root is intentionally not enabled.
+version = 1
+
+[boot]
+timeout = 5
+default = "xnu"
+
+[ui]
+title = "Xiaomi Mi 8 - XNU bring-up"
+
+[kits]
+autoload = false
+
+[[entry]]
+id = "xnu"
+title = "XNU bring-up"
+type = "xnu"
+path = "Payloads/kernel.macho"
+args = "debug=0x14e kt_fixed_zones=120 armcpu-timer-intid=19 boot-progress=2 sheng-log=1 sheng-autoreset=2400 sheng-smp=1 cpus=8 armcpu-self-ipi=1 sheng-pmgr=2 offline-mobile-graphics-load=1 offline-mobile-graphics-client=1 offline-legacy-register=1 offline-legacy-phase=4 offline-legacy-gop=1 offline-legacy-pm=1 sheng-vsync=60 sheng-banner=0"
+
+[[entry]]
+id = "shutdown"
+title = "Power off"
+type = "action"
+action = "shutdown"

@@ -1,0 +1,33 @@
+# First hardware payload test for the Xiaomi Mi 8 (dipper).
+# The image is carried as the Android boot image ramdisk; DipperBootMemoryDxe
+# publishes that memory as a block device and the FAT driver exposes this file.
+version = 1
+
+[boot]
+timeout = 5
+default = "hello"
+
+[ui]
+title = "Xiaomi Mi 8 - UniXNU"
+
+[kits]
+autoload = false
+
+[[entry]]
+id = "hello"
+title = "Dipper payload test"
+type = "efi"
+path = "Payloads/HelloPayload.efi"
+args = "plain shutdown"
+
+[[entry]]
+id = "reset"
+title = "Restart"
+type = "action"
+action = "reset"
+
+[[entry]]
+id = "shutdown"
+title = "Power off"
+type = "action"
+action = "shutdown"

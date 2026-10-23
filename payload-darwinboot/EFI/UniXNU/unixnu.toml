@@ -1,0 +1,26 @@
+# DarwinBoot handoff fixture. A green screen means DarwinBoot validated and
+# entered the synthetic ARM64 Mach-O at EL1 with the MMU off; red means failure.
+version = 1
+
+[boot]
+timeout = 5
+default = "handoff"
+
+[ui]
+title = "Xiaomi Mi 8 - DarwinBoot"
+
+[kits]
+autoload = false
+
+[[entry]]
+id = "handoff"
+title = "DarwinBoot EL1 handoff"
+type = "xnu"
+path = "Payloads/fixture.macho"
+args = "dipper-darwinboot-fixture=1"
+
+[[entry]]
+id = "shutdown"
+title = "Power off"
+type = "action"
+action = "shutdown"

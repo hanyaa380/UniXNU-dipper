@@ -1,0 +1,42 @@
+[Defines]
+  INF_VERSION                    = 0x0001001B
+  BASE_NAME                      = DipperBootMemoryDxe
+  FILE_GUID                      = F13FDB2B-AF37-489B-8719-E7AA23F660C4
+  MODULE_TYPE                    = DXE_DRIVER
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = DipperBootMemoryDxeEntry
+
+[Sources]
+  DipperBootMemoryDxe.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  dipperPkg/dipper.dec
+  SiliciumPkg/SiliciumPkg.dec
+
+[LibraryClasses]
+  BaseLib
+  BaseMemoryLib
+  DebugLib
+  DxeServicesLib
+  DxeServicesTableLib
+  FdtLib
+  HobLib
+  MemoryAllocationLib
+  UefiBootServicesTableLib
+  UefiDriverEntryPoint
+
+[Guids]
+  gDipperPayloadFileGuid                        ## CONSUMES
+  gSiliciumAppendedPayloadHobGuid               ## CONSUMES
+  gSiliciumEntryArgHobGuid                      ## CONSUMES
+
+[Protocols]
+  gEfiBlockIoProtocolGuid                       ## PRODUCES
+  gEfiDevicePathProtocolGuid                    ## PRODUCES
+  gEfiFirmwareVolume2ProtocolGuid               ## CONSUMES
+  gSiliciumRamReadyProtocolGuid                 ## CONSUMES
+
+[Depex]
+  gSiliciumRamReadyProtocolGuid
