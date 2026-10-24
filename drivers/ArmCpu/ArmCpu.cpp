@@ -23,6 +23,12 @@ extern "C" kern_return_t thread_terminate (thread_t);
 extern "C" {
 volatile uint32_t armcpu_registered = 0;
 volatile uint32_t armcpu_gic_ready = 0;
+volatile uint32_t armcpu_probe_calls = 0, armcpu_start_calls = 0;
+volatile uint32_t armcpu_gic_map_stage = 0, armcpu_gic_map_failure = 0;
+volatile uint32_t armcpu_gic_raw[12] = {
+  0xdeadbeef, 0xdeadbeef, 0xdeadbeef, 0xdeadbeef, 0xdeadbeef, 0xdeadbeef,
+  0xdeadbeef, 0xdeadbeef, 0xdeadbeef, 0xdeadbeef, 0xdeadbeef, 0xdeadbeef
+};
 volatile uint64_t armcpu_timer_interrupts = 0;
 volatile uint64_t armcpu_ipi_interrupts = 0;
 volatile uint64_t armcpu_ipi_sent = 0;       // SGIs the kernel asked ArmCpu::signalCPU to send
@@ -365,6 +371,7 @@ volatile uint32_t armcpu_spi_unhandled_id = 0;
 
 IOService *ArmCpu::probe (IOService *provider, SInt32 *score)
 {
+  armcpu_probe_calls = armcpu_probe_calls + 1;
   OSData *type = OSDynamicCast (OSData, provider->getProperty ("device_type"));
   OSData *reg = OSDynamicCast (OSData, provider->getProperty ("reg"));
   uint32_t id;
@@ -386,9 +393,12 @@ IOService *ArmCpu::probe (IOService *provider, SInt32 *score)
 
 bool ArmCpu::mapGic (void)
 {
+  armcpu_gic_map_stage = 1;
+  armcpu_gic_map_failure = 0;
   IORegistryEntry *soc = IORegistryEntry::fromPath ("/arm-io", gIODTPlane);
   IORegistryEntry *gic = IORegistryEntry::fromPath ("/arm-io/intc", gIODTPlane);
   if ((soc == nullptr) || (gic == nullptr)) {
+    armcpu_gic_map_failure = soc == nullptr ? 1 : 2;
     if (soc != nullptr) { soc->release (); }
     if (gic != nullptr) { gic->release (); }
     return false;
@@ -398,6 +408,10 @@ bool ArmCpu::mapGic (void)
   OSData *compatible = OSDynamicCast (OSData, gic->getProperty ("compatible"));
   uint64_t bus[3];
   uint64_t regions[4];
+  armcpu_gic_map_stage = 2;
+  armcpu_gic_raw[0] = ranges ? static_cast<uint32_t> (ranges->getLength ()) : 0xdeadbeef;
+  armcpu_gic_raw[1] = reg ? static_cast<uint32_t> (reg->getLength ()) : 0xdeadbeef;
+  armcpu_gic_raw[2] = compatible ? static_cast<uint32_t> (compatible->getLength ()) : 0xdeadbeef;
   bool valid = (ranges != nullptr) && (ranges->getLength () == sizeof (bus)) &&
                (reg != nullptr) && (reg->getLength () == sizeof (regions)) &&
                (compatible != nullptr) && (compatible->getLength () == 11) &&
@@ -405,6 +419,8 @@ bool ArmCpu::mapGic (void)
   if (valid) {
     memcpy (bus, ranges->getBytesNoCopy (), sizeof (bus));
     memcpy (regions, reg->getBytesNoCopy (), sizeof (regions));
+    for (unsigned index = 0; index < 4; index++) armcpu_gic_raw[3 + index] = static_cast<uint32_t> (regions[index]);
+    armcpu_gic_raw[7] = static_cast<uint32_t> (bus[1]);
   }
   OSData *strideProperty = OSDynamicCast (OSData, gic->getProperty ("redistributor-stride"));
   if (strideProperty != nullptr && strideProperty->getLength () == sizeof (uint64_t)) {
@@ -415,12 +431,15 @@ bool ArmCpu::mapGic (void)
   soc->release ();
   gic->release ();
   if (!valid || (regions[1] < 0x10000) || (regions[3] < 0x20000)) {
+    armcpu_gic_map_failure = 3;
     return false;
   }
+  armcpu_gic_map_stage = 3;
   for (unsigned index = 0; index < 4; index += 2) {
     if ((regions[index] < bus[0]) || (regions[index] - bus[0] > bus[2]) ||
         (regions[index + 1] > bus[2] - (regions[index] - bus[0])) ||
         (bus[1] + regions[index] - bus[0] < bus[1])) {
+      armcpu_gic_map_failure = 4;
       return false;
     }
   }
@@ -429,17 +448,25 @@ bool ArmCpu::mapGic (void)
   OSSharedPtr<IOMemoryDescriptor> rdMemory (IOMemoryDescriptor::withPhysicalAddress (
       bus[1] + regions[2] - bus[0], regions[3], kIODirectionInOut), OSNoRetain);
   if (!distMemory || !rdMemory) {
+    armcpu_gic_map_failure = 5;
     return false;
   }
+  armcpu_gic_map_stage = 4;
   distributor = OSSharedPtr<IOMemoryMap> (distMemory->map (kIOMapAnywhere | kIOMapInhibitCache), OSNoRetain);
   redistributors = OSSharedPtr<IOMemoryMap> (rdMemory->map (kIOMapAnywhere | kIOMapInhibitCache), OSNoRetain);
   if (!distributor || !redistributors) {
+    armcpu_gic_map_failure = 6;
     return false;
   }
+  armcpu_gic_map_stage = 5;
   dist = static_cast<uintptr_t> (distributor->getVirtualAddress ());
-  if (((read32 (dist, 0xffe8) >> 4) & 15) != 3) {
+  armcpu_gic_raw[8] = read32 (dist, 0xffe8);
+  armcpu_gic_raw[9] = read32 (dist, 4);
+  if (((armcpu_gic_raw[8] >> 4) & 15) != 3) {
+    armcpu_gic_map_failure = 7;
     return false;
   }
+  armcpu_gic_map_stage = 6;
   redistBase = static_cast<uintptr_t> (redistributors->getVirtualAddress ());
   redistSize = regions[3];
   gDistMap = distributor;
@@ -502,7 +529,14 @@ bool ArmCpu::wakeRedistributor (bool local)
 
 bool ArmCpu::prepareGic (void)
 {
-  if (!mapGic () || !initDistributor () || !wakeRedistributor (true)) { return false; }
+  if (!mapGic ()) { return false; }
+  armcpu_gic_map_stage = 7;
+  if (!initDistributor ()) { armcpu_gic_map_failure = 8; return false; }
+  armcpu_gic_map_stage = 8;
+  if (!wakeRedistributor (true)) { armcpu_gic_map_failure = 9; return false; }
+  armcpu_gic_raw[10] = armcpu_gic_typer_probe[0];
+  armcpu_gic_raw[11] = armcpu_gic_typer_probe[1];
+  armcpu_gic_map_stage = 9;
   gGicShared = 1;
   return true;
 }
@@ -544,11 +578,13 @@ void ArmCpu::enableGic (void)
     armcpu_gic_boot[7] = static_cast<uint32_t> (sre);
   }
   armcpu_gic_ready = 1;
+  armcpu_gic_map_stage = 10;
 }
 
 
 bool ArmCpu::start (IOService *provider)
 {
+  armcpu_start_calls = armcpu_start_calls + 1;
   unsigned skip = 0;
   PE_parse_boot_argn ("armcpu-skip-gic", &skip, sizeof (skip));
   skipGic = skip != 0;

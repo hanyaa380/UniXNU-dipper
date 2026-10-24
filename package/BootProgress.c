@@ -169,6 +169,8 @@ extern volatile unsigned boot_process_busy __attribute__((weak_import));
 static unsigned process_worker_status,process_capture_age;
 extern volatile uint32_t __attribute__((weak_import)) armcpu_smp_requested,armcpu_smp_running,armcpu_smp_conduit,armcpu_boot_mpidr;
 extern volatile uint32_t __attribute__((weak_import)) armcpu_smp_step[8],armcpu_smp_seen_mpidr[8],armcpu_smp_fail[8],armcpu_smp_sys[8][5],armcpu_boot_sys[5],armcpu_gic_stride,armcpu_gic_typer_probe[2];
+extern volatile uint32_t __attribute__((weak_import)) armcpu_probe_calls,armcpu_start_calls,armcpu_gic_map_stage,armcpu_gic_map_failure;
+extern volatile uint32_t __attribute__((weak_import)) armcpu_gic_raw[12],armcpu_gic_boot[8],armcpu_gic_ready,armcpu_registered;
 extern volatile int32_t __attribute__((weak_import)) armcpu_smp_psci_rc[8];
 extern volatile uint32_t __attribute__((weak_import)) armcpu_irq_phase,armcpu_irq_id,armcpu_quiesce_calls,armcpu_halt_calls;
 extern int nprocs;
@@ -361,11 +363,14 @@ static void draw(unsigned now) {
   }
   if(&armcpu_irq_phase){
     uint64_t vct,cval,ctl,daif;
+    static uint64_t previous_vct;
     __asm__ volatile("mrs %0,cntvct_el0" : "=r"(vct));
     __asm__ volatile("mrs %0,cntv_cval_el0" : "=r"(cval));
     __asm__ volatile("mrs %0,cntv_ctl_el0" : "=r"(ctl));
     __asm__ volatile("mrs %0,daif" : "=r"(daif));
-    snprintf(b,sizeof(b),"TIMER vct=%llx cval=%llx ctl=%llx DAIF=%llx (read-only monitor sample)",vct,cval,ctl,daif);
+    snprintf(b,sizeof(b),"TIMER vct=%llx dv=%llx cval=%llx dcv=%lld ctl=%llx DAIF=%llx",
+      vct,previous_vct?vct-previous_vct:0,cval,(long long)(cval-vct),ctl,daif);
+    previous_vct=vct;
     if(!(&native_touch_stage_req && native_touch_stage_req))line(42,b,0xffaaaaaa);
     snprintf(b,sizeof(b),"CPU IRQ phase=%u id=%u quiesce=%u halt=%u; phase 0=exit 2=clock 4=IPI 6=EOI",
       armcpu_irq_phase,armcpu_irq_id,armcpu_quiesce_calls,armcpu_halt_calls);line(37,b,0xffffff00);
@@ -378,8 +383,23 @@ static void draw(unsigned now) {
         if(armcpu_smp_fail[c]&&n<sizeof(b)-14)n+=(unsigned)snprintf(b+n,sizeof(b)-n,"!fail%u",armcpu_smp_fail[c]);
       }
       line(38,b,0xff00ff88);
-      snprintf(b,sizeof(b),"GIC stride=%x last redistributor read: offset=%x typer.lo=%x",
-        armcpu_gic_stride,armcpu_gic_typer_probe[0],armcpu_gic_typer_probe[1]);
+      snprintf(b,sizeof(b),"ARMCPU probe=%u start=%u reg=%u GIC stage=%u fail=%u rdy=%u pidr=%x typer=%x",
+        &armcpu_probe_calls?armcpu_probe_calls:0,&armcpu_start_calls?armcpu_start_calls:0,
+        &armcpu_registered?armcpu_registered:0,&armcpu_gic_map_stage?armcpu_gic_map_stage:0,
+        &armcpu_gic_map_failure?armcpu_gic_map_failure:0,&armcpu_gic_ready?armcpu_gic_ready:0,
+        &armcpu_gic_raw[0]?armcpu_gic_raw[8]:0xdeadbeef,&armcpu_gic_raw[0]?armcpu_gic_raw[9]:0xdeadbeef);
+      line(29,b,0xff00ff88);
+      if(&armcpu_gic_boot[0] && armcpu_gic_ready) {
+        snprintf(b,sizeof(b),"GIC R=%x/%x D=%x/%x W=%x PMR=%x IG=%x SRE=%x",
+          armcpu_gic_boot[0],armcpu_gic_boot[1],armcpu_gic_boot[2],armcpu_gic_boot[3],
+          armcpu_gic_boot[4],armcpu_gic_boot[5],armcpu_gic_boot[6],armcpu_gic_boot[7]);
+      } else {
+        snprintf(b,sizeof(b),"GIC raw rng=%u reg=%u cmp=%u | %x/%x/%x/%x stride=%x typer=%x",
+          &armcpu_gic_raw[0]?armcpu_gic_raw[0]:0xdeadbeef,&armcpu_gic_raw[0]?armcpu_gic_raw[1]:0xdeadbeef,
+          &armcpu_gic_raw[0]?armcpu_gic_raw[2]:0xdeadbeef,&armcpu_gic_raw[0]?armcpu_gic_raw[3]:0xdeadbeef,
+          &armcpu_gic_raw[0]?armcpu_gic_raw[4]:0xdeadbeef,&armcpu_gic_raw[0]?armcpu_gic_raw[5]:0xdeadbeef,
+          &armcpu_gic_raw[0]?armcpu_gic_raw[6]:0xdeadbeef,armcpu_gic_stride,armcpu_gic_typer_probe[1]);
+      }
       line(30,b,0xff00ff88);
     }
     if(&native_cpufreq_stage && native_cpufreq_stage>=2)line(39,native_cpufreq_row,0xff00ccff);
