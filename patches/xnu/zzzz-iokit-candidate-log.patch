@@ -1,0 +1,59 @@
+diff --git a/iokit/Kernel/IOService.cpp b/iokit/Kernel/IOService.cpp
+--- a/iokit/Kernel/IOService.cpp
++++ b/iokit/Kernel/IOService.cpp
+@@ -3903,9 +3903,17 @@
+ 		bool newIsBoot = false;
+ 		bool existingIsBoot = false;
+ 		bool isReplacementCandidate = false;
+ 
+ 		do {
+ 			client = NULL;
++			{
++				OSSymbol *candidate = OSDynamicCast(OSSymbol,
++				    match->getObject(gIOClassKey));
++				char stage[96];
++				snprintf(stage, sizeof(stage), "candidate scan %s",
++				    candidate ? candidate->getCStringNoCopy() : "?");
++				boot_progress_stage(stage);
++			}
+ 			isDext = (NULL != match->getObject(gIOUserServerNameKey));
+ 			if (isDext && !(kIODKEnable & gIODKDebug)) {
+ 				continue;
+@@ -4032,11 +4040,17 @@
+ 			do {
+ 				symbol = OSDynamicCast( OSSymbol,
+ 				    props->getObject( gIOClassKey));
+ 				if (!symbol) {
+ 					continue;
+ 				}
++				{
++					char stage[96];
++					snprintf(stage, sizeof(stage), "candidate instantiate %s",
++					    symbol->getCStringNoCopy());
++					boot_progress_stage(stage);
++				}
+ 
+ 				//IOLog("%s alloc (symbol %p props %p)\n", symbol->getCStringNoCopy(), IOSERVICE_OBFUSCATE(symbol), IOSERVICE_OBFUSCATE(props));
+ 
+ 				// alloc the driver instance
+ 				inst = (IOService *) OSMetaClass::allocClassWithName( symbol);
+@@ -4078,11 +4095,19 @@
+ 				// & probe the new driver instance
+ #if IOMATCHDEBUG
+ 				if (debugFlags & kIOLogProbe) {
+ 					LOG("%s::probe(%s)\n",
+ 					    inst->getMetaClass()->getClassName(), getName());
+ 				}
+ #endif
++				{
++					char stage[96];
++					snprintf(stage, sizeof(stage), "candidate probe %s",
++					    inst->getMetaClass()->getClassName());
++					boot_progress_stage(stage);
++				}
+ 				newInst = inst->probe( this, &score );
++				boot_progress_stage(newInst ? "candidate probe returned selected" :
++				    "candidate probe returned rejected");
+ 				inst->detach( this );
+ 				if (NULL == newInst) {
+ #if IOMATCHDEBUG
