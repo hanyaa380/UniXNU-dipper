@@ -54,6 +54,39 @@
  
  	/*
  	 *	Create the device service.
+@@ -696,8 +697,9 @@
+ 	vm_kernel_addrhash_salt_ext = early_random();
+ 
+ #ifdef  IOKIT
+-	kernel_bootstrap_log("PE_init_iokit");
++	kernel_bootstrap_log("PE_init_iokit enter");
+ 	PE_init_iokit();
++	kernel_bootstrap_log("PE_init_iokit returned");
+ #endif
+ 
+ 	assert(ml_get_interrupts_enabled() == FALSE);
+@@ -784,8 +786,9 @@
+ #endif
+ 
+ 	/* No changes to kernel text and rodata beyond this point. */
+-	kernel_bootstrap_log("machine_lockdown");
++	kernel_bootstrap_log("machine_lockdown enter");
+ 	machine_lockdown();
++	kernel_bootstrap_log("machine_lockdown returned");
+ 
+ #ifdef CONFIG_XNUPOST
+ 	kern_return_t result = kernel_list_tests();
+@@ -797,8 +801,9 @@
+ #endif /* CONFIG_XNUPOST */
+ 
+ #ifdef  IOKIT
+-	kernel_bootstrap_log("PE_lockdown_iokit");
++	kernel_bootstrap_log("PE_lockdown_iokit enter");
+ 	PE_lockdown_iokit();
++	kernel_bootstrap_log("PE_lockdown_iokit returned");
+ #endif
+ 	/*
+ 	 * max_cpus must be nailed down by the time PE_lockdown_iokit() finishes,
 --- a/osfmk/console/video_console.c
 +++ b/osfmk/console/video_console.c
 @@ -1,3 +1,4 @@
@@ -346,4 +379,116 @@
 +
  	if (p->p_crash_behavior != 0 || p == initproc) {
  		proc_handle_critical_exit(p, rv);
+ 	}
+--- a/pexpert/arm/pe_init.c
++++ b/pexpert/arm/pe_init.c
+@@ -21,6 +21,7 @@
+ #include <os/overflow.h>
+ 
+ #include <pexpert/arm64/board_config.h>
++#include <kern/boot_progress.h>
+ 
+ #if CONFIG_SPTM
+ #include <arm64/sptm/sptm.h>
+@@ -264,7 +265,9 @@
+ 	uint32_t        load_kernel_start_value = 0;
+ 	uint32_t        populate_registry_time_value = 0;
+ 
++	boot_progress_stage("PE_init_iokit console enter");
+ 	PE_init_printf(TRUE);
++	boot_progress_stage("PE_init_iokit console returned");
+ 
+ 	printf("iBoot version: %s\n", iBoot_version);
+ #if defined(TARGET_OS_OSX) && defined(__arm64__)
+@@ -380,8 +383,12 @@
+ #endif
+ 	}
+ 
++	boot_progress_stage("InitIOKit enter");
+ 	InitIOKit(PE_state.deviceTreeHead);
++	boot_progress_stage("InitIOKit returned");
++	boot_progress_stage("ConfigureIOKit enter");
+ 	ConfigureIOKit();
++	boot_progress_stage("ConfigureIOKit returned");
+ }
+ 
+ void
+@@ -399,8 +406,11 @@
+ 	 * against a kernel which has not yet enabled the full set of available
+ 	 * hardware protections.
+ 	 */
++	boot_progress_stage("zalloc_iokit_lockdown enter");
+ 	zalloc_iokit_lockdown();
++	boot_progress_stage("StartIOKitMatching enter");
+ 	StartIOKitMatching();
++	boot_progress_stage("StartIOKitMatching returned");
+ }
+ 
+ void
+--- a/iokit/Kernel/IOStartIOKit.cpp
++++ b/iokit/Kernel/IOStartIOKit.cpp
+@@ -30,6 +30,9 @@
+ #include <libkern/c++/OSKext.h>
+ #include <libkern/section_keywords.h>
+ #include <libkern/version.h>
++extern "C" {
++#include <kern/boot_progress.h>
++}
+ #include <IOKit/IORegistryEntry.h>
+ #include <IOKit/IODeviceTreeSupport.h>
+ #include <IOKit/IOCatalogue.h>
+@@ -133,6 +136,7 @@
+ void
+ InitIOKit(void *dtTop)
+ {
++	boot_progress_stage("InitIOKit IOLibInit enter");
+ 	// Compat for boot-args
+ 	gIOKitTrace |= (gIOKitDebug & kIOTraceCompatBootArgs);
+ 
+@@ -144,8 +148,11 @@
+ 	// initialise as basic OS services.
+ 	//
+ 	IOLibInit();
++	boot_progress_stage("InitIOKit IOLibInit returned");
+ 	OSlibkernInit();
++	boot_progress_stage("InitIOKit OSlibkernInit returned");
+ 	IOMachPortInitialize();
++	boot_progress_stage("InitIOKit IOMachPortInitialize returned");
+ 
+ 	gIOProgressBackbufferKey  = OSSymbol::withCStringNoCopy(kIOProgressBackbufferKey);
+ 	gIORemoveOnReadProperties = OSSet::withObjects((const OSObject **) &gIOProgressBackbufferKey, 1);
+@@ -161,6 +168,7 @@
+ 		panic("Failed to initialize IOKit root nub");
+ 	}
+ 	gRootNub->attach(NULL);
++	boot_progress_stage("InitIOKit root nub attached");
+ 
+ 	/* If the bootstrap segment set up a function to record startup
+ 	 * extensions, call it now.
+@@ -168,13 +176,16 @@
+ 	if (record_startup_extensions_function) {
+ 		record_startup_extensions_function();
+ 	}
++	boot_progress_stage("InitIOKit returned");
+ }
+ 
+ void
+ ConfigureIOKit(void)
+ {
+ 	assert(gRootNub != NULL);
++	boot_progress_stage("ConfigureIOKit defaults enter");
+ 	gRootNub->configureDefaults();
++	boot_progress_stage("ConfigureIOKit defaults returned");
+ }
+ 
+ void
+@@ -182,7 +193,9 @@
+ {
+ 	SOCD_TRACE_XNU(START_IOKIT);
+ 	assert(gRootNub != NULL);
++	boot_progress_stage("StartIOKitMatching register enter");
+ 	bool ok = gRootNub->startIOServiceMatching();
++	boot_progress_stage("StartIOKitMatching register returned");
+ 	if (__improbable(!ok)) {
+ 		panic("Failed to start IOService matching");
  	}

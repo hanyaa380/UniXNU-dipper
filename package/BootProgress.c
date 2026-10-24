@@ -171,6 +171,9 @@ extern volatile uint32_t __attribute__((weak_import)) armcpu_smp_requested,armcp
 extern volatile uint32_t __attribute__((weak_import)) armcpu_smp_step[8],armcpu_smp_seen_mpidr[8],armcpu_smp_fail[8],armcpu_smp_sys[8][5],armcpu_boot_sys[5],armcpu_gic_stride,armcpu_gic_typer_probe[2];
 extern volatile uint32_t __attribute__((weak_import)) armcpu_probe_calls,armcpu_start_calls,armcpu_gic_map_stage,armcpu_gic_map_failure;
 extern volatile uint32_t __attribute__((weak_import)) armcpu_gic_raw[12],armcpu_gic_boot[8],armcpu_gic_ready,armcpu_registered;
+extern volatile uint32_t __attribute__((weak_import)) armdt_platform_configured,armdt_platform_child_count,armdt_platform_cpu_count;
+extern volatile uint32_t __attribute__((weak_import)) armdt_platform_bus_count,armdt_platform_defaults_count;
+extern volatile uint32_t __attribute__((weak_import)) armdt_platform_nvram_proxy,armdt_platform_device_count;
 extern volatile int32_t __attribute__((weak_import)) armcpu_smp_psci_rc[8];
 extern volatile uint32_t __attribute__((weak_import)) armcpu_irq_phase,armcpu_irq_id,armcpu_quiesce_calls,armcpu_halt_calls;
 extern int nprocs;
@@ -401,6 +404,13 @@ static void draw(unsigned now) {
           &armcpu_gic_raw[0]?armcpu_gic_raw[6]:0xdeadbeef,armcpu_gic_stride,armcpu_gic_typer_probe[1]);
       }
       line(30,b,0xff00ff88);
+    }
+    if(&armdt_platform_configured) {
+      snprintf(b,sizeof(b),"PLAT ArmDT cfg=%u nv=%u child=%u cpu=%u bus=%u defaults=%u dev=%u",
+        armdt_platform_configured,armdt_platform_nvram_proxy,armdt_platform_child_count,
+        armdt_platform_cpu_count,armdt_platform_bus_count,armdt_platform_defaults_count,
+        armdt_platform_device_count);
+      line(28,b,0xff88ddff);
     }
     if(&native_cpufreq_stage && native_cpufreq_stage>=2)line(39,native_cpufreq_row,0xff00ccff);
     {
