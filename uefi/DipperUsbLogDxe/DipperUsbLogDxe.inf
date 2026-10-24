@@ -1,0 +1,34 @@
+[Defines]
+  INF_VERSION                    = 0x0001001B
+  BASE_NAME                      = DipperUsbLogDxe
+  FILE_GUID                      = 2A9D42D9-DA9A-4A48-9E76-5B8E5C4F1301
+  MODULE_TYPE                    = DXE_DRIVER
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = DipperUsbLogEntry
+
+[Sources]
+  DipperUsbLogDxe.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  Silicon/Qualcomm/QcomPkg/QcomPkg.dec
+  Platforms/Xiaomi/dipperPkg/dipper.dec
+
+[LibraryClasses]
+  BaseLib
+  BaseMemoryLib
+  DebugLib
+  MemoryAllocationLib
+  PrintLib
+  UefiBootServicesTableLib
+  UefiDriverEntryPoint
+
+[Protocols]
+  gEfiUsbDeviceProtocolGuid
+
+[Guids]
+  gEfiEventExitBootServicesGuid
+
+[Depex]
+  gEfiUsbDeviceProtocolGuid

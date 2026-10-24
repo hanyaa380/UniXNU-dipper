@@ -41,7 +41,8 @@ EDITS = [
      '  UniXNUPkg/Application/UniXNU/UniXNU.inf\n'
      '  UniXNUPkg/Driver/UniXNUDxe/UniXNUDxe.inf\n'
      '  DarwinBootPkg/Driver/DarwinBoot.inf\n'
-     '  dipperPkg/Drivers/DipperBootMemoryDxe/DipperBootMemoryDxe.inf\n'),
+     '  dipperPkg/Drivers/DipperBootMemoryDxe/DipperBootMemoryDxe.inf\n'
+     '  dipperPkg/Drivers/DipperUsbLogDxe/DipperUsbLogDxe.inf\n'),
     ('dipper.fdf', '  INF SiliciumPkg/Drivers/SmBiosTableDxe/SmBiosTableDxe.inf\n',
      '  INF SiliciumPkg/Drivers/SmBiosTableDxe/SmBiosTableDxe.inf\n\n'
      '  # UniXNU\n'
@@ -52,7 +53,8 @@ EDITS = [
     # is a volume; loaded where uefi-sheng loads ShengBootMemoryDxe.
     ('Include/DXE.inc', '  INF MdeModulePkg/Universal/DevicePathDxe/DevicePathDxe.inf\n',
      '  INF MdeModulePkg/Universal/DevicePathDxe/DevicePathDxe.inf\n'
-     '  INF dipperPkg/Drivers/DipperBootMemoryDxe/DipperBootMemoryDxe.inf\n'),
+     '  INF dipperPkg/Drivers/DipperBootMemoryDxe/DipperBootMemoryDxe.inf\n'
+     '  INF dipperPkg/Drivers/DipperUsbLogDxe/DipperUsbLogDxe.inf\n'),
 ]
 
 # SEC of SiliciumPkg, shared by every device of the checkout; uefi-sheng c5ede6f6b and 3a7f5d4ad on the current SEC.
@@ -336,6 +338,7 @@ def main():
         if path.is_file() and path.suffix in ('.dsc', '.fdf', '.dec', '.inc', '.inf', '.py', '.c', '.h'):
             rename_text(path)
     shutil.copytree(ROOT / 'uefi/DipperBootMemoryDxe', target / 'Drivers/DipperBootMemoryDxe')
+    shutil.copytree(ROOT / 'uefi/DipperUsbLogDxe', target / 'Drivers/DipperUsbLogDxe')
     if (ROOT / 'uefi/EmbeddedPayload').is_dir():
         shutil.copytree(ROOT / 'uefi/EmbeddedPayload', target / 'EmbeddedPayload')
     (target / 'dipper.dec').write_text(
