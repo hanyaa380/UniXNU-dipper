@@ -1259,6 +1259,11 @@ static void monitor(void *arg, wait_result_t result) {
 void boot_progress_start(void) {
   if (!enabled || started) return;
   started=1;thread_t thread;
+  uint32_t workers=1;
+  if(PE_parse_boot_argn("boot-progress-workers",&workers,sizeof workers) && !workers) {
+    boot_progress_stage("monitor workers disabled by boot argument");
+    return;
+  }
   if(kernel_thread_start_priority(monitor,0,BASEPRI_PREEMPT,&thread)!=KERN_SUCCESS) {
     boot_progress_stage("monitor thread creation FAILED; IRQ sampling remains"); return;
   }
