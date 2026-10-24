@@ -84,6 +84,7 @@ static void xpc_fail_note(int status,unsigned ns,uint64_t code) {
 static struct bp_display display;
 static struct bp_core state, render_snapshot;
 static unsigned render_busy;
+static char main_stage[BP_COLS] = "boot";
 // boot-diag-resume=<seconds>: after the OS stops scanning out frames for that long, take the panel back for
 // the diagnostic page. Any new validated scanout yields it again through boot_progress_prepare_scanout.
 static unsigned resume_after,last_scanout_at;
@@ -171,6 +172,7 @@ extern volatile uint32_t __attribute__((weak_import)) armcpu_smp_requested,armcp
 extern volatile uint32_t __attribute__((weak_import)) armcpu_smp_step[8],armcpu_smp_seen_mpidr[8],armcpu_smp_fail[8],armcpu_smp_sys[8][5],armcpu_boot_sys[5],armcpu_gic_stride,armcpu_gic_typer_probe[2];
 extern volatile uint32_t __attribute__((weak_import)) armcpu_probe_calls,armcpu_start_calls,armcpu_gic_map_stage,armcpu_gic_map_failure;
 extern volatile uint32_t __attribute__((weak_import)) armcpu_gic_raw[12],armcpu_gic_boot[8],armcpu_gic_ready,armcpu_registered;
+extern volatile uint64_t __attribute__((weak_import)) armcpu_sgi_probe[12];
 extern volatile uint32_t __attribute__((weak_import)) armdt_platform_configured,armdt_platform_child_count,armdt_platform_cpu_count;
 extern volatile uint32_t __attribute__((weak_import)) armdt_platform_bus_count,armdt_platform_defaults_count;
 extern volatile uint32_t __attribute__((weak_import)) armdt_platform_nvram_proxy,armdt_platform_device_count;
@@ -375,8 +377,8 @@ static void draw(unsigned now) {
       vct,previous_vct?vct-previous_vct:0,cval,(long long)(cval-vct),ctl,daif);
     previous_vct=vct;
     if(!(&native_touch_stage_req && native_touch_stage_req))line(42,b,0xffaaaaaa);
-    snprintf(b,sizeof(b),"CPU IRQ phase=%u id=%u quiesce=%u halt=%u; phase 0=exit 2=clock 4=IPI 6=EOI",
-      armcpu_irq_phase,armcpu_irq_id,armcpu_quiesce_calls,armcpu_halt_calls);line(37,b,0xffffff00);
+    snprintf(b,sizeof(b),"CPU max=%u IRQ phase=%u id=%u quiesce=%u halt=%u; phase 0=exit 2=clock 4=IPI 6=EOI",
+      machine_info.max_cpus,armcpu_irq_phase,armcpu_irq_id,armcpu_quiesce_calls,armcpu_halt_calls);line(37,b,0xffffff00);
     if(&armcpu_smp_requested){
       unsigned n=(unsigned)snprintf(b,sizeof(b),"SMP req=%u run=%u cond=%u boot=%x |",
         armcpu_smp_requested,armcpu_smp_running,armcpu_smp_conduit,armcpu_boot_mpidr&0xffffff);
@@ -412,6 +414,14 @@ static void draw(unsigned now) {
         armdt_platform_device_count);
       line(28,b,0xff88ddff);
     }
+    if(&armcpu_sgi_probe[0] && armcpu_sgi_probe[10]) {
+      snprintf(b,sizeof(b),"SGI self EL=%llu VBAR=%llx mpidr=%llx G1=%llx G0=%llx PMR=%llx IG=%llx CTRL=%llx RPR=%llx",
+        armcpu_sgi_probe[10]>>2,armcpu_sgi_probe[11],armcpu_sgi_probe[0],armcpu_sgi_probe[1],
+        armcpu_sgi_probe[2],armcpu_sgi_probe[3],armcpu_sgi_probe[4],armcpu_sgi_probe[6],armcpu_sgi_probe[7]);
+      line(27,b,0xffff88cc);
+    }
+    snprintf(b,sizeof(b),"MAIN %.112s",main_stage);
+    line(26,b,0xff00ffff);
     if(&native_cpufreq_stage && native_cpufreq_stage>=2)line(39,native_cpufreq_row,0xff00ccff);
     {
       // The same raw counter delta converted two ways: with the device-tree timebase (what the kernel and user space use)
@@ -655,6 +665,11 @@ void boot_progress_stage(const char *text) {
   bp_stage(&state,text,now);
   if (!started && !state.frozen) draw(now);
   release();
+}
+void boot_progress_main_stage(const char *text) {
+  if (!text) return;
+  strlcpy(main_stage,text,sizeof(main_stage));
+  boot_progress_stage(text);
 }
 void boot_progress_process_stage(int pid,const char *name,const char *text) {
   if(!enabled || !take())return;

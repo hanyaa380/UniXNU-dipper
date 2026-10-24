@@ -37,8 +37,11 @@ volatile uint64_t armcpu_ipi_selftest_sent = 0;
 // 3 GICD_TYPER, 4 IGRPMODR0, 5 ICC_PMR_EL1, 6 ICC_IGRPEN1_EL1, 7 ICC_SRE_EL1.
 volatile uint32_t armcpu_gic_boot[8];
 volatile uint32_t armcpu_core_timer[8], armcpu_core_sgi[8];   // per logical core: architectural timer interrupts and SGI 0 taken
+volatile uint64_t armcpu_sgi_probe[12];                       // opt-in ICC_HPPIR probe plus CurrentEL/VBAR
+extern "C" void armcpu_sgi_selfprobe (uint64_t *out);
 static bool gSpiIpi = false;                // boot-arg armcpu-spi-ipi=1: IPIs are software-pended SPIs 1008+core routed to that core (ICC_SGI1R_EL1 generates nothing on this board)
 static bool gSelfIpi = false;               // boot-arg armcpu-self-ipi=1: every core sends itself SGI 0 from initCPU
+static bool gSgiSelfProbe = false;          // boot-arg armcpu-sgi-selfprobe=1: poll ICC_HPPIR for SGI 0..15
 volatile uint32_t armcpu_irq_phase = 0,armcpu_irq_id = 1023;
 volatile uint32_t armcpu_quiesce_calls = 0,armcpu_halt_calls = 0;
 // Secondary-CPU bring-up evidence (sheng-smp=1). Step values: 1 nub started, 2 registered, 3 start thread running,
@@ -591,6 +594,9 @@ bool ArmCpu::start (IOService *provider)
   unsigned selfIpi = 0;
   PE_parse_boot_argn ("armcpu-self-ipi", &selfIpi, sizeof (selfIpi));
   gSelfIpi = selfIpi == 1;
+  unsigned sgiSelfProbe = 0;
+  PE_parse_boot_argn ("armcpu-sgi-selfprobe", &sgiSelfProbe, sizeof (sgiSelfProbe));
+  gSgiSelfProbe = sgiSelfProbe == 1;
   unsigned spiIpi = 0;
   PE_parse_boot_argn ("armcpu-spi-ipi", &spiIpi, sizeof (spiIpi));
   gSpiIpi = spiIpi == 1;
@@ -839,6 +845,15 @@ void ArmCpu::initCPU (bool boot)
     return;
   }
   enableGic ();
+  if (gSgiSelfProbe) {
+    uint64_t probe[10];
+    armcpu_sgi_selfprobe (probe);
+    for (unsigned i = 0; i < 10; i++) armcpu_sgi_probe[i] = probe[i];
+    __asm__ volatile ("mrs %0, currentel" : "=r" (probe[0]));
+    __asm__ volatile ("mrs %0, vbar_el1" : "=r" (probe[1]));
+    armcpu_sgi_probe[10] = probe[0];
+    armcpu_sgi_probe[11] = probe[1];
+  }
   if (gSpiIpi) { spiIpiConfigure (gDist, logicalId, affinity); }
   if (gWdog && gWdogMode >= 3 && gDist && logicalId == gBarkCpu) { spiConfigure (gDist, kBarkIntid, affinity); }   // see gBarkCpu
   enableCPUTimeBase (true);

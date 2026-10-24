@@ -34,7 +34,7 @@
  static inline void
  kernel_bootstrap_log(const char *message)
  {
-+	boot_progress_stage(message);
++	boot_progress_main_stage(message);
  	if ((startup_debug & STARTUP_DEBUG_VERBOSE) &&
  	    startup_phase >= STARTUP_SUB_KPRINTF) {
  		kprintf("kernel_bootstrap: %s\n", message);
@@ -42,7 +42,7 @@
  static inline void
  kernel_bootstrap_thread_log(const char *message)
  {
-+	boot_progress_stage(message);
++	boot_progress_main_stage(message);
  	if ((startup_debug & STARTUP_DEBUG_VERBOSE) &&
  	    startup_phase >= STARTUP_SUB_KPRINTF) {
  		kprintf("kernel_bootstrap_thread: %s\n", message);
@@ -76,7 +76,7 @@
  
  #ifdef CONFIG_XNUPOST
  	kern_return_t result = kernel_list_tests();
-@@ -797,8 +801,9 @@
+@@ -797,25 +799,32 @@
  #endif /* CONFIG_XNUPOST */
  
  #ifdef  IOKIT
@@ -87,6 +87,29 @@
  #endif
  	/*
  	 * max_cpus must be nailed down by the time PE_lockdown_iokit() finishes,
+ 	 * at the latest
+ 	 */
++	kernel_bootstrap_log("vm_set_restrictions enter");
+ 	vm_set_restrictions(machine_info.max_cpus);
++	kernel_bootstrap_log("vm_set_restrictions returned");
+ 
+ 
+ #if KPERF
++	kernel_bootstrap_log("kperf_init_early enter");
+ 	kperf_init_early();
++	kernel_bootstrap_log("kperf_init_early returned");
+ #endif
+ 
+ 	/*
+ 	 *	Start the user bootstrap.
+ 	 */
+ #ifdef  MACH_BSD
++	kernel_bootstrap_log("bsd_init call enter");
+ 	bsd_init();
++	kernel_bootstrap_log("bsd_init call returned");
+ #endif
+ 
+ 
 --- a/osfmk/console/video_console.c
 +++ b/osfmk/console/video_console.c
 @@ -1,3 +1,4 @@
@@ -173,7 +196,7 @@
  #define bsd_init_kprintf(x, ...) kprintf("bsd_init: " x, ## __VA_ARGS__)
  #else
 -#define bsd_init_kprintf(x, ...)
-+#define bsd_init_kprintf(x, ...) boot_progress_stage("bsd_init: " x)
++#define bsd_init_kprintf(x, ...) boot_progress_main_stage("bsd_init: " x)
  #endif
  
  	throttle_init();
@@ -316,6 +339,7 @@
 +void boot_progress_bind(uintptr_t, unsigned, unsigned, unsigned, unsigned);
 +void boot_progress_putc(char);
 +void boot_progress_stage(const char *);
++void boot_progress_main_stage(const char *);
 +void boot_progress_irq(uint64_t, uint64_t, uint64_t);
 +void boot_progress_poll(void);
 +void boot_progress_user_breakpoint(void *, unsigned);
@@ -330,6 +354,7 @@
 +#define boot_progress_bind(...) ((void)0)
 +static inline void boot_progress_putc(char c) { (void)c; }
 +#define boot_progress_stage(s) ((void)0)
++#define boot_progress_main_stage(s) ((void)0)
 +#define boot_progress_irq(...) ((void)0)
 +#define boot_progress_poll() ((void)0)
 +#define boot_progress_user_breakpoint(...) ((void)0)
@@ -427,17 +452,18 @@
  void
 --- a/iokit/Kernel/IOStartIOKit.cpp
 +++ b/iokit/Kernel/IOStartIOKit.cpp
-@@ -30,6 +30,9 @@
+@@ -30,6 +30,10 @@
  #include <libkern/c++/OSKext.h>
  #include <libkern/section_keywords.h>
  #include <libkern/version.h>
 +extern "C" {
 +#include <kern/boot_progress.h>
++#include <pexpert/pexpert.h>
 +}
  #include <IOKit/IORegistryEntry.h>
  #include <IOKit/IODeviceTreeSupport.h>
  #include <IOKit/IOCatalogue.h>
-@@ -133,6 +136,7 @@
+@@ -133,6 +137,7 @@
  void
  InitIOKit(void *dtTop)
  {
@@ -445,7 +471,7 @@
  	// Compat for boot-args
  	gIOKitTrace |= (gIOKitDebug & kIOTraceCompatBootArgs);
  
-@@ -144,8 +148,11 @@
+@@ -144,8 +149,11 @@
  	// initialise as basic OS services.
  	//
  	IOLibInit();
@@ -457,7 +483,7 @@
  
  	gIOProgressBackbufferKey  = OSSymbol::withCStringNoCopy(kIOProgressBackbufferKey);
  	gIORemoveOnReadProperties = OSSet::withObjects((const OSObject **) &gIOProgressBackbufferKey, 1);
-@@ -161,6 +168,7 @@
+@@ -161,6 +169,7 @@
  		panic("Failed to initialize IOKit root nub");
  	}
  	gRootNub->attach(NULL);
@@ -465,7 +491,7 @@
  
  	/* If the bootstrap segment set up a function to record startup
  	 * extensions, call it now.
-@@ -168,13 +176,16 @@
+@@ -168,13 +177,16 @@
  	if (record_startup_extensions_function) {
  		record_startup_extensions_function();
  	}
@@ -482,7 +508,7 @@
  }
  
  void
-@@ -182,7 +193,9 @@
+@@ -182,9 +194,17 @@
  {
  	SOCD_TRACE_XNU(START_IOKIT);
  	assert(gRootNub != NULL);
@@ -492,3 +518,249 @@
  	if (__improbable(!ok)) {
  		panic("Failed to start IOService matching");
  	}
++	uint32_t direct = 0;
++	if (PE_parse_boot_argn("iokit-direct-match", &direct, sizeof(direct)) && direct) {
++		boot_progress_stage("StartIOKitMatching direct enter");
++		gRootNub->doServiceMatch(0);
++		boot_progress_stage("StartIOKitMatching direct returned");
++	}
+ 
+ #if !NO_KEXTD
+--- a/iokit/Kernel/IOService.cpp
++++ b/iokit/Kernel/IOService.cpp
+@@ -66,6 +66,10 @@
+ #include <sys/kdebug.h>
+ #include <string.h>
+ 
++extern "C" {
++#include <kern/boot_progress.h>
++}
++
+ #include <machine/pal_routines.h>
+ 
+ #define LOG kprintf
+@@ -1094,6 +1098,7 @@
+ 	bool        waitAgain;
+ 	bool        releaseAssertion = false;
+ 
++	boot_progress_stage("IOService startMatching enter");
+ 	if (options & kIOServiceDextRequirePowerForMatching) {
+ 		bool ok = gIOPMRootDomain->acquireDriverKitMatchingAssertion() == kIOReturnSuccess;
+ 		if (!ok) {
+@@ -1114,6 +1119,12 @@
+ 
+ 	needConfig =  (0 == (__state[1] & (kIOServiceNeedConfigState | kIOServiceConfigRunning)))
+ 	    && (0 == (__state[0] & kIOServiceInactiveState));
++	{
++		char stage[96];
++		snprintf(stage, sizeof(stage), "startMatching %s need=%u sync=%u options=%x",
++		    getName() ? getName() : "?", needConfig ? 1U : 0U, sync ? 1U : 0U, options);
++		boot_progress_stage(stage);
++	}
+ 
+ 	__state[1] |= kIOServiceNeedConfigState;
+ 
+@@ -1146,8 +1157,11 @@
+ 		} else if (!sync || (kIOServiceAsynchronous & options)) {
+ 			// assertion will be released when matching job is complete
+ 			releaseAssertion = false;
++			boot_progress_stage("IOService startMatching async branch");
+ 			_IOServiceJob::startJob( this, kMatchNubJob, options );
++			boot_progress_stage("IOService startMatching async branch returned");
+ 		} else {
++			boot_progress_stage("IOService startMatching sync branch");
+ 			do {
+ 				if ((__state[1] & kIOServiceNeedConfigState)) {
+ 					doServiceMatch( options );
+@@ -1283,6 +1287,7 @@
+ _IOServiceJob::startJob( IOService * nub, int type,
+     IOOptionBits options )
+ {
++	boot_progress_stage("IOServiceJob startJob enter");
+ 	_IOServiceJob *     job;
+ 
+ 	job = new _IOServiceJob;
+@@ -1297,6 +1302,8 @@
+ 		job->options    = options;
+ 		nub->retain();          // thread will release()
+ 		pingConfig( job );
++	} else {
++		boot_progress_stage("IOServiceJob allocation failed");
+ 	}
+ 
+ 	return job;
+@@ -3877,6 +3884,12 @@
+ 	dextCount = 0;
+ 
+ 	assert( matches );
++	{
++		char stage[96];
++		snprintf(stage, sizeof(stage), "probeCandidates %s count=%u",
++		    getName() ? getName() : "?", (unsigned)matches->getCount());
++		boot_progress_stage(stage);
++	}
+ 	while (!needReloc
+ 	    && (nextMatch = matches->getFirstObject())) {
+ 		nextMatch->retain();
+@@ -5120,17 +5143,22 @@
+ {
+ 	_IOConfigThread *   inst;
+ 
++	boot_progress_stage("IOConfigThread create enter");
+ 	do {
+ 		if (!(inst = new _IOConfigThread)) {
++			boot_progress_stage("IOConfigThread allocation failed");
+ 			continue;
+ 		}
+ 		if (!inst->init()) {
++			boot_progress_stage("IOConfigThread init failed");
+ 			continue;
+ 		}
+ 		thread_t thread;
+ 		if (KERN_SUCCESS != kernel_thread_start(&_IOConfigThread::main, inst, &thread)) {
++			boot_progress_stage("IOConfigThread kernel_thread_start failed");
+ 			continue;
+ 		}
++		boot_progress_stage("IOConfigThread launched");
+ 
+ 		char threadName[MAXTHREADNAMESIZE];
+ 		snprintf(threadName, sizeof(threadName), "IOConfigThread_'%s'", name);
+@@ -5321,6 +5334,7 @@
+ 	bool                didRegister;
+ 	OSArray *           notifiers[2] = {NULL};
+ 
++	boot_progress_stage("IOService doServiceMatch enter");
+ //    job->nub->deliverNotification( gIOPublishNotification,
+ //                              kIOServiceRegisteredState, 0xffffffff );
+ 
+@@ -5823,6 +5837,7 @@
+ 	kern_return_t   kr;
+ 	thread_precedence_policy_data_t precedence = { -1 };
+ 
++	boot_progress_stage("IOConfigThread enter");
+ 	kr = thread_policy_set(current_thread(),
+ 	    THREAD_PRECEDENCE_POLICY,
+ 	    (thread_policy_t) &precedence,
+@@ -5834,7 +5849,9 @@
+ 	do {
+ //	randomDelay();
+ 
++		boot_progress_stage("IOConfigThread semaphore wait");
+ 		semaphore_wait( gJobsSemaphore );
++		boot_progress_stage("IOConfigThread semaphore wake");
+ 
+ 		IOTakeLock( gJobsLock );
+ 		job = (_IOServiceJob *) gJobs->getFirstObject();
+@@ -5857,7 +5874,9 @@
+ 
+ 			switch (job->type) {
+ 			case kMatchNubJob:
++				boot_progress_stage("IOConfigThread doServiceMatch enter");
+ 				nub->doServiceMatch( job->options );
++				boot_progress_stage("IOConfigThread doServiceMatch returned");
+ 				break;
+ 
+ 			default:
+@@ -5946,6 +5965,7 @@
+ 
+ 	assert( job );
+ 	nub = job->nub;
++	boot_progress_stage("IOServiceJob pingConfig enter");
+ 
+ 	IOTakeLock( gJobsLock );
+ 
+@@ -5983,6 +6003,8 @@
+ 	}
+ 
+ 	semaphore_signal( gJobsSemaphore );
++	boot_progress_stage(create ? "IOServiceJob queued and thread create requested" :
++	    "IOServiceJob queued");
+ }
+ 
+ struct IOServiceMatchContext {
+--- a/iokit/Kernel/IOPlatformExpert.cpp
++++ b/iokit/Kernel/IOPlatformExpert.cpp
+@@ -58,6 +58,7 @@
+ #endif
+ 
+ extern "C" {
++#include <kern/boot_progress.h>
+ #include <machine/machine_routines.h>
+ #include <pexpert/pexpert.h>
+ #include <uuid/uuid.h>
+@@ -2089,12 +2090,22 @@
+ bool
+ IOPlatformExpertDevice::startIOServiceMatching(void)
+ {
++	uint32_t synchronous = 0;
+ 	workLoop = IOWorkLoop::workLoop();
+ 	if (!workLoop) {
++		boot_progress_stage("IOPlatformExpert workLoop failed");
+ 		return false;
+ 	}
+ 
+-	registerService();
++	PE_parse_boot_argn("iokit-sync-matching", &synchronous, sizeof(synchronous));
++	if (synchronous) {
++		boot_progress_stage("IOPlatformExpert registerService synchronous");
++		registerService(kIOServiceSynchronous);
++	} else {
++		boot_progress_stage("IOPlatformExpert registerService asynchronous");
++		registerService();
++	}
++	boot_progress_stage("IOPlatformExpert registerService returned");
+ 
+ 	return true;
+ }
+--- a/osfmk/kperf/kperf.c
++++ b/osfmk/kperf/kperf.c
+@@ -42,6 +42,7 @@
+ #include <kperf/lazy.h>
+ #include <kperf/pet.h>
+ #include <kperf/sample.h>
++#include <kern/boot_progress.h>
+ 
+ /* from libkern/libkern.h */
+ extern uint64_t strtouq(const char *, char **, int);
+@@ -76,11 +77,18 @@
+ void
+ kperf_init_early(void)
+ {
++	uint32_t skip = 0;
++	if (PE_parse_boot_argn("kperf-skip-early", &skip, sizeof(skip)) && skip) {
++		boot_progress_stage("kperf_init_early skipped by boot argument");
++		return;
++	}
+ 	/*
+ 	 * kperf allocates based on the number of CPUs and requires them to all be
+ 	 * accounted for.
+ 	 */
++	boot_progress_stage("kperf ml_wait_max_cpus enter");
+ 	ml_wait_max_cpus();
++	boot_progress_stage("kperf ml_wait_max_cpus returned");
+ 
+ 	boolean_t found_kperf = FALSE;
+ 	char kperf_config_str[64];
+--- a/iokit/Kernel/IOService.cpp
++++ b/iokit/Kernel/IOService.cpp
+@@ -1097,6 +1097,9 @@
+ 	bool        sync;
+ 	bool        waitAgain;
+ 	bool        releaseAssertion = false;
++	uint32_t    noWaitArg = 0;
++	bool        noWait = PE_parse_boot_argn("iokit-sync-no-wait", &noWaitArg,
++	    sizeof(noWaitArg)) && noWaitArg;
+ 
+ 	boot_progress_stage("IOService startMatching enter");
+ 	if (options & kIOServiceDextRequirePowerForMatching) {
+@@ -1166,6 +1169,10 @@
+ 				if ((__state[1] & kIOServiceNeedConfigState)) {
+ 					doServiceMatch( options );
+ 				}
++				if (noWait) {
++					boot_progress_stage("IOService startMatching sync wait skipped");
++					break;
++				}
+ 
+ 				lockForArbitration();
+ 				IOLockLock( gIOServiceBusyLock );

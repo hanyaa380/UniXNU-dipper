@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Change dipper's FAT32 cache partition type to EFI System Partition.
+"""Change a dipper FAT partition's GPT type to EFI System Partition.
 
 No partition is moved, resized or erased. The default mode only reads GPT and
 writes validated primary/backup previews on the host. --apply unmounts /cache,
@@ -33,6 +33,8 @@ def main():
                         help='UniXNU checkout containing scripts/dual_sys/gpt.py')
     parser.add_argument('--serial', help='adb serial; required only with multiple devices')
     parser.add_argument('--disk', default='/dev/block/sda')
+    parser.add_argument('--partition', default='cache',
+                        help='partition whose GPT type becomes EFI System Partition')
     parser.add_argument('--output', type=Path, default=ROOT / 'out/dipper/cache-esp')
     parser.add_argument('--apply', action='store_true', help='write the validated GPT regions')
     args = parser.parse_args()
@@ -58,10 +60,11 @@ def main():
 
     gptmod = load_gpt(args.unixnu)
     gpt = gptmod.read_gpt(read, sector, total)
-    cache = [entry for entry in gpt.entries if entry['name'] == 'cache']
-    if len(cache) != 1:
-        raise SystemExit(f'expected one GPT partition named cache, found {len(cache)}')
-    index = cache[0]['index']
+    target = [entry for entry in gpt.entries if entry['name'] == args.partition]
+    if len(target) != 1:
+        raise SystemExit(
+            f'expected one GPT partition named {args.partition}, found {len(target)}')
+    index = target[0]['index']
 
     table = bytearray(gpt.table)
     offset = (index - 1) * 128
@@ -86,23 +89,24 @@ def main():
     }
     for name, data in files.items():
         (output / name).write_bytes(data)
-    print(f'cache is GPT partition {index}; type -> EFI System Partition')
+    print(f'{args.partition} is GPT partition {index}; type -> EFI System Partition')
     print(f'primary: {len(primary)} bytes, backup: {len(backup)} bytes')
     print(f'host preview: {output}')
     if not args.apply:
         print('plan only; pass --apply from TWRP to write and verify GPT')
         return
 
-    adb_run('shell', 'umount /cache 2>/dev/null || true')
-    remote = '/tmp/dipper-cache-esp'
+    adb_run('shell', f'umount /{args.partition} 2>/dev/null || true')
+    remote = f'/tmp/dipper-{args.partition}-esp'
     adb_run('shell', f'mkdir -p {remote}')
     for name in ('gpt-backup.after', 'gpt-primary.after'):
         adb_run('push', str(output / name), f'{remote}/{name}')
     backup_lba = total - 1 - gpt.h['blocks']
+    # toybox dd may be built without conv=notrunc. Omitting ftruncate semantics
+    # is safe here because the destination is a block device.
     adb_run('shell', f'dd if={remote}/gpt-backup.after of={args.disk} bs={sector} '
-                      f'seek={backup_lba} conv=notrunc 2>/dev/null')
-    adb_run('shell', f'dd if={remote}/gpt-primary.after of={args.disk} bs={sector} '
-                      'conv=notrunc 2>/dev/null')
+                      f'seek={backup_lba} 2>/dev/null')
+    adb_run('shell', f'dd if={remote}/gpt-primary.after of={args.disk} bs={sector} 2>/dev/null')
     adb_run('shell', 'sync')
     current = gptmod.read_gpt(read, sector, total)
     if current.primary != files['gpt-primary.after'] or current.backup != files['gpt-backup.after']:
