@@ -46,17 +46,16 @@
  	if ((startup_debug & STARTUP_DEBUG_VERBOSE) &&
  	    startup_phase >= STARTUP_SUB_KPRINTF) {
  		kprintf("kernel_bootstrap_thread: %s\n", message);
-@@ -649,6 +652,9 @@
+@@ -649,6 +652,8 @@
  	 */
  	kernel_bootstrap_thread_log("clock_service_create");
  	clock_service_create();
 +	boot_progress_stage("clock_service_create returned");
-+	boot_progress_start();
-+	boot_progress_stage("boot_progress_start returned");
++	boot_progress_stage("monitor startup skipped: no early timer");
  
  	/*
  	 *	Create the device service.
-@@ -658,6 +661,8 @@
+@@ -658,6 +660,8 @@
  	 */
  	device_service_create();
 +	boot_progress_stage("device_service_create returned");
