@@ -55,7 +55,7 @@
  
  	/*
  	 *	Create the device service.
-@@ -658,6 +660,8 @@
+@@ -658,10 +660,12 @@
  	 */
  	device_service_create();
 +	boot_progress_stage("device_service_create returned");
@@ -64,6 +64,11 @@
 +	boot_progress_stage("phys_carveout_init returned");
  
  #if MACH_KDP
+ 	kernel_bootstrap_log("kdp_init");
+-	kdp_init();
++	boot_progress_stage("kdp_init skipped: no debugger channel");
+ #endif
+ 
 @@ -696,8 +697,9 @@
  	vm_kernel_addrhash_salt_ext = early_random();
  
