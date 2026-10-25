@@ -73,10 +73,19 @@ command.extend(['-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter',
 if component == 'ArmCpu':
     # The kernel BootProgress library is linked unconditionally for this
     # board; select its declarations instead of the header's no-op macros.
-    command = ['-DXNU_BOOT_PROGRESS=1' if value == '-DXNU_BOOT_PROGRESS=0' else value
-               for value in command]
-    if '-DXNU_BOOT_PROGRESS=1' not in command:
-        command.append('-DXNU_BOOT_PROGRESS=1')
+    filtered = []
+    value_index = 0
+    while value_index < len(command):
+        value = command[value_index]
+        if value == '-DXNU_BOOT_PROGRESS':
+            value_index += 2
+            continue
+        if value.startswith('-DXNU_BOOT_PROGRESS='):
+            value_index += 1
+            continue
+        filtered.append(value)
+        value_index += 1
+    command = filtered + ['-DXNU_BOOT_PROGRESS=1']
 if component in ('NativeVirtioBlock', 'NativeRamBlock', 'NativeUfs'):
     command += ['-I', str(ROOT / 'build/storage-abi/include')]
     if args.verified_root:
