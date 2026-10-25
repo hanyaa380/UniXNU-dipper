@@ -70,6 +70,10 @@ command.extend(['-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter',
                 # Upstream clang's -Wextra has it; XNU's kalloc_type macros trip it (the kernel build disables it too). Older
                 # Apple clang does not know it, hence -Wno-unknown-warning-option first.
                 '-Wno-unknown-warning-option', '-Wno-missing-designated-field-initializers', '-I', str(ROOT / '.cache/xnu-work/osfmk')])
+if component == 'ArmCpu':
+    # The kernel BootProgress library is linked unconditionally for this
+    # board; select its declarations instead of the header's no-op macros.
+    command.append('-DXNU_BOOT_PROGRESS=1')
 if component in ('NativeVirtioBlock', 'NativeRamBlock', 'NativeUfs'):
     command += ['-I', str(ROOT / 'build/storage-abi/include')]
     if args.verified_root:
