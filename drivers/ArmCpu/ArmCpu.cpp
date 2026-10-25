@@ -8,6 +8,10 @@
 #include <machine/machine_routines.h>
 #include <pexpert/pexpert.h>
 
+extern "C" {
+#include <kern/boot_progress.h>
+}
+
 // Exact private entry from Darwin 23 arm/rtclock.h. Its full data header is
 // not exported to IOKit; the IRQ path calls the real kernel implementation.
 extern "C" void rtclock_intr (unsigned int);
@@ -587,6 +591,7 @@ void ArmCpu::enableGic (void)
 
 bool ArmCpu::start (IOService *provider)
 {
+  boot_progress_stage ("ArmCpu start enter");
   armcpu_start_calls = armcpu_start_calls + 1;
   unsigned skip = 0;
   PE_parse_boot_argn ("armcpu-skip-gic", &skip, sizeof (skip));
@@ -608,6 +613,7 @@ bool ArmCpu::start (IOService *provider)
     gTimerIntid = timerIntid;
   }
   if (!gWdog && PE_parse_boot_argn ("fajita-wdog", &gWdogMode, sizeof (gWdogMode)) && gWdogMode) {
+    boot_progress_stage ("ArmCpu watchdog branch enter");
     OSSharedPtr<IOMemoryDescriptor> wdog (IOMemoryDescriptor::withPhysicalAddress (0x17980000, 0x1000, kIODirectionInOut), OSNoRetain);
     if (wdog) gWdogMap = OSSharedPtr<IOMemoryMap> (wdog->map (kIOMapAnywhere | kIOMapInhibitCache), OSNoRetain);
     if (gWdogMap) {
@@ -653,6 +659,7 @@ bool ArmCpu::start (IOService *provider)
       }
     }
   }
+  boot_progress_stage ("ArmCpu boot args returned");
   unsigned wdogStop = 0;
   if (gWdog && !gWdogStopTicks && PE_parse_boot_argn ("fajita-wdog-stop", &wdogStop, sizeof (wdogStop)) && wdogStop) {
     uint64_t ticks = 0;
@@ -691,10 +698,24 @@ bool ArmCpu::start (IOService *provider)
     uint64_t bootMpidr;
     __asm__ volatile ("mrs %0, mpidr_el1" : "=r" (bootMpidr));
     armcpu_boot_mpidr = static_cast<uint32_t> (bootMpidr);
-    if ((!skipGic && !prepareGic ()) || !IOCPU::start (provider)) { return false; }
+    if (!skipGic) {
+      boot_progress_stage ("ArmCpu prepareGic enter");
+      if (!prepareGic ()) {
+        boot_progress_stage ("ArmCpu prepareGic failed");
+        return false;
+      }
+      boot_progress_stage ("ArmCpu prepareGic returned");
+    }
+    boot_progress_stage ("ArmCpu IOCPU::start enter");
+    if (!IOCPU::start (provider)) {
+      boot_progress_stage ("ArmCpu IOCPU::start failed");
+      return false;
+    }
+    boot_progress_stage ("ArmCpu IOCPU::start returned");
   }
   cpuName = OSSymbol::withCStringNoCopy ("ARM architectural boot CPU");
   if (cpuName == nullptr) { return false; }
+  boot_progress_stage ("ArmCpu processor register enter");
   ml_processor_info_t info = {};
   info.cpu_id = this;
   info.phys_id = physical;
@@ -704,6 +725,7 @@ bool ArmCpu::start (IOService *provider)
   perfmon_interrupt_handler_func pmi = nullptr;
   kern_return_t status = ml_processor_register (&info, &machProcessor, &ipi_handler, &pmi);
   if (status != KERN_SUCCESS) { panic ("ArmCpu: CPU %u registration failed: %d", logicalId, status); }
+  boot_progress_stage ("ArmCpu processor register returned");
   setCPUNumber (info.log_id);
   armcpu_registered = 1;
   unsigned smp = 0;
@@ -714,6 +736,7 @@ bool ArmCpu::start (IOService *provider)
   gRemoteGic = remote != 0;
   armcpu_smp_requested = gSmpWanted ? 1 : 0;
   unsigned cpuCount = static_cast<unsigned> (ml_get_max_cpu_number ()) + 1;
+  boot_progress_stage ("ArmCpu IRQ controller enter");
   controller = new IOCPUInterruptController;
   if ((controller == nullptr) || (controller->initCPUInterruptController (cpuCount, 1) != kIOReturnSuccess)) {
     panic ("ArmCpu: CPU interrupt controller allocation failed");
@@ -723,9 +746,13 @@ bool ArmCpu::start (IOService *provider)
   if (controller->registerInterrupt (provider, logicalId, this, &ArmCpu::dispatch, nullptr) != kIOReturnSuccess) {
     panic ("ArmCpu: CPU IRQ action registration failed");
   }
+  boot_progress_stage ("ArmCpu IRQ controller returned");
   gController = controller;
+  boot_progress_stage ("ArmCpu initCPU enter");
   initCPU (true);
+  boot_progress_stage ("ArmCpu initCPU returned");
   registerService ();
+  boot_progress_stage ("ArmCpu start returned");
   __atomic_store_n (&gBootRegistered, 1U, __ATOMIC_RELEASE);
   drainPending ();
   return true;
