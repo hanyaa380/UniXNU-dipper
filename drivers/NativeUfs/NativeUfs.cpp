@@ -4,6 +4,7 @@
 #include <IOKit/IOService.h>
 #include <IOKit/IOPlatformExpert.h>
 #include <IOKit/storage/IOBlockStorageDevice.h>
+#include <IOKit/storage/IOMedia.h>
 #include <libkern/crypto/sha2.h>
 #include <vm/vm_kern.h>
 #include <vm/vm_map.h>
@@ -25,6 +26,7 @@ extern const uint8_t verified_root_key[];
 #include <IOKit/IOMemoryDescriptor.h>
 #include <IOKit/IOLib.h>
 #include <libkern/c++/OSData.h>
+#include <libkern/c++/OSBoolean.h>
 #include <libkern/c++/OSString.h>
 #include <libkern/libkern.h>
 #include <pexpert/pexpert.h>
@@ -67,6 +69,11 @@ volatile uint32_t native_ufs_hce = 0;
 volatile uint32_t native_ufs_utrl_ready = 0;
 volatile uint32_t native_ufs_uic_status = 0;
 volatile uint32_t native_ufs_uic_result = 0;
+#if defined(DEVELOPMENT) || defined(DEBUG)
+extern volatile int native_apfs_load_status;
+extern volatile uint32_t native_apfs_registered;
+extern volatile uintptr_t native_apfs_vfsops;
+#endif
 }
 
 class NativeUfs : public IOService {
@@ -1629,6 +1636,11 @@ static bool mediaWithUuidExists (const char *uuid, NativeUfsBlock *window)
 static void captureMissingMedia (const char *uuid)
 {
   int used = snprintf (gRootMediaText, sizeof (gRootMediaText), "Waiting for signed UUID %s\n", uuid);
+#if defined(DEVELOPMENT) || defined(DEBUG)
+  used += snprintf (gRootMediaText + used, sizeof (gRootMediaText) - used,
+                    "APFS load=%d registered=%u vfsops=%llx\n", native_apfs_load_status,
+                    native_apfs_registered, (unsigned long long)native_apfs_vfsops);
+#endif
   OSDictionary *matching = IOService::serviceMatching ("IOMedia");
   OSIterator *iterator = matching ? IOService::getMatchingServices (matching) : nullptr;
   unsigned count = 0;
@@ -1637,11 +1649,17 @@ static void captureMissingMedia (const char *uuid)
     if (!media) break;
     OSString *id = OSDynamicCast (OSString, media->getProperty ("UUID"));
     OSString *bsd = OSDynamicCast (OSString, media->getProperty (kIOBSDNameKey));
+    OSString *content = OSDynamicCast (OSString, media->getProperty (kIOMediaContentKey));
+    OSString *hint = OSDynamicCast (OSString, media->getProperty (kIOMediaContentHintKey));
+    OSBoolean *whole = OSDynamicCast (OSBoolean, media->getProperty (kIOMediaWholeKey));
+    OSBoolean *leaf = OSDynamicCast (OSBoolean, media->getProperty (kIOMediaLeafKey));
     OSNumber *size = OSDynamicCast (OSNumber, media->getProperty ("Size"));
     used += snprintf (gRootMediaText + used, sizeof (gRootMediaText) - used,
-                      "media %.24s bytes=%llx uuid=%.36s\n",
+                      "media %.24s bytes=%llx uuid=%.36s content=%.24s hint=%.24s whole=%d leaf=%d\n",
                       bsd ? bsd->getCStringNoCopy () : "-", size ? size->unsigned64BitValue () : 0ULL,
-                      id ? id->getCStringNoCopy () : "-");
+                      id ? id->getCStringNoCopy () : "-",
+                      content ? content->getCStringNoCopy () : "-", hint ? hint->getCStringNoCopy () : "-",
+                      whole ? int (whole->getValue ()) : -1, leaf ? int (leaf->getValue ()) : -1);
   }
   OSSafeReleaseNULL (iterator);
   OSSafeReleaseNULL (matching);
@@ -1763,6 +1781,11 @@ static void mediaReportThread (void *, wait_result_t)
   int used = snprintf (gMediaReport, sizeof (gMediaReport),
                        "NATIVE_UFS media report: published=%u reads=%llu failures=%llu media=%u\n",
                        native_ufs_blocks_published, native_ufs_block_reads, native_ufs_block_failures, count);
+#if defined(DEVELOPMENT) || defined(DEBUG)
+  used += snprintf (gMediaReport + used, sizeof (gMediaReport) - used,
+                    "APFS load=%d registered=%u vfsops=%llx\n", native_apfs_load_status,
+                    native_apfs_registered, (unsigned long long)native_apfs_vfsops);
+#endif
   OSDictionary *matching = IOService::serviceMatching ("IOMedia");
   OSIterator *iterator = matching ? IOService::getMatchingServices (matching) : nullptr;
   while (iterator && used < int (sizeof (gMediaReport)) - 200) {
@@ -1773,10 +1796,16 @@ static void mediaReportThread (void *, wait_result_t)
     OSString *uuid = OSDynamicCast (OSString, media->getProperty ("UUID"));
     OSString *bsd = OSDynamicCast (OSString, media->getProperty (kIOBSDNameKey));
     OSString *content = OSDynamicCast (OSString, media->getProperty ("Content"));
+    OSString *hint = OSDynamicCast (OSString, media->getProperty (kIOMediaContentHintKey));
+    OSBoolean *whole = OSDynamicCast (OSBoolean, media->getProperty (kIOMediaWholeKey));
+    OSBoolean *leaf = OSDynamicCast (OSBoolean, media->getProperty (kIOMediaLeafKey));
     OSNumber *size = OSDynamicCast (OSNumber, media->getProperty ("Size"));
-    used += snprintf (gMediaReport + used, sizeof (gMediaReport) - used, "%s %s size=%llx uuid=%s\n",
+    used += snprintf (gMediaReport + used, sizeof (gMediaReport) - used,
+                      "%s content=%s hint=%s whole=%d leaf=%d size=%llx uuid=%s\n",
                       bsd ? bsd->getCStringNoCopy () : "-", content ? content->getCStringNoCopy () : "-",
-                      size ? size->unsigned64BitValue () : 0ULL, uuid ? uuid->getCStringNoCopy () : "-");
+                      hint ? hint->getCStringNoCopy () : "-", whole ? int (whole->getValue ()) : -1,
+                      leaf ? int (leaf->getValue ()) : -1, size ? size->unsigned64BitValue () : 0ULL,
+                      uuid ? uuid->getCStringNoCopy () : "-");
   }
   if (iterator) {
     iterator->release ();
