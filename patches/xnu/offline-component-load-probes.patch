@@ -5,7 +5,7 @@
   * used like any other.
   */
 +#if DEVELOPMENT || DEBUG
-+extern kern_return_t OSKextLoadKextWithIdentifier(const char *identifier);
++extern int native_apfs_load_and_match(void);
 +volatile int native_apfs_load_status = -1;
 +volatile uint32_t native_apfs_registered = 0;
 +volatile uintptr_t native_apfs_vfsops = 0;
@@ -23,7 +23,7 @@
 +	if (!PE_parse_boot_argn("offline-apfs-load", &enabled, sizeof(enabled)) || !enabled) {
 +		return;
 +	}
-+	native_apfs_load_status = OSKextLoadKextWithIdentifier("com.apple.filesystems.apfs");
++	native_apfs_load_status = native_apfs_load_and_match();
 +	mount_list_lock();
 +	for (struct vfstable *entry = vfsconf; entry; entry = entry->vfc_next) {
 +		if (!strncmp(entry->vfc_name, "apfs", MFSNAMELEN)) {

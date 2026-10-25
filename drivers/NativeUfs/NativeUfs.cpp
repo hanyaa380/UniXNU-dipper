@@ -27,6 +27,7 @@ extern const uint8_t verified_root_key[];
 #include <IOKit/IOLib.h>
 #include <libkern/c++/OSData.h>
 #include <libkern/c++/OSBoolean.h>
+#include <libkern/c++/OSKext.h>
 #include <libkern/c++/OSString.h>
 #include <libkern/libkern.h>
 #include <pexpert/pexpert.h>
@@ -74,6 +75,17 @@ extern volatile int native_apfs_load_status;
 extern volatile uint32_t native_apfs_registered;
 extern volatile uintptr_t native_apfs_vfsops;
 #endif
+}
+
+extern "C" int native_apfs_load_and_match (void)
+{
+  return OSKext::loadKextWithIdentifier (
+    "com.apple.filesystems.apfs",
+    false,
+    false,
+    kOSKextExcludeNone,
+    kOSKextExcludeNone,
+    nullptr);
 }
 
 class NativeUfs : public IOService {
