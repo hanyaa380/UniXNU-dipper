@@ -64,3 +64,25 @@ diff --git a/iokit/Kernel/IOService.cpp b/iokit/Kernel/IOService.cpp
  				inst->detach( this );
  				if (NULL == newInst) {
  #if IOMATCHDEBUG
+@@ -4199,13 +4219,21 @@
+ 					if (!matchDeferred) {
+ 						/* TODO
+ 						 * If a dext fails to start because an upgrade happened
+ 						 * concurrently, then the matching process has to restart
+ 						 */
++						{
++							char stage[96];
++							snprintf(stage, sizeof(stage), "candidate start %s",
++							    inst->getMetaClass()->getClassName());
++							boot_progress_stage(stage);
++						}
+ 						started = startCandidate( inst );
++						boot_progress_stage(started ? "candidate start returned selected" :
++						    "candidate start returned rejected");
+ #if IOMATCHDEBUG
+ 						if ((debugFlags & kIOLogStart) && (false == started)) {
+ 							LOG( "%s::start(%s) <%d> failed\n", inst->getName(), getName(),
+ 							    inst->getRetainCount());
+ 						}
+ #endif
+ 						if (!started && inst->propertyExists(gIOServiceMatchDeferredKey)) {
