@@ -1,0 +1,37 @@
+[Defines]
+  INF_VERSION                    = 0x0001001B
+  BASE_NAME                      = DipperUsbLog
+  FILE_GUID                      = 95D8187C-C86F-47F6-8D59-6F9165CD1402
+  MODULE_TYPE                    = UEFI_APPLICATION
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = DipperUsbLogEntry
+
+[Sources]
+  DipperUsbLogDxe.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  Silicon/Qualcomm/QcomPkg/QcomPkg.dec
+  Platforms/Xiaomi/dipperPkg/dipper.dec
+
+[LibraryClasses]
+  BaseLib
+  BaseMemoryLib
+  DebugLib
+  MemoryAllocationLib
+  PrintLib
+  UefiApplicationEntryPoint
+  UefiBootServicesTableLib
+
+[Protocols]
+  gEfiUsbDeviceProtocolGuid
+
+[Guids]
+  gEfiEventExitBootServicesGuid
+
+[BuildOptions]
+  CLANGPDB:*_*_*_CC_FLAGS = -DDIPPER_USB_LOG_APP=1
+
+[Depex]
+  TRUE

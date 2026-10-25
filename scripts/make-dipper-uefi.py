@@ -42,19 +42,19 @@ EDITS = [
      '  UniXNUPkg/Driver/UniXNUDxe/UniXNUDxe.inf\n'
      '  DarwinBootPkg/Driver/DarwinBoot.inf\n'
      '  dipperPkg/Drivers/DipperBootMemoryDxe/DipperBootMemoryDxe.inf\n'
-     '  dipperPkg/Drivers/DipperUsbLogDxe/DipperUsbLogDxe.inf\n'),
+     '  dipperPkg/Drivers/DipperUsbLogDxe/DipperUsbLogApp.inf\n'),
     ('dipper.fdf', '  INF SiliciumPkg/Drivers/SmBiosTableDxe/SmBiosTableDxe.inf\n',
      '  INF SiliciumPkg/Drivers/SmBiosTableDxe/SmBiosTableDxe.inf\n\n'
      '  # UniXNU\n'
      '  INF UniXNUPkg/Application/UniXNU/UniXNU.inf\n'
      '  INF UniXNUPkg/Driver/UniXNUDxe/UniXNUDxe.inf\n'
-     '  INF DarwinBootPkg/Driver/DarwinBoot.inf\n'),
+     '  INF DarwinBootPkg/Driver/DarwinBoot.inf\n'
+     '  INF dipperPkg/Drivers/DipperUsbLogDxe/DipperUsbLogApp.inf\n'),
     # The boot image's ramdisk (/chosen linux,initrd-start/-end of the ABL's DT) as a block device, so the payload FAT
     # is a volume; loaded where uefi-sheng loads ShengBootMemoryDxe.
     ('Include/DXE.inc', '  INF MdeModulePkg/Universal/DevicePathDxe/DevicePathDxe.inf\n',
      '  INF MdeModulePkg/Universal/DevicePathDxe/DevicePathDxe.inf\n'
-     '  INF dipperPkg/Drivers/DipperBootMemoryDxe/DipperBootMemoryDxe.inf\n'
-     '  INF dipperPkg/Drivers/DipperUsbLogDxe/DipperUsbLogDxe.inf\n'),
+     '  INF dipperPkg/Drivers/DipperBootMemoryDxe/DipperBootMemoryDxe.inf\n'),
 ]
 
 # SEC of SiliciumPkg, shared by every device of the checkout; uefi-sheng c5ede6f6b and 3a7f5d4ad on the current SEC.

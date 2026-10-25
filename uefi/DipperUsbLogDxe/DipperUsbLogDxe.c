@@ -68,38 +68,97 @@ STATIC struct {
 };
 
 STATIC EFI_USB_DEVICE_PROTOCOL *mUsb;
+#if !defined(DIPPER_USB_LOG_APP) || !DIPPER_USB_LOG_APP
 STATIC EFI_EVENT                 mPollEvent;
 STATIC EFI_EVENT                 mExitEvent;
+#endif
 STATIC VOID                     *mTxBuffer;
 STATIC BOOLEAN                   mConnected;
 STATIC BOOLEAN                   mTxPending;
 STATIC UINT32                    mSequence;
 
-STATIC EFI_GUID mUsbConfigGuid = {
-  0xE722B03F, 0xB250, 0x42CE,
-  { 0x8E, 0xBD, 0x5B, 0xD5, 0x18, 0x12, 0xD0, 0x37 }
+STATIC EFI_GUID mStageGuid = {
+  0x2B891F61, 0x9D68, 0x4A74,
+  { 0xA5, 0x69, 0x21, 0x24, 0x2A, 0x2D, 0xE7, 0x83 }
 };
 
-typedef EFI_STATUS (EFIAPI *USB_CONFIG_START_STOP)(
-  IN VOID  *This,
-  IN UINT32 CoreNumber,
-  IN UINT32 Mode
-  );
+STATIC
+VOID
+ShowStage (
+  IN CONST CHAR16  *Text
+  )
+{
+  if ((gST != NULL) && (gST->ConOut != NULL) && (Text != NULL)) {
+    gST->ConOut->OutputString(gST->ConOut, (CHAR16 *)Text);
+  }
+}
 
-typedef struct {
-  UINT32               Revision;
-  VOID                 *GetCoreBaseAddr;
-  VOID                 *ConfigUsb;
-  VOID                 *ResetUsb;
-  VOID                 *GetUsbFnConfig;
-  VOID                 *GetSSUsbFnConfig;
-  VOID                 *GetUsbFnConnStatus;
-  VOID                 *GetUsbHostConfig;
-  VOID                 *GetUsbMaxHostCoreNum;
-  VOID                 *ExitUsbLibServices;
-  USB_CONFIG_START_STOP StartController;
-  USB_CONFIG_START_STOP StopController;
-} USB_CONFIG_LAYOUT;
+STATIC
+VOID
+ShowStatus (
+  IN CONST CHAR16  *Label,
+  IN EFI_STATUS     Status
+  )
+{
+  CHAR16  Line[128];
+
+  UnicodeSPrint(Line, sizeof(Line), L"%s: %r\r\n", Label, Status);
+  ShowStage(Line);
+}
+
+STATIC
+UINT32
+LoadPreviousStage (
+  VOID
+  )
+{
+  EFI_STATUS  Status;
+  UINT32      Stage;
+  UINTN       Size;
+  UINT32      Attributes;
+
+  Stage = 0;
+  Size  = sizeof(Stage);
+  Status = gST->RuntimeServices->GetVariable(
+                                         L"DipperUsbLogStage",
+                                         &mStageGuid,
+                                         &Attributes,
+                                         &Size,
+                                         &Stage
+                                         );
+  if (EFI_ERROR(Status) || (Size != sizeof(Stage))) {
+    return 0;
+  }
+  return Stage;
+}
+
+STATIC
+VOID
+SaveStage (
+  IN UINT32  Stage
+  )
+{
+  gST->RuntimeServices->SetVariable(
+                            L"DipperUsbLogStage",
+                            &mStageGuid,
+                            EFI_VARIABLE_NON_VOLATILE | EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS,
+                            sizeof(Stage),
+                            &Stage
+                            );
+}
+
+STATIC
+VOID
+HoldOnAppError (
+  VOID
+  )
+{
+#if defined(DIPPER_USB_LOG_APP) && DIPPER_USB_LOG_APP
+  for (;;) {
+    gBS->Stall(1000000);
+  }
+#endif
+}
 
 STATIC
 VOID
@@ -160,6 +219,7 @@ PollUsb (
   }
 }
 
+#if !defined(DIPPER_USB_LOG_APP) || !DIPPER_USB_LOG_APP
 STATIC
 VOID
 EFIAPI
@@ -176,6 +236,7 @@ OnExitBootServices (
   // Deliberately do not Stop() the controller: the next stage checks whether
   // UsbfnDwc3's own ExitBootServices callback leaves the endpoint usable.
 }
+#endif
 
 EFI_STATUS
 EFIAPI
@@ -185,29 +246,35 @@ DipperUsbLogEntry (
   )
 {
   EFI_STATUS             Status;
-  USB_CONFIG_LAYOUT     *UsbConfig;
-  VOID                  *Configurations[1];
-  USB_STRING_DESCRIPTOR *Strings[2];
+  VOID                  *Configurations[1] = { NULL };
+  USB_STRING_DESCRIPTOR *Strings[2] = { NULL, NULL };
   UINTN                  Index;
+  UINT32                 PreviousStage;
+  CHAR16                 StageLine[128];
 
   (VOID)ImageHandle;
   (VOID)SystemTable;
-  UsbConfig = NULL;
-  Status = gBS->LocateProtocol(&mUsbConfigGuid, NULL, (VOID **)&UsbConfig);
-  if (!EFI_ERROR(Status) && (UsbConfig != NULL) && (UsbConfig->StopController != NULL) &&
-      (UsbConfig->StartController != NULL)) {
-    UsbConfig->StopController(UsbConfig, 0, 4);
-    gBS->Stall(100000);
-    UsbConfig->StartController(UsbConfig, 0, 4);
-    gBS->Stall(200000);
+  PreviousStage = LoadPreviousStage();
+  if ((gST != NULL) && (gST->ConOut != NULL)) {
+    gST->ConOut->ClearScreen(gST->ConOut);
   }
+  UnicodeSPrint(StageLine, sizeof(StageLine), L"Previous stage: %u\r\n", PreviousStage);
+  ShowStage(StageLine);
+  gBS->Stall(8000000);
+  SaveStage(1);
+  ShowStage(L"DipperUsbLog: app entered\r\n");
 
   mUsb = NULL;
+  SaveStage(2);
   Status = gBS->LocateProtocol(&gEfiUsbDeviceProtocolGuid, NULL, (VOID **)&mUsb);
   if (EFI_ERROR(Status)) {
+    ShowStatus(L"UsbDevice protocol", Status);
+    HoldOnAppError();
     DEBUG((DEBUG_ERROR, "DipperUsbLog: UsbDevice protocol unavailable: %r\n", Status));
     return EFI_SUCCESS;
   }
+  SaveStage(3);
+  ShowStage(L"UsbDevice protocol: found\r\n");
 
   for (Index = 0; Index < ARRAY_SIZE(mProductChars); ++Index) {
     mProductString.String[Index] = mProductChars[Index];
@@ -218,8 +285,12 @@ DipperUsbLogEntry (
 
   // The ABL/fastboot stack may still own the controller when this DXE starts.
   // Stop that session before advertising the diagnostic interface.
-  mUsb->Stop();
+  SaveStage(4);
+  Status = mUsb->Stop();
+  SaveStage(5);
+  ShowStatus(L"UsbDevice stop", Status);
   gBS->Stall(100000);
+  SaveStage(6);
   Status = mUsb->Start(
                    &mDeviceDescriptor,
                    Configurations,
@@ -229,16 +300,34 @@ DipperUsbLogEntry (
                    Strings
                    );
   if (EFI_ERROR(Status)) {
+    ShowStatus(L"UsbDevice start", Status);
+    HoldOnAppError();
     DEBUG((DEBUG_ERROR, "DipperUsbLog: controller start failed: %r\n", Status));
     return EFI_SUCCESS;
   }
+  SaveStage(7);
+  ShowStage(L"UsbDevice start: ok\r\n");
+  SaveStage(8);
   Status = mUsb->AllocateTransferBuffer(LOG_PACKET_BYTES, &mTxBuffer);
   if (EFI_ERROR(Status)) {
+    ShowStatus(L"Transfer buffer", Status);
+    HoldOnAppError();
     DEBUG((DEBUG_ERROR, "DipperUsbLog: transfer buffer failed: %r\n", Status));
     mUsb->Stop();
     return EFI_SUCCESS;
   }
+  SaveStage(9);
+  ShowStage(L"Transfer buffer: ok\r\n");
 
+#if defined(DIPPER_USB_LOG_APP) && DIPPER_USB_LOG_APP
+  mConnected = TRUE;
+  SaveStage(10);
+  ShowStage(L"Polling bulk endpoint 0x81\r\n");
+  for (;;) {
+    PollUsb(NULL, NULL);
+    gBS->Stall(500000);
+  }
+#else
   Status = gBS->CreateEvent(
                   EVT_TIMER | EVT_NOTIFY_SIGNAL,
                   TPL_CALLBACK,
@@ -268,4 +357,5 @@ DipperUsbLogEntry (
   mConnected = TRUE;
   DEBUG((DEBUG_WARN, "DipperUsbLog: ready vid=18d1 pid=d00d endpoint=0x81\n"));
   return EFI_SUCCESS;
+#endif
 }
