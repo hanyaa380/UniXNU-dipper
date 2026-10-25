@@ -83,6 +83,10 @@ if component == 'ArmCpu':
         if value.startswith('-DXNU_BOOT_PROGRESS='):
             value_index += 1
             continue
+        if (value == '-D' and value_index + 1 < len(command) and
+                command[value_index + 1].startswith('XNU_BOOT_PROGRESS=')):
+            value_index += 2
+            continue
         filtered.append(value)
         value_index += 1
     command = filtered + ['-DXNU_BOOT_PROGRESS=1']
