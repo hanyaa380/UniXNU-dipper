@@ -551,11 +551,13 @@ bool ArmCpu::prepareGic (void)
 void ArmCpu::enableGic (void)
 {
   uint64_t value;
+  boot_progress_stage ("ArmCpu enableGic enter");
   __asm__ volatile ("mrs %0, icc_sre_el1" : "=r" (value));
   value |= 1;
   __asm__ volatile ("msr icc_sre_el1, %0\n\tisb" :: "r" (value) : "memory");
   __asm__ volatile ("mrs %0, icc_sre_el1" : "=r" (value));
   if ((value & 1) == 0) { panic ("ArmCpu: GICv3 system register interface unavailable"); }
+  boot_progress_stage ("ArmCpu enableGic SRE ready");
   __asm__ volatile ("mrs %0, icc_ctlr_el1" : "=r" (value));
   value &= ~2ULL; // EOImode 0: EOIR also deactivates the interrupt.
   __asm__ volatile ("msr icc_ctlr_el1, %0" :: "r" (value) : "memory");
@@ -563,13 +565,16 @@ void ArmCpu::enableGic (void)
   __asm__ volatile ("msr icc_pmr_el1, %0" :: "r" (value) : "memory");
   value = 0;
   __asm__ volatile ("msr icc_bpr1_el1, %0" :: "r" (value) : "memory");
+  boot_progress_stage ("ArmCpu enableGic priority ready");
   if (!secondary) { gBootAffinity = affinity & 0xff00ffffffULL; }
   if (!secondary || !gRemoteGic) {
     write32 (redist + 0x10000, 0x100, kSgiPpiEnable);
     write32 (dist, 0, read32 (dist, 0) | 0x12U);
   }
+  boot_progress_stage ("ArmCpu enableGic sources ready");
   value = 1;
   __asm__ volatile ("msr icc_igrpen1_el1, %0\n\tdsb sy\n\tisb" :: "r" (value) : "memory");
+  boot_progress_stage ("ArmCpu enableGic group1 ready");
   if (!secondary) {
     uint64_t pmr, ig, sre;
     __asm__ volatile ("mrs %0, icc_pmr_el1" : "=r" (pmr));
@@ -584,8 +589,10 @@ void ArmCpu::enableGic (void)
     armcpu_gic_boot[6] = static_cast<uint32_t> (ig);
     armcpu_gic_boot[7] = static_cast<uint32_t> (sre);
   }
+  boot_progress_stage ("ArmCpu enableGic state sampled");
   armcpu_gic_ready = 1;
   armcpu_gic_map_stage = 10;
+  boot_progress_stage ("ArmCpu enableGic returned");
 }
 
 
@@ -871,8 +878,12 @@ void ArmCpu::initCPU (bool boot)
     setCPUState (kIOCPUStateRunning);
     return;
   }
+  boot_progress_stage ("ArmCpu initCPU boot path");
+  boot_progress_stage ("ArmCpu initCPU enableGic enter");
   enableGic ();
+  boot_progress_stage ("ArmCpu initCPU enableGic returned");
   if (gSgiSelfProbe) {
+    boot_progress_stage ("ArmCpu initCPU SGI probe enter");
     uint64_t probe[10];
     armcpu_sgi_selfprobe (probe);
     for (unsigned i = 0; i < 10; i++) armcpu_sgi_probe[i] = probe[i];
@@ -880,12 +891,20 @@ void ArmCpu::initCPU (bool boot)
     __asm__ volatile ("mrs %0, vbar_el1" : "=r" (probe[1]));
     armcpu_sgi_probe[10] = probe[0];
     armcpu_sgi_probe[11] = probe[1];
+    boot_progress_stage ("ArmCpu initCPU SGI probe returned");
   }
+  boot_progress_stage ("ArmCpu initCPU optional sources enter");
   if (gSpiIpi) { spiIpiConfigure (gDist, logicalId, affinity); }
   if (gWdog && gWdogMode >= 3 && gDist && logicalId == gBarkCpu) { spiConfigure (gDist, kBarkIntid, affinity); }   // see gBarkCpu
+  boot_progress_stage ("ArmCpu initCPU optional sources returned");
+  boot_progress_stage ("ArmCpu initCPU timebase enter");
   enableCPUTimeBase (true);
+  boot_progress_stage ("ArmCpu initCPU timebase returned");
+  boot_progress_stage ("ArmCpu initCPU set state enter");
   setCPUState (kIOCPUStateRunning);
+  boot_progress_stage ("ArmCpu initCPU set state returned");
   if (gSelfIpi) { signalCPU (this); }
+  boot_progress_stage ("ArmCpu initCPU returned");
 }
 
 void ArmCpu::dispatch (void *target, void *, void *, int)
