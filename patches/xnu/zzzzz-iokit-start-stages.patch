@@ -1,0 +1,44 @@
+diff --git a/iokit/Kernel/IOService.cpp b/iokit/Kernel/IOService.cpp
+--- a/iokit/Kernel/IOService.cpp
++++ b/iokit/Kernel/IOService.cpp
+@@ -4835,19 +4835,24 @@
+ 	userServer = NULL;
+ 	obj = service->copyProperty(gIOUserServerNameKey);
++	boot_progress_stage("startCandidate attach enter");
+ 
+ 	if (obj && (this == gIOResources)) {
+ 		ok = false;
+ 	} else {
+ 		ok = service->attach( this );
+ 	}
++	boot_progress_stage(ok ? "startCandidate attached" :
++	    "startCandidate attach failed");
+ 	if (!ok) {
+ 		OSSafeReleaseNULL(obj);
+ 		return false;
+ 	}
+ 
+ 	if ((this != gIOResources) && (this != gIOUserResources)) {
++		boot_progress_stage("startCandidate resources enter");
+ 		// stall for any nub resources
+ 		checkResources();
+ 		// stall for any driver resources
+ 		service->checkResources();
++		boot_progress_stage("startCandidate resources returned");
+ 	}
+@@ -4988,12 +4993,15 @@
+ 	AbsoluteTime startTime;
+ 	AbsoluteTime endTime;
+ 	UInt64       nano;
+ 	bool recordTime = (kIOLogStart & gIOKitDebug) != 0;
+ 
+ 	if (recordTime) {
+ 		clock_get_uptime(&startTime);
+ 	}
+ 
++	boot_progress_stage("startCandidate driver start enter");
+ 	ok = service->start(this);
++	boot_progress_stage(ok ? "startCandidate driver start returned ok" :
++	    "startCandidate driver start returned failed");
+ 
+ 	if (recordTime) {
