@@ -43,6 +43,7 @@ extern const uint8_t verified_root_key[];
 static UfsRootDiagnostics gRootDiagnostic;
 static bool gRootDiagnosticEnabled;
 static bool gRootTraceEnabled;  // native-ufs-trace=1: a console line per UFS command (slow: the framebuffer console is synchronous)
+static bool gClaimWritableMedia; // native-ufs-claim-writable=1: diagnostic only; writes still fail
 // Each step of the root path; with native-ufs-diagnostics=1 it is also printed on the console as it happens.
 // printf, not IOLog: the iOS kernel's IOLog may reach only the log buffer, and the verbose console is what a board without a
 // serial port shows.
@@ -1371,7 +1372,7 @@ public:
     *present = online; if (changed) *changed = false; return kIOReturnSuccess;
   }
   IOReturn reportRemovability (bool *value) override { *value = false; return kIOReturnSuccess; }
-  IOReturn reportWriteProtection (bool *value) override { *value = true; return kIOReturnSuccess; }
+  IOReturn reportWriteProtection (bool *value) override { *value = !gClaimWritableMedia; return kIOReturnSuccess; }
   IOReturn doSynchronizeCache () override { return online ? kIOReturnSuccess : kIOReturnNotReady; }
   IOReturn doSynchronize (UInt64, UInt64, IOOptionBits) override { return doSynchronizeCache (); }
   IOReturn getWriteCacheState (bool *value) override { *value = false; return kIOReturnSuccess; }
@@ -2010,6 +2011,10 @@ bool NativeUfs::start (IOService *provider)
   unsigned probe = 0, rootMode = 0;
   PE_parse_boot_argn ("native-ufs-probe", &probe, sizeof (probe));
   PE_parse_boot_argn ("native-ufs-root", &rootMode, sizeof (rootMode));
+  {
+    uint32_t claim = 0;
+    gClaimWritableMedia = PE_parse_boot_argn ("native-ufs-claim-writable", &claim, sizeof (claim)) && claim;
+  }
   native_ufs_probe_requested = probe != 0;
   // Three built-in personalities can instantiate NativeUfs. Exactly one instance may touch
   // the controller and mutate the shared root-publication state. The root personality starts
