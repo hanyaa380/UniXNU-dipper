@@ -1914,7 +1914,6 @@ static void mediaReportThread (void *, wait_result_t)
     if (!media) {
       break;
     }
-    IOMedia *ioMedia = OSDynamicCast (IOMedia, media);
     OSString *uuid = OSDynamicCast (OSString, media->getProperty ("UUID"));
     OSString *bsd = OSDynamicCast (OSString, media->getProperty (kIOBSDNameKey));
     OSString *content = OSDynamicCast (OSString, media->getProperty ("Content"));
@@ -1928,16 +1927,14 @@ static void mediaReportThread (void *, wait_result_t)
     formatRegistryParentChain (media->getParentEntry (gIOServicePlane), parents, sizeof (parents));
     used += snprintf (gMediaReport + used, sizeof (gMediaReport) - used,
                       "%s object=0x%llx id=%llx class=%s content=%s hint=%s whole=%d leaf=%d write=%d "
-                      "size=%llx propSize=%llx block=%llu base=%llx children=%u uuid=%s parents=%s\n",
+                      "size=%llx block=%llu children=%u uuid=%s parents=%s\n",
                       bsd ? bsd->getCStringNoCopy () : "-", (unsigned long long)(uintptr_t)media,
                       (unsigned long long)media->getRegistryEntryID (), media->getMetaClass ()->getClassName (),
                       content ? content->getCStringNoCopy () : "-", hint ? hint->getCStringNoCopy () : "-",
                       whole ? int (whole->getValue ()) : -1, leaf ? int (leaf->getValue ()) : -1,
                       writable ? int (writable->getValue ()) : -1,
-                      ioMedia ? (unsigned long long)ioMedia->getSize () : 0ULL,
                       size ? size->unsigned64BitValue () : 0ULL,
                       blockSize ? blockSize->unsigned64BitValue () : 0ULL,
-                      ioMedia ? (unsigned long long)ioMedia->getBase () : 0ULL,
                       countRegistryChildren (media), uuid ? uuid->getCStringNoCopy () : "-", parents);
   }
   if (iterator) {
