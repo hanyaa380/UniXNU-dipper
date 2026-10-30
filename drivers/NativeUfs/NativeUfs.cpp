@@ -2,6 +2,7 @@
 // Native sheng SM8550 UFS bring-up. Default-off: no MMIO is touched unless
 // native-ufs-probe=1 is present. This is a register probe, not a storage driver.
 #include <IOKit/IOService.h>
+#include <IOKit/IOCatalogue.h>
 #include <IOKit/IOPlatformExpert.h>
 #include <IOKit/storage/IOBlockStorageDevice.h>
 #include <IOKit/storage/IOMedia.h>
@@ -30,6 +31,7 @@ extern const uint8_t verified_root_key[];
 #include <libkern/c++/OSBoolean.h>
 #include <libkern/c++/OSKext.h>
 #include <libkern/c++/OSMetaClass.h>
+#include <libkern/c++/OSOrderedSet.h>
 #include <libkern/c++/OSString.h>
 #include <libkern/c++/OSSymbol.h>
 #include <libkern/libkern.h>
@@ -88,6 +90,10 @@ volatile uint32_t native_apfs_started_after = 0;
 volatile uint32_t native_apfs_load_tag = 0;
 volatile uint32_t native_apfs_personality_count = 0;
 volatile uint32_t native_apfs_class_mask = 0;
+volatile uint32_t native_apfs_catalog_count = 0xffffffffU;
+volatile int32_t native_apfs_catalog_generation = 0;
+volatile uint32_t native_apfs_catalog_refreshes = 0;
+volatile uint32_t native_apfs_media_match_calls = 0;
 #endif
 }
 
@@ -1702,18 +1708,83 @@ static bool mediaWithUuidExists (const char *uuid, NativeUfsBlock *window)
   return found;
 }
 
+static unsigned apfsCatalogueCount (void)
+{
+#if defined(DEVELOPMENT) || defined(DEBUG)
+  if (!gIOCatalogue) return 0;
+  OSDictionary *matching = OSDictionary::withCapacity (1);
+  OSString *className = OSString::withCString ("AppleAPFSContainerScheme");
+  SInt32 generation = 0;
+  OSOrderedSet *drivers = nullptr;
+  if (matching && className && matching->setObject ("IOClass", className)) {
+    drivers = gIOCatalogue->findDrivers (matching, &generation);
+  }
+  unsigned count = drivers ? drivers->getCount () : 0;
+  native_apfs_catalog_count = count;
+  native_apfs_catalog_generation = generation;
+  OSSafeReleaseNULL (drivers);
+  OSSafeReleaseNULL (className);
+  OSSafeReleaseNULL (matching);
+  return count;
+#else
+  return 0;
+#endif
+}
+
+static void refreshApfsPersonalities (void)
+{
+#if defined(DEVELOPMENT) || defined(DEBUG)
+  OSKext *apfs = OSKext::lookupKextWithIdentifier ("com.apple.filesystems.apfs");
+  if (apfs) {
+    OSArray *personalities = apfs->copyPersonalitiesArray ();
+    if (personalities) {
+      apfs->updatePersonalitiesInCatalog (personalities);
+      ++native_apfs_catalog_refreshes;
+      OSSafeReleaseNULL (personalities);
+    }
+  }
+  OSSafeReleaseNULL (apfs);
+#endif
+}
+
+static unsigned matchWholeMediaForWindow (NativeUfsBlock *window)
+{
+  unsigned matched = 0;
+  OSDictionary *matching = IOService::serviceMatching ("IOMedia");
+  OSIterator *iterator = matching ? IOService::getMatchingServices (matching) : nullptr;
+  while (iterator && matched < 8) {
+    IOService *media = OSDynamicCast (IOService, iterator->getNextObject ());
+    if (!media) break;
+    OSBoolean *whole = OSDynamicCast (OSBoolean, media->getProperty (kIOMediaWholeKey));
+    if (!whole || !whole->getValue ()) continue;
+    IORegistryIterator *parents = IORegistryIterator::iterateOver (
+      media, gIOServicePlane, kIORegistryIterateRecursively | kIORegistryIterateParents);
+    bool belongs = parents ? ufsMediaHasAncestor (*parents, window) : false;
+    if (parents) parents->release ();
+    if (!belongs) continue;
+    media->startMatching (kIOServiceSynchronous);
+    matched++;
+    __atomic_fetch_add (&native_apfs_media_match_calls, 1U, __ATOMIC_RELAXED);
+  }
+  OSSafeReleaseNULL (iterator);
+  OSSafeReleaseNULL (matching);
+  return matched;
+}
+
 static void captureMissingMedia (const char *uuid)
 {
   int used = snprintf (gRootMediaText, sizeof (gRootMediaText), "Waiting for signed UUID %s\n", uuid);
 #if defined(DEVELOPMENT) || defined(DEBUG)
   used += snprintf (gRootMediaText + used, sizeof (gRootMediaText) - used,
                     "APFS load=%d registered=%u vfsops=%llx found=%u loaded=%u/%u started=%u/%u "
-                    "tag=%x personalities=%u classes=%x\n",
+                    "tag=%x personalities=%u classes=%x catalog=%u gen=%d refresh=%u mediaMatch=%u\n",
                     native_apfs_load_status, native_apfs_registered,
                     (unsigned long long)native_apfs_vfsops, native_apfs_kext_found,
                     native_apfs_loaded_before, native_apfs_loaded_after,
                     native_apfs_started_before, native_apfs_started_after,
-                    native_apfs_load_tag, native_apfs_personality_count, native_apfs_class_mask);
+                    native_apfs_load_tag, native_apfs_personality_count, native_apfs_class_mask,
+                    native_apfs_catalog_count, native_apfs_catalog_generation,
+                    native_apfs_catalog_refreshes, native_apfs_media_match_calls);
 #endif
   OSDictionary *matching = IOService::serviceMatching ("IOMedia");
   OSIterator *iterator = matching ? IOService::getMatchingServices (matching) : nullptr;
@@ -1773,12 +1844,24 @@ static void publishThread (void *, wait_result_t)
       gRootDiagnostic.publicationPhase = static_cast<unsigned> (UfsRootPhase::Media);
       gRootDiagnostic.publicationWindow = index;
       bool ready = false;
+      bool catalogueRefreshed = false;
+      bool mediaMatchingStarted = false;
       // Diagnostic mode affects reporting only, never the dependency gate.
       for (unsigned tick = 0; tick <= 300; ++tick) {
+        if (!catalogueRefreshed && native_apfs_load_status != -1) {
+          apfsCatalogueCount ();
+          refreshApfsPersonalities ();
+          catalogueRefreshed = true;
+        }
+        if (catalogueRefreshed && !mediaMatchingStarted) {
+          mediaMatchingStarted = matchWholeMediaForWindow (device) != 0;
+        }
         ready = mediaWithUuidExists (uuid, device);
         // Timer evidence: a stall between these lines means IOSleep never wakes (no architectural timer interrupt).
         if (!(tick % 10))
-          ROOT_LOG ("media wait %s tick %u ready %d now %llx timer irqs %llu\n", device->windowLabel (), tick, int (ready),
+          ROOT_LOG ("media wait %s tick %u ready %d match %d catalog %u gen %d now %llx timer irqs %llu\n",
+                    device->windowLabel (), tick, int (ready), int (mediaMatchingStarted),
+                    native_apfs_catalog_count, native_apfs_catalog_generation,
                     (unsigned long long) mach_absolute_time (), (unsigned long long) armcpu_timer_interrupts);
         if (ready || tick == 300) break;
         IOSleep (100);
