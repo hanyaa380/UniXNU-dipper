@@ -1715,14 +1715,13 @@ static unsigned apfsCatalogueCount (void)
   OSDictionary *matching = OSDictionary::withCapacity (1);
   OSString *className = OSString::withCString ("AppleAPFSContainerScheme");
   SInt32 generation = 0;
-  OSOrderedSet *drivers = nullptr;
+  auto drivers = OSPtr<OSOrderedSet> ();
   if (matching && className && matching->setObject ("IOClass", className)) {
     drivers = gIOCatalogue->findDrivers (matching, &generation);
   }
   unsigned count = drivers ? drivers->getCount () : 0;
   native_apfs_catalog_count = count;
   native_apfs_catalog_generation = generation;
-  OSSafeReleaseNULL (drivers);
   OSSafeReleaseNULL (className);
   OSSafeReleaseNULL (matching);
   return count;
