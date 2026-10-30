@@ -73,6 +73,9 @@ volatile uint32_t native_ufs_hce = 0;
 volatile uint32_t native_ufs_utrl_ready = 0;
 volatile uint32_t native_ufs_uic_status = 0;
 volatile uint32_t native_ufs_uic_result = 0;
+volatile uint32_t native_ufs_root_owner = 0;
+volatile uint32_t native_ufs_root_owner_skips = 0;
+volatile uint64_t native_ufs_root_owner_id = 0;
 #if defined(DEVELOPMENT) || defined(DEBUG)
 extern volatile int native_apfs_load_status;
 extern volatile uint32_t native_apfs_registered;
@@ -1885,9 +1888,11 @@ static void mediaReportThread (void *, wait_result_t)
   count = countMatchingService ("IOMedia");
   unsigned bsdClients = countMatchingService ("IOMediaBSDClient");
   int used = snprintf (gMediaReport, sizeof (gMediaReport),
-                       "NATIVE_UFS media report: published=%u reads=%llu failures=%llu media=%u bsdClients=%u\n",
+                       "NATIVE_UFS media report: published=%u reads=%llu failures=%llu media=%u bsdClients=%u "
+                       "rootOwner=%u id=%llx skips=%u\n",
                        native_ufs_blocks_published, native_ufs_block_reads, native_ufs_block_failures, count,
-                       bsdClients);
+                       bsdClients, native_ufs_root_owner,
+                       (unsigned long long)native_ufs_root_owner_id, native_ufs_root_owner_skips);
 #if defined(DEVELOPMENT) || defined(DEBUG)
   used += snprintf (gMediaReport + used, sizeof (gMediaReport) - used,
                     "APFS load=%d registered=%u vfsops=%llx found=%u loaded=%u/%u started=%u/%u "
@@ -1952,6 +1957,23 @@ bool NativeUfs::start (IOService *provider)
   PE_parse_boot_argn ("native-ufs-probe", &probe, sizeof (probe));
   PE_parse_boot_argn ("native-ufs-root", &rootMode, sizeof (rootMode));
   native_ufs_probe_requested = probe != 0;
+  // Three built-in personalities can instantiate NativeUfs. Exactly one instance may touch
+  // the controller and mutate the shared root-publication state. The root personality starts
+  // before the IOResources fallback on this boot path, so first-claim wins.
+  if ((probe || rootMode) &&
+      __atomic_exchange_n (&native_ufs_root_owner, 1U, __ATOMIC_ACQ_REL)) {
+    __atomic_fetch_add (&native_ufs_root_owner_skips, 1U, __ATOMIC_RELAXED);
+    printf ("NativeUfs: duplicate root owner skipped provider=%s id=%llx\n",
+            provider ? provider->getMetaClass ()->getClassName () : "-",
+            provider ? (unsigned long long)provider->getRegistryEntryID () : 0ULL);
+    return false;
+  }
+  if (probe || rootMode) {
+    native_ufs_root_owner_id = provider ? provider->getRegistryEntryID () : 0;
+    printf ("NativeUfs: root owner provider=%s id=%llx\n",
+            provider ? provider->getMetaClass ()->getClassName () : "-",
+            (unsigned long long)native_ufs_root_owner_id);
+  }
   // Default: match for observability only, never touch the controller. Hardware work runs once,
   // from the root-device personality; the ufshc nub match stays observation-only.
   if (!probe && !rootMode) {
