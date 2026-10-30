@@ -1712,7 +1712,7 @@ static void refreshApfsPersonalities (void)
     OSArray *personalities = apfs->copyPersonalitiesArray ();
     if (personalities) {
       apfs->updatePersonalitiesInCatalog (personalities);
-      ++native_apfs_catalog_refreshes;
+      __atomic_fetch_add (&native_apfs_catalog_refreshes, 1U, __ATOMIC_RELAXED);
       OSSafeReleaseNULL (personalities);
     }
   }
