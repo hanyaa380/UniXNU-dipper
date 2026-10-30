@@ -92,15 +92,17 @@ extern "C" int native_apfs_load_and_match (void)
 {
   const char *identifier = "com.apple.filesystems.apfs";
 #if defined(DEVELOPMENT) || defined(DEBUG)
-  OSSharedPtr<OSKext> before = OSKext::lookupKextWithIdentifier (identifier);
+  OSKext *before = OSKext::lookupKextWithIdentifier (identifier);
   native_apfs_kext_found = before ? 1U : 0U;
   native_apfs_loaded_before = before && before->isLoaded () ? 1U : 0U;
   native_apfs_started_before = before && before->isStarted () ? 1U : 0U;
   native_apfs_load_tag = before ? before->getLoadTag () : 0U;
   if (before) {
-    OSPtr<OSArray> personalities = before->copyPersonalitiesArray ();
+    OSArray *personalities = before->copyPersonalitiesArray ();
     native_apfs_personality_count = personalities ? personalities->getCount () : 0U;
+    OSSafeReleaseNULL (personalities);
   }
+  OSSafeReleaseNULL (before);
 #endif
   int result = OSKext::loadKextWithIdentifier (
     identifier,
@@ -110,14 +112,16 @@ extern "C" int native_apfs_load_and_match (void)
     kOSKextExcludeNone,
     nullptr);
 #if defined(DEVELOPMENT) || defined(DEBUG)
-  OSSharedPtr<OSKext> after = OSKext::lookupKextWithIdentifier (identifier);
+  OSKext *after = OSKext::lookupKextWithIdentifier (identifier);
   native_apfs_loaded_after = after && after->isLoaded () ? 1U : 0U;
   native_apfs_started_after = after && after->isStarted () ? 1U : 0U;
   if (after) {
     native_apfs_load_tag = after->getLoadTag ();
-    OSPtr<OSArray> personalities = after->copyPersonalitiesArray ();
+    OSArray *personalities = after->copyPersonalitiesArray ();
     native_apfs_personality_count = personalities ? personalities->getCount () : 0U;
+    OSSafeReleaseNULL (personalities);
   }
+  OSSafeReleaseNULL (after);
   static const char *const classNames[] = {
     "AppleAPFSContainerScheme",
     "AppleAPFSContainerSchemeWholeDisk",
@@ -125,8 +129,8 @@ extern "C" int native_apfs_load_and_match (void)
     "AppleAPFSVolume",
   };
   for (unsigned index = 0; index < sizeof (classNames) / sizeof (classNames[0]); ++index) {
-    OSPtr<const OSSymbol> symbol = OSSymbol::withCStringNoCopy (classNames[index]);
-    if (symbol && OSMetaClass::getMetaClassWithName (symbol.get ())) {
+    const OSSymbol *symbol = OSSymbol::withCStringNoCopy (classNames[index]);
+    if (symbol && OSMetaClass::getMetaClassWithName (symbol)) {
       native_apfs_class_mask |= 1U << index;
     }
   }
