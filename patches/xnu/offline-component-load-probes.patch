@@ -1,6 +1,6 @@
 --- a/bsd/kern/bsd_init.c
 +++ b/bsd/kern/bsd_init.c
-@@ -478,5 +478,88 @@
+@@ -478,5 +478,89 @@
   * of the tro_ucred field so that the uthread structure can be
   * used like any other.
   */
@@ -90,7 +90,7 @@
 +
  void
  bsd_init(void)
-@@ -698,6 +774,27 @@
+@@ -698,6 +775,27 @@
  	/* Initialize the file systems. */
  	bsd_init_kprintf("calling vfsinit\n");
  	vfsinit();
