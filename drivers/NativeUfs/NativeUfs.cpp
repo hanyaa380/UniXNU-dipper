@@ -93,7 +93,7 @@ volatile uint32_t native_apfs_class_mask = 0;
 volatile uint32_t native_apfs_catalog_count = 0xffffffffU;
 volatile int32_t native_apfs_catalog_generation = 0;
 volatile uint32_t native_apfs_catalog_refreshes = 0;
-volatile uint32_t native_apfs_media_match_calls = 0;
+volatile uint32_t native_apfs_media_found = 0;
 #endif
 }
 
@@ -1747,12 +1747,12 @@ static void refreshApfsPersonalities (void)
 #endif
 }
 
-static unsigned matchWholeMediaForWindow (NativeUfsBlock *window)
+static unsigned countWholeMediaForWindow (NativeUfsBlock *window)
 {
-  unsigned matched = 0;
+  unsigned found = 0;
   OSDictionary *matching = IOService::serviceMatching ("IOMedia");
   OSIterator *iterator = matching ? IOService::getMatchingServices (matching) : nullptr;
-  while (iterator && matched < 8) {
+  while (iterator && found < 8) {
     IOService *media = OSDynamicCast (IOService, iterator->getNextObject ());
     if (!media) break;
     OSBoolean *whole = OSDynamicCast (OSBoolean, media->getProperty (kIOMediaWholeKey));
@@ -1762,13 +1762,12 @@ static unsigned matchWholeMediaForWindow (NativeUfsBlock *window)
     bool belongs = parents ? ufsMediaHasAncestor (*parents, window) : false;
     if (parents) parents->release ();
     if (!belongs) continue;
-    media->startMatching (kIOServiceSynchronous);
-    matched++;
-    __atomic_fetch_add (&native_apfs_media_match_calls, 1U, __ATOMIC_RELAXED);
+    found++;
   }
   OSSafeReleaseNULL (iterator);
   OSSafeReleaseNULL (matching);
-  return matched;
+  native_apfs_media_found = found;
+  return found;
 }
 
 static void captureMissingMedia (const char *uuid)
@@ -1777,14 +1776,14 @@ static void captureMissingMedia (const char *uuid)
 #if defined(DEVELOPMENT) || defined(DEBUG)
   used += snprintf (gRootMediaText + used, sizeof (gRootMediaText) - used,
                     "APFS load=%d registered=%u vfsops=%llx found=%u loaded=%u/%u started=%u/%u "
-                    "tag=%x personalities=%u classes=%x catalog=%u gen=%d refresh=%u mediaMatch=%u\n",
+                    "tag=%x personalities=%u classes=%x catalog=%u gen=%d refresh=%u mediaFound=%u\n",
                     native_apfs_load_status, native_apfs_registered,
                     (unsigned long long)native_apfs_vfsops, native_apfs_kext_found,
                     native_apfs_loaded_before, native_apfs_loaded_after,
                     native_apfs_started_before, native_apfs_started_after,
                     native_apfs_load_tag, native_apfs_personality_count, native_apfs_class_mask,
                     native_apfs_catalog_count, native_apfs_catalog_generation,
-                    native_apfs_catalog_refreshes, native_apfs_media_match_calls);
+                    native_apfs_catalog_refreshes, native_apfs_media_found);
 #endif
   OSDictionary *matching = IOService::serviceMatching ("IOMedia");
   OSIterator *iterator = matching ? IOService::getMatchingServices (matching) : nullptr;
@@ -1845,7 +1844,7 @@ static void publishThread (void *, wait_result_t)
       gRootDiagnostic.publicationWindow = index;
       bool ready = false;
       bool catalogueRefreshed = false;
-      bool mediaMatchingStarted = false;
+      bool wholeMediaFound = false;
       // Diagnostic mode affects reporting only, never the dependency gate.
       for (unsigned tick = 0; tick <= 300; ++tick) {
         if (!catalogueRefreshed && native_apfs_load_status != -1) {
@@ -1853,14 +1852,14 @@ static void publishThread (void *, wait_result_t)
           refreshApfsPersonalities ();
           catalogueRefreshed = true;
         }
-        if (catalogueRefreshed && !mediaMatchingStarted) {
-          mediaMatchingStarted = matchWholeMediaForWindow (device) != 0;
+        if (catalogueRefreshed && !wholeMediaFound) {
+          wholeMediaFound = countWholeMediaForWindow (device) != 0;
         }
         ready = mediaWithUuidExists (uuid, device);
         // Timer evidence: a stall between these lines means IOSleep never wakes (no architectural timer interrupt).
         if (!(tick % 10))
           ROOT_LOG ("media wait %s tick %u ready %d match %d catalog %u gen %d now %llx timer irqs %llu\n",
-                    device->windowLabel (), tick, int (ready), int (mediaMatchingStarted),
+                    device->windowLabel (), tick, int (ready), int (wholeMediaFound),
                     native_apfs_catalog_count, native_apfs_catalog_generation,
                     (unsigned long long) mach_absolute_time (), (unsigned long long) armcpu_timer_interrupts);
         if (ready || tick == 300) break;
@@ -1979,12 +1978,14 @@ static void mediaReportThread (void *, wait_result_t)
 #if defined(DEVELOPMENT) || defined(DEBUG)
   used += snprintf (gMediaReport + used, sizeof (gMediaReport) - used,
                     "APFS load=%d registered=%u vfsops=%llx found=%u loaded=%u/%u started=%u/%u "
-                    "tag=%x personalities=%u classes=%x\n",
+                    "tag=%x personalities=%u classes=%x catalog=%u gen=%d refresh=%u mediaFound=%u\n",
                     native_apfs_load_status, native_apfs_registered,
                     (unsigned long long)native_apfs_vfsops, native_apfs_kext_found,
                     native_apfs_loaded_before, native_apfs_loaded_after,
                     native_apfs_started_before, native_apfs_started_after,
-                    native_apfs_load_tag, native_apfs_personality_count, native_apfs_class_mask);
+                    native_apfs_load_tag, native_apfs_personality_count, native_apfs_class_mask,
+                    native_apfs_catalog_count, native_apfs_catalog_generation,
+                    native_apfs_catalog_refreshes, native_apfs_media_found);
 #endif
   for (unsigned index = 0; index < gPending && used < int (sizeof (gMediaReport)) - 300; ++index) {
     NativeUfsBlock *window = gPendingDevice[index];
