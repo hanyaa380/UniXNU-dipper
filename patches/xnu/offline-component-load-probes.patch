@@ -5,6 +5,7 @@
   * used like any other.
   */
 +#if DEVELOPMENT || DEBUG
++extern kern_return_t OSKextLoadKextWithIdentifier(const char *identifier);
 +extern int native_apfs_load_and_match(void);
 +volatile int native_apfs_load_status = -1;
 +volatile uint32_t native_apfs_registered = 0;
