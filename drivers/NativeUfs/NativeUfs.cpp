@@ -25,10 +25,13 @@ extern const uint8_t verified_root_key[];
 #include <IOKit/IOBufferMemoryDescriptor.h>
 #include <IOKit/IOMemoryDescriptor.h>
 #include <IOKit/IOLib.h>
+#include <libkern/c++/OSArray.h>
 #include <libkern/c++/OSData.h>
 #include <libkern/c++/OSBoolean.h>
 #include <libkern/c++/OSKext.h>
+#include <libkern/c++/OSMetaClass.h>
 #include <libkern/c++/OSString.h>
+#include <libkern/c++/OSSymbol.h>
 #include <libkern/libkern.h>
 #include <pexpert/pexpert.h>
 #include <kern/debug.h>
@@ -74,18 +77,61 @@ volatile uint32_t native_ufs_uic_result = 0;
 extern volatile int native_apfs_load_status;
 extern volatile uint32_t native_apfs_registered;
 extern volatile uintptr_t native_apfs_vfsops;
+volatile uint32_t native_apfs_kext_found = 0;
+volatile uint32_t native_apfs_loaded_before = 0;
+volatile uint32_t native_apfs_started_before = 0;
+volatile uint32_t native_apfs_loaded_after = 0;
+volatile uint32_t native_apfs_started_after = 0;
+volatile uint32_t native_apfs_load_tag = 0;
+volatile uint32_t native_apfs_personality_count = 0;
+volatile uint32_t native_apfs_class_mask = 0;
 #endif
 }
 
 extern "C" int native_apfs_load_and_match (void)
 {
-  return OSKext::loadKextWithIdentifier (
-    "com.apple.filesystems.apfs",
+  const char *identifier = "com.apple.filesystems.apfs";
+#if defined(DEVELOPMENT) || defined(DEBUG)
+  OSSharedPtr<OSKext> before = OSKext::lookupKextWithIdentifier (identifier);
+  native_apfs_kext_found = before ? 1U : 0U;
+  native_apfs_loaded_before = before && before->isLoaded () ? 1U : 0U;
+  native_apfs_started_before = before && before->isStarted () ? 1U : 0U;
+  native_apfs_load_tag = before ? before->getLoadTag () : 0U;
+  if (before) {
+    OSPtr<OSArray> personalities = before->copyPersonalitiesArray ();
+    native_apfs_personality_count = personalities ? personalities->getCount () : 0U;
+  }
+#endif
+  int result = OSKext::loadKextWithIdentifier (
+    identifier,
     false,
     false,
     kOSKextExcludeNone,
     kOSKextExcludeNone,
     nullptr);
+#if defined(DEVELOPMENT) || defined(DEBUG)
+  OSSharedPtr<OSKext> after = OSKext::lookupKextWithIdentifier (identifier);
+  native_apfs_loaded_after = after && after->isLoaded () ? 1U : 0U;
+  native_apfs_started_after = after && after->isStarted () ? 1U : 0U;
+  if (after) {
+    native_apfs_load_tag = after->getLoadTag ();
+    OSPtr<OSArray> personalities = after->copyPersonalitiesArray ();
+    native_apfs_personality_count = personalities ? personalities->getCount () : 0U;
+  }
+  static const char *const classNames[] = {
+    "AppleAPFSContainerScheme",
+    "AppleAPFSContainerSchemeWholeDisk",
+    "AppleAPFSContainer",
+    "AppleAPFSVolume",
+  };
+  for (unsigned index = 0; index < sizeof (classNames) / sizeof (classNames[0]); ++index) {
+    OSPtr<const OSSymbol> symbol = OSSymbol::withCStringNoCopy (classNames[index]);
+    if (symbol && OSMetaClass::getMetaClassWithName (symbol.get ())) {
+      native_apfs_class_mask |= 1U << index;
+    }
+  }
+#endif
+  return result;
 }
 
 class NativeUfs : public IOService {
@@ -1295,6 +1341,10 @@ public:
   bool signedVolumeUuid (char out[37]) const;
 #endif
   const char *windowLabel () const { return label; }
+  uintptr_t windowObject () const { return reinterpret_cast<uintptr_t> (this); }
+  uint64_t windowAbsolute () const { return absolute; }
+  uint64_t windowBytes () const { return bytes; }
+  uint64_t windowMaxValidBlock () const { return bytes / 512 - 1; }
   bool configure (const char *name, uint64_t absoluteOffset, uint64_t size);
   bool start (IOService *provider) override;
   void free () override;
@@ -1307,7 +1357,7 @@ public:
   char *getAdditionalDeviceInfoString () override { return const_cast<char *> ("UFS LUN 0 userdata window, read-only"); }
   IOReturn reportBlockSize (UInt64 *value) override { *value = 512; return kIOReturnSuccess; }
   IOReturn reportEjectability (bool *value) override { *value = false; return kIOReturnSuccess; }
-  IOReturn reportMaxValidBlock (UInt64 *value) override { *value = bytes / 512 - 1; return kIOReturnSuccess; }
+  IOReturn reportMaxValidBlock (UInt64 *value) override { *value = windowMaxValidBlock (); return kIOReturnSuccess; }
   IOReturn reportMediaState (bool *present, bool *changed) override {
     *present = online; if (changed) *changed = false; return kIOReturnSuccess;
   }
@@ -1328,7 +1378,7 @@ volatile uint64_t native_ufs_block_failures = 0;
 }
 
 static char gRootDiagnosticText[2500];
-static char gRootMediaText[1000];
+static char gRootMediaText[2000];
 // Passive diagnostic reader: cached software values only. It must remain safe
 // when called from an IRQ while the transport is busy: no locks, allocations,
 // MMIO reads, queue resets, or changes to the command/trust state. Fields can
@@ -1650,8 +1700,13 @@ static void captureMissingMedia (const char *uuid)
   int used = snprintf (gRootMediaText, sizeof (gRootMediaText), "Waiting for signed UUID %s\n", uuid);
 #if defined(DEVELOPMENT) || defined(DEBUG)
   used += snprintf (gRootMediaText + used, sizeof (gRootMediaText) - used,
-                    "APFS load=%d registered=%u vfsops=%llx\n", native_apfs_load_status,
-                    native_apfs_registered, (unsigned long long)native_apfs_vfsops);
+                    "APFS load=%d registered=%u vfsops=%llx found=%u loaded=%u/%u started=%u/%u "
+                    "tag=%x personalities=%u classes=%x\n",
+                    native_apfs_load_status, native_apfs_registered,
+                    (unsigned long long)native_apfs_vfsops, native_apfs_kext_found,
+                    native_apfs_loaded_before, native_apfs_loaded_after,
+                    native_apfs_started_before, native_apfs_started_after,
+                    native_apfs_load_tag, native_apfs_personality_count, native_apfs_class_mask);
 #endif
   OSDictionary *matching = IOService::serviceMatching ("IOMedia");
   OSIterator *iterator = matching ? IOService::getMatchingServices (matching) : nullptr;
@@ -1766,58 +1821,120 @@ static void statsThread (void *argument, wait_result_t)
 // Storage discovery report (native-ufs-probe=12): a separate thread waits for the original
 // IOStorageFamily to publish IOMedia for the root windows, then shows what exists on the screen.
 // It must not run inside the matching thread that is starting NativeUfs.
-static char gMediaReport[3000];
+static char gMediaReport[6000];
+
+static unsigned countMatchingService (const char *className)
+{
+  unsigned count = 0;
+  OSDictionary *matching = IOService::serviceMatching (className);
+  OSIterator *iterator = matching ? IOService::getMatchingServices (matching) : nullptr;
+  if (iterator) {
+    while (count < 256 && iterator->getNextObject ()) count++;
+    iterator->release ();
+  }
+  OSSafeReleaseNULL (matching);
+  return count;
+}
+
+static void formatRegistryParentChain (IORegistryEntry *entry, char *out, size_t size)
+{
+  unsigned used = 0;
+  for (unsigned depth = 0; entry && depth < 8 && used + 16 < size; ++depth) {
+    const char *className = entry->getMetaClass () ? entry->getMetaClass ()->getClassName () : "-";
+    used += snprintf (out + used, size - used, "%s%s(0x%llx)",
+                      depth ? " <- " : "", className, (unsigned long long)entry->getRegistryEntryID ());
+    entry = entry->getParentEntry (gIOServicePlane);
+  }
+}
+
+static unsigned countRegistryChildren (IORegistryEntry *entry)
+{
+  unsigned count = 0;
+  OSIterator *iterator = entry ? entry->getChildIterator (gIOServicePlane) : nullptr;
+  if (iterator) {
+    while (count < 256 && iterator->getNextObject ()) count++;
+    iterator->release ();
+  }
+  return count;
+}
 
 static void mediaReportThread (void *, wait_result_t)
 {
   unsigned count = 0;
   for (unsigned tick = 0; tick < 200; tick++) {      // up to 20 s
-    OSDictionary *matching = IOService::serviceMatching ("IOMedia");
-    OSIterator *iterator = matching ? IOService::getMatchingServices (matching) : nullptr;
-    count = 0;
-    if (iterator) {
-      while (iterator->getNextObject ()) {
-        count++;
-      }
-      iterator->release ();
-    }
-    if (matching) {
-      matching->release ();
-    }
+    count = countMatchingService ("IOMedia");
     if (count >= 4) {
       break;
     }
     IOSleep (100);
   }
+  // APFS is loaded from bsd_init, after this root-publication thread starts. Give its
+  // personalities a bounded settle window after observing the load result.
+  for (unsigned tick = 0; tick < 100 && native_apfs_load_status == -1; ++tick) IOSleep (100);
+  if (native_apfs_load_status != -1) {
+    for (unsigned tick = 0; tick < 50; ++tick) {
+      if (countMatchingService ("IOMedia") >= 4) break;
+      IOSleep (100);
+    }
+  }
   IOSleep (500);
+  count = countMatchingService ("IOMedia");
+  unsigned bsdClients = countMatchingService ("IOMediaBSDClient");
   int used = snprintf (gMediaReport, sizeof (gMediaReport),
-                       "NATIVE_UFS media report: published=%u reads=%llu failures=%llu media=%u\n",
-                       native_ufs_blocks_published, native_ufs_block_reads, native_ufs_block_failures, count);
+                       "NATIVE_UFS media report: published=%u reads=%llu failures=%llu media=%u bsdClients=%u\n",
+                       native_ufs_blocks_published, native_ufs_block_reads, native_ufs_block_failures, count,
+                       bsdClients);
 #if defined(DEVELOPMENT) || defined(DEBUG)
   used += snprintf (gMediaReport + used, sizeof (gMediaReport) - used,
-                    "APFS load=%d registered=%u vfsops=%llx\n", native_apfs_load_status,
-                    native_apfs_registered, (unsigned long long)native_apfs_vfsops);
+                    "APFS load=%d registered=%u vfsops=%llx found=%u loaded=%u/%u started=%u/%u "
+                    "tag=%x personalities=%u classes=%x\n",
+                    native_apfs_load_status, native_apfs_registered,
+                    (unsigned long long)native_apfs_vfsops, native_apfs_kext_found,
+                    native_apfs_loaded_before, native_apfs_loaded_after,
+                    native_apfs_started_before, native_apfs_started_after,
+                    native_apfs_load_tag, native_apfs_personality_count, native_apfs_class_mask);
 #endif
+  for (unsigned index = 0; index < gPending && used < int (sizeof (gMediaReport)) - 300; ++index) {
+    NativeUfsBlock *window = gPendingDevice[index];
+    if (!window) continue;
+    used += snprintf (gMediaReport + used, sizeof (gMediaReport) - used,
+                      "window=%s object=0x%llx absolute=%llx bytes=%llx maxBlock=%llx\n",
+                      window->windowLabel (), (unsigned long long)window->windowObject (),
+                      (unsigned long long)window->windowAbsolute (), (unsigned long long)window->windowBytes (),
+                      (unsigned long long)window->windowMaxValidBlock ());
+  }
   OSDictionary *matching = IOService::serviceMatching ("IOMedia");
   OSIterator *iterator = matching ? IOService::getMatchingServices (matching) : nullptr;
-  while (iterator && used < int (sizeof (gMediaReport)) - 200) {
+  while (iterator && used < int (sizeof (gMediaReport)) - 400) {
     IOService *media = OSDynamicCast (IOService, iterator->getNextObject ());
     if (!media) {
       break;
     }
+    IOMedia *ioMedia = OSDynamicCast (IOMedia, media);
     OSString *uuid = OSDynamicCast (OSString, media->getProperty ("UUID"));
     OSString *bsd = OSDynamicCast (OSString, media->getProperty (kIOBSDNameKey));
     OSString *content = OSDynamicCast (OSString, media->getProperty ("Content"));
     OSString *hint = OSDynamicCast (OSString, media->getProperty (kIOMediaContentHintKey));
     OSBoolean *whole = OSDynamicCast (OSBoolean, media->getProperty (kIOMediaWholeKey));
     OSBoolean *leaf = OSDynamicCast (OSBoolean, media->getProperty (kIOMediaLeafKey));
-    OSNumber *size = OSDynamicCast (OSNumber, media->getProperty ("Size"));
+    OSBoolean *writable = OSDynamicCast (OSBoolean, media->getProperty (kIOMediaWritableKey));
+    OSNumber *size = OSDynamicCast (OSNumber, media->getProperty (kIOMediaSizeKey));
+    OSNumber *blockSize = OSDynamicCast (OSNumber, media->getProperty (kIOMediaPreferredBlockSizeKey));
+    char parents[320] = {};
+    formatRegistryParentChain (media->getParentEntry (gIOServicePlane), parents, sizeof (parents));
     used += snprintf (gMediaReport + used, sizeof (gMediaReport) - used,
-                      "%s content=%s hint=%s whole=%d leaf=%d size=%llx uuid=%s\n",
-                      bsd ? bsd->getCStringNoCopy () : "-", content ? content->getCStringNoCopy () : "-",
-                      hint ? hint->getCStringNoCopy () : "-", whole ? int (whole->getValue ()) : -1,
-                      leaf ? int (leaf->getValue ()) : -1, size ? size->unsigned64BitValue () : 0ULL,
-                      uuid ? uuid->getCStringNoCopy () : "-");
+                      "%s object=0x%llx id=%llx class=%s content=%s hint=%s whole=%d leaf=%d write=%d "
+                      "size=%llx propSize=%llx block=%llu base=%llx children=%u uuid=%s parents=%s\n",
+                      bsd ? bsd->getCStringNoCopy () : "-", (unsigned long long)(uintptr_t)media,
+                      (unsigned long long)media->getRegistryEntryID (), media->getMetaClass ()->getClassName (),
+                      content ? content->getCStringNoCopy () : "-", hint ? hint->getCStringNoCopy () : "-",
+                      whole ? int (whole->getValue ()) : -1, leaf ? int (leaf->getValue ()) : -1,
+                      writable ? int (writable->getValue ()) : -1,
+                      ioMedia ? (unsigned long long)ioMedia->getSize () : 0ULL,
+                      size ? size->unsigned64BitValue () : 0ULL,
+                      blockSize ? blockSize->unsigned64BitValue () : 0ULL,
+                      ioMedia ? (unsigned long long)ioMedia->getBase () : 0ULL,
+                      countRegistryChildren (media), uuid ? uuid->getCStringNoCopy () : "-", parents);
   }
   if (iterator) {
     iterator->release ();
