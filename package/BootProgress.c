@@ -167,6 +167,9 @@ extern volatile unsigned native_touch_stage_req __attribute__((weak_import));
 extern volatile unsigned boot_process_passes,boot_process_seen __attribute__((weak_import));
 extern volatile unsigned boot_process_attempts __attribute__((weak_import));
 extern volatile unsigned boot_process_busy __attribute__((weak_import));
+extern volatile int native_oslog_live_stage,native_oslog_live_status __attribute__((weak_import));
+extern volatile int native_oslog_live_size,native_oslog_live_readback __attribute__((weak_import));
+static volatile int oslog_exec_seen=-1,oslog_exit_status=-1,oslog_exit_pid=-1;
 static unsigned process_worker_status,process_capture_age;
 extern volatile uint32_t __attribute__((weak_import)) armcpu_smp_requested,armcpu_smp_running,armcpu_smp_conduit,armcpu_boot_mpidr;
 extern volatile uint32_t __attribute__((weak_import)) armcpu_smp_step[8],armcpu_smp_seen_mpidr[8],armcpu_smp_fail[8],armcpu_smp_sys[8][5],armcpu_boot_sys[5],armcpu_gic_stride,armcpu_gic_typer_probe[2];
@@ -674,6 +677,8 @@ void boot_progress_main_stage(const char *text) {
 void boot_progress_process_stage(int pid,const char *name,const char *text) {
   if(!enabled || !take())return;
   char stamped[BP_COLS];unsigned now=seconds();
+  if(name && !strcmp(name,"log") && strstr(text,"signature accepted"))
+    __atomic_store_n(&oslog_exec_seen,pid,__ATOMIC_RELEASE);
   if(!strncmp(text,"exec process signature",22))census_note(name,0);
   snprintf(stamped,sizeof(stamped),"target pid=%d %.24s %.70s",pid,name,text);
   bp_stage(&state,stamped,now);
@@ -683,6 +688,10 @@ void boot_progress_process_stage(int pid,const char *name,const char *text) {
 void boot_progress_exit(int pid,const char *name,int status,unsigned ns,uint64_t code) {
   if(!enabled)return;
   census_note(name,1);
+  if(name && !strcmp(name,"log")) {
+    __atomic_store_n(&oslog_exit_pid,pid,__ATOMIC_RELEASE);
+    __atomic_store_n(&oslog_exit_status,status,__ATOMIC_RELEASE);
+  }
   if(name && !strcmp(name,"xpcproxy") && pid==proc_selfpid())xpc_fail_note(status,ns,code);
   if(__atomic_exchange_n(&exit_lock,1,__ATOMIC_ACQUIRE)) {
     __atomic_fetch_add(&exit_dropped,1,__ATOMIC_RELAXED);return;
@@ -1213,8 +1222,15 @@ static void split_console_banner(unsigned now) {
       *(volatile uint32_t *)(display.frame+(uintptr_t)y*display.stride+x*4)=0xff0d1117;
   }
   char head[120];
-  snprintf(head,sizeof head," UniXNU console / OSLog%s%s%s  t=%us  last=%u lines",build_tag[0]?"  [":"",build_tag,
-           build_tag[0]?"]":"",now,count);
+  int os_stage=&native_oslog_live_stage?__atomic_load_n(&native_oslog_live_stage,__ATOMIC_ACQUIRE):-1;
+  int os_status=&native_oslog_live_status?__atomic_load_n(&native_oslog_live_status,__ATOMIC_ACQUIRE):-1;
+  int os_size=&native_oslog_live_size?__atomic_load_n(&native_oslog_live_size,__ATOMIC_ACQUIRE):-1;
+  int os_read=&native_oslog_live_readback?__atomic_load_n(&native_oslog_live_readback,__ATOMIC_ACQUIRE):-1;
+  int os_exec=__atomic_load_n(&oslog_exec_seen,__ATOMIC_ACQUIRE);
+  int os_exit=__atomic_load_n(&oslog_exit_status,__ATOMIC_ACQUIRE);
+  snprintf(head,sizeof head," UniXNU console / OSLog%s%s%s t=%us l=%u O=%d/%d %d/%d E%d X%d",
+           build_tag[0]?"  [":"",build_tag,build_tag[0]?"]":"",now,count,
+           os_stage,os_status,os_size,os_read,os_exec,os_exit);
   px_text(0,top-cell,head,cols,0xffffffff,BP_BAR_LIVE);
   for(unsigned i=0;i<count;++i)
     px_text(0,top+i*cell,rows[i],cols,0xffb4bcc6,0xff0d1117);
