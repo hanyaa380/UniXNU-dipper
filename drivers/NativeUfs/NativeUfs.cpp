@@ -1865,6 +1865,11 @@ extern unsigned int vm_page_free_count, vm_page_active_count, vm_page_inactive_c
 extern uint32_t vm_page_pages;
 extern unsigned int memorystatus_available_pages;
 extern int nprocs;
+extern char boot_process_rows[10][120] __attribute__((weak_import));
+extern volatile unsigned boot_process_passes __attribute__((weak_import));
+extern volatile unsigned boot_process_seen __attribute__((weak_import));
+extern void boot_process_snapshot(void) __attribute__((weak_import));
+extern size_t boot_progress_spawn_rows(char *, size_t) __attribute__((weak_import));
 }
 
 static void statsThread (void *argument, wait_result_t)
@@ -1877,6 +1882,38 @@ static void statsThread (void *argument, wait_result_t)
          delay, vm_page_pages, vm_page_free_count, vm_page_active_count, vm_page_inactive_count,
          vm_page_wire_count, vm_page_speculative_count, vm_page_purgeable_count,
          memorystatus_available_pages, max_mem, nprocs, native_ufs_block_reads);
+}
+
+// Userland snapshot (native-ufs-probe=15): root mode as usual, then a delayed panic with the
+// process rows and exit census captured by BootProgress. Observation only.
+static char gRuntimeReport[4096];
+
+static void runtimeReportThread (void *argument, wait_result_t)
+{
+  unsigned delay = static_cast<unsigned> (reinterpret_cast<uintptr_t> (argument));
+  IOSleep (delay * 1000);
+  if (boot_process_snapshot) boot_process_snapshot ();
+  int used = snprintf (gRuntimeReport, sizeof (gRuntimeReport),
+                       "NATIVE_UFS userland snapshot after %u s\n"
+                       "pages=%u free=%u wired=%u procs=%d blocks=%llu\n",
+                       delay, vm_page_pages, vm_page_free_count, vm_page_wire_count, nprocs,
+                       native_ufs_block_reads);
+#if defined(DEVELOPMENT) || defined(DEBUG)
+  used += snprintf (gRuntimeReport + used, sizeof (gRuntimeReport) - used,
+                    "process passes=%u seen=%u\n",
+                    (&boot_process_passes ? boot_process_passes : 0),
+                    (&boot_process_seen ? boot_process_seen : 0));
+  if (&boot_process_rows) {
+    for (unsigned index = 0; index < 10 && used < int (sizeof (gRuntimeReport)) - 130; ++index) {
+      used += snprintf (gRuntimeReport + used, sizeof (gRuntimeReport) - used,
+                        "P%u %.119s\n", index, boot_process_rows[index]);
+    }
+  }
+  if (boot_progress_spawn_rows && used < int (sizeof (gRuntimeReport)) - 2) {
+    boot_progress_spawn_rows (gRuntimeReport + used, sizeof (gRuntimeReport) - used);
+  }
+#endif
+  panic ("%s", gRuntimeReport);
 }
 
 // Storage discovery report (native-ufs-probe=12): a separate thread waits for the original
@@ -2127,6 +2164,19 @@ bool NativeUfs::start (IOService *provider)
     thread_t thread = nullptr;
     if (kernel_thread_start (statsThread, reinterpret_cast<void *> (static_cast<uintptr_t> (delay)), &thread) != KERN_SUCCESS) {
       panic ("NATIVE_UFS memory snapshot: cannot start the thread");
+    }
+    thread_deallocate (thread);
+    return true;
+  }
+  if (probe == 15) {
+    unsigned delay = 60;
+    PE_parse_boot_argn ("native-ufs-runtime-delay", &delay, sizeof (delay));
+    if (!startRoot (provider)) {
+      panic ("NATIVE_UFS userland snapshot: root start failed");
+    }
+    thread_t thread = nullptr;
+    if (kernel_thread_start (runtimeReportThread, reinterpret_cast<void *> (static_cast<uintptr_t> (delay)), &thread) != KERN_SUCCESS) {
+      panic ("NATIVE_UFS userland snapshot: cannot start the thread");
     }
     thread_deallocate (thread);
     return true;
