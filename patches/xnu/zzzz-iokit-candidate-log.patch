@@ -35,10 +35,10 @@ diff --git a/iokit/Kernel/IOService.cpp b/iokit/Kernel/IOService.cpp
 +				uint32_t skipAppleCpu = 0;
 +				if (PE_parse_boot_argn("iokit-skip-apple-cpu", &skipAppleCpu,
 +				    sizeof(skipAppleCpu)) && skipAppleCpu &&
-+				    (!strcmp(symbol->getCStringNoCopy(), "AppleARMCPU") ||
-+				     !strcmp(symbol->getCStringNoCopy(), "AppleCPU"))) {
++				    !strncmp(symbol->getCStringNoCopy(), "Apple", 5) &&
++				    strncmp(symbol->getCStringNoCopy(), "AppleAPFS", 9)) {
 +					char stage[96];
-+					snprintf(stage, sizeof(stage), "candidate skipped Apple CPU class %s",
++					snprintf(stage, sizeof(stage), "candidate skipped non-APFS Apple class %s",
 +					    symbol->getCStringNoCopy());
 +					boot_progress_stage(stage);
 +					continue;
