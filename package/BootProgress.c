@@ -1157,13 +1157,72 @@ static void crash_banner(unsigned now) {
     px_text(0,top+i*cell,r,cols,color,0xff0d1117);
   }
 }
+static unsigned split_console_lines;
+static int split_console_mode(void) {
+  static int enabled=-1;
+  if(enabled<0) {
+    unsigned value=0;
+    enabled=PE_parse_boot_argn("sheng-split-console",&value,sizeof value) && value==1;
+    unsigned lines=32;
+    if(PE_parse_boot_argn("sheng-split-lines",&lines,sizeof lines)) {
+      if(lines<8)lines=8;
+      if(lines>BP_LOGS)lines=BP_LOGS;
+      split_console_lines=lines;
+    } else split_console_lines=32;
+  }
+  return enabled;
+}
+static unsigned copy_console_tail(char rows[BP_LOGS][BP_COLS], unsigned maximum) {
+  if(!take())return 0;
+  unsigned available=state.log_lines+(state.logs[state.log_row][0]?1:0);
+  if(available>BP_LOGS)available=BP_LOGS;
+  unsigned count=available<maximum?available:maximum;
+  unsigned newest=state.logs[state.log_row][0]?state.log_row:(state.log_row+BP_LOGS-1)%BP_LOGS;
+  for(unsigned i=0;i<count;++i) {
+    unsigned source=(newest+BP_LOGS-(count-1-i))%BP_LOGS;
+    strlcpy(rows[i],state.logs[source],BP_COLS);
+  }
+  release();
+  return count;
+}
+static void split_console_banner(unsigned now) {
+  if(!split_console_mode() || !display.frame || !display.scale)return;
+  char rows[BP_LOGS][BP_COLS];
+  unsigned count=copy_console_tail(rows,split_console_lines);
+  if(!count)return;
+  unsigned cell=14*display.scale,cols=display.width/(6*display.scale);
+  if(cols>119)cols=119;
+  unsigned reserve=display.height*2/3;
+  unsigned top=display.height-(count+1)*cell-8;
+  if(top<reserve) {
+    top=reserve;
+    unsigned fit=display.height>top+cell?(display.height-top)/cell-1:0;
+    if(count>fit)count=fit;
+    if(!count)return;
+  }
+  // Keep the upper two thirds for the system Logo/progress UI. Every system
+  // scanout is followed by this callback, so the console strip survives even
+  // though the compositor owns the full framebuffer.
+  for(unsigned y=top-cell;y<display.height;++y) {
+    if(__atomic_load_n(&display.yield_requested,__ATOMIC_ACQUIRE))return;
+    for(unsigned x=0;x<cols*6*display.scale;++x)
+      *(volatile uint32_t *)(display.frame+(uintptr_t)y*display.stride+x*4)=0xff0d1117;
+  }
+  char head[120];
+  snprintf(head,sizeof head," UniXNU console%s%s%s  t=%us  last=%u lines",build_tag[0]?"  [":"",build_tag,
+           build_tag[0]?"]":"",now,count);
+  px_text(0,top-cell,head,cols,0xffffffff,BP_BAR_LIVE);
+  for(unsigned i=0;i<count;++i)
+    px_text(0,top+i*cell,rows[i],cols,0xffb4bcc6,0xff0d1117);
+}
 // NativeLegacyDisplay calls this after the system frame is fully copied. The async
 // monitor can otherwise race with scanout and leave the diagnostic banner hidden
 // under the system progress UI. crash_banner throttles repaint to once per 2 s.
 void boot_progress_after_scanout(void) {
   if(!enabled || !boot_progress_display_owned || !display.frame || !display.scale)return;
   if(__atomic_exchange_n(&render_busy,1,__ATOMIC_ACQUIRE))return;
-  crash_banner(seconds());
+  if(split_console_mode()) split_console_banner(seconds());
+  else crash_banner(seconds());
   __atomic_store_n(&render_busy,0,__ATOMIC_RELEASE);
 }
 static void touch_overlay_locked(void);
