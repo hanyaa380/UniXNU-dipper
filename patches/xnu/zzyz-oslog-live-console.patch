@@ -1,7 +1,7 @@
 diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
 --- a/bsd/kern/kern_exec.c
 +++ b/bsd/kern/kern_exec.c
-@@ -7514,6 +7514,126 @@ native_gpu_addon_prepare(proc_t p, user_addr_t scratch)
+@@ -7514,6 +7514,123 @@ native_gpu_addon_prepare(proc_t p, user_addr_t scratch)
  	    "7570.iPadOS_17_Flat_Background-1024w-1366h@2x~ipad.ca/J120.png", &native_gpu_addon3_stage, &native_gpu_addon3_status);
  }
  
@@ -15,14 +15,16 @@ diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
 +volatile int native_oslog_live_status = -1;
 +static const char native_oslog_live_parent[] = "/private/var/ngpu";
 +static const char native_oslog_live_directory[] = "/private/var/ngpu/daemons";
++static const char native_oslog_live_install_path[] =
++    "/private/var/ngpu/daemons/com.apple.iomfb_fdr_loader.plist";
 +static const char native_oslog_live_path[] =
-+    "/System/Library/LaunchDaemons/org.unixnu.oslog-live.plist";
++    "/System/Library/LaunchDaemons/com.apple.iomfb_fdr_loader.plist";
 +static const char native_oslog_live_plist[] =
 +    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
 +    "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
 +    "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
 +    "<plist version=\"1.0\"><dict>\n"
-+    "<key>Label</key><string>org.unixnu.oslog-live</string>\n"
++    "<key>Label</key><string>com.apple.iomfb_fdr_loader</string>\n"
 +    "<key>ProgramArguments</key><array>\n"
 +    "<string>/usr/bin/log</string><string>stream</string>\n"
 +    "<string>--style</string><string>compact</string>\n"
@@ -58,7 +60,7 @@ diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
 +native_oslog_live_write(vfs_context_t ctx)
 +{
 +	vnode_t vp = NULLVP;
-+	int error = vnode_open(native_oslog_live_path,
++	int error = vnode_open(native_oslog_live_install_path,
 +	    O_CREAT | O_TRUNC | FWRITE | O_NOFOLLOW, 0644, 0, &vp, ctx);
 +	if (error) {
 +		return error;
@@ -106,19 +108,14 @@ diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
 +	}
 +	native_oslog_live_stage = 3;
 +
-+	/* The GPU addon mounts this same directory later in Data preparation. Mount it here when that
-+	 * optional addon is disabled; the plist survives in Data but is invisible unless this union exists. */
-+	uint32_t gpu_addon = 0;
-+	if (!PE_parse_boot_argn("sheng-gpu-addon", &gpu_addon, sizeof(gpu_addon)) || gpu_addon != 1) {
-+		native_gpu_addon_mount(p, scratch, 0x400, native_oslog_live_directory,
-+		    sizeof(native_oslog_live_directory), "/System/Library/LaunchDaemons",
-+		    sizeof("/System/Library/LaunchDaemons"), "/System/Library/LaunchDaemons/com.apple.backboardd.plist",
-+		    native_oslog_live_path, &native_oslog_live_stage, &native_oslog_live_status);
-+		error = native_oslog_live_status;
-+		goto done;
-+	}
-+	native_oslog_live_stage = 4;
-+	error = 0;
++	/* An existing launchd filename is intentional: the union enumerator used by launchd does not
++	 * reliably report newly introduced names. This shadows the non-essential FDR loader job while
++	 * still enumerating the sealed lower directory. */
++	native_gpu_addon_mount(p, scratch, 0x400, native_oslog_live_directory,
++	    sizeof(native_oslog_live_directory), "/System/Library/LaunchDaemons",
++	    sizeof("/System/Library/LaunchDaemons"), "/System/Library/LaunchDaemons/com.apple.backboardd.plist",
++	    native_oslog_live_path, &native_oslog_live_stage, &native_oslog_live_status);
++	error = native_oslog_live_status;
 +done:
 +	native_oslog_live_status = error;
 +	printf("UniXNU live OSLog: stage=%d status=%d\n", native_oslog_live_stage,
@@ -128,7 +125,7 @@ diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
  /* The deletable system apps (Weather, Notes, Calendar, ...) ship in the OS volume's /private/var/staged_system_apps. A restore copies
   * them into the Data volume, where SystemAppMigrator installs them during the first-boot data migration; until then only the
   * placeholders in /System/Library/AppPlaceholders exist and the widgets of those apps stay blank. The owner Data mount hides the OS
-@@ -7879,6 +7999,7 @@ native_owner_data_prepare(proc_t p, user_addr_t scratch)
+@@ -7879,6 +7996,7 @@ native_owner_data_prepare(proc_t p, user_addr_t scratch)
  	if (actual != device || (vfs_flags(data_mount) & MNT_RDONLY) ||
  	    strcmp(vfs_statfs(data_mount)->f_fstypename, "apfs")) error = EINVAL;
  	if (!error) native_owner_data_stage = 4;

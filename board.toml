@@ -199,7 +199,6 @@ kernel_args = [
   "offline-hid-home=1",               # publish NativeHidInput (keyboard/Home collection; no touch until a fajita touch driver)
   "offline-key-events=1",             # the owned AppleKeyStore (NativeKeyStoreEvents): no SEP on this board
   "sheng-aks=1",                      # it answers the keybag state queries: no passcode, unlocked
-  "sheng-gpu-addon=1",                # mount the PNG wallpaper of the payload's addon (scripts/make-fajita-wallpaper-addon.py), if any
 ]
 
 # Fixups of signed text, applied by the kernel after signature validation (patches/xnu/native-text-fixup.patch); they reach it as
