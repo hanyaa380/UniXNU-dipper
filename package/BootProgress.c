@@ -1163,6 +1163,10 @@ static int split_console_mode(void) {
   if(enabled<0) {
     unsigned value=0;
     enabled=PE_parse_boot_argn("sheng-split-console",&value,sizeof value) && value==1;
+    // The live OSLog launch job writes decoded userland lines to /dev/console. One switch
+    // enables both that producer and the lower console strip, so the boot arguments do not
+    // need a second option at their 1000-byte limit.
+    if(!enabled && PE_parse_boot_argn("sheng-oslog",&value,sizeof value) && value==1) enabled=1;
     unsigned lines=32;
     if(PE_parse_boot_argn("sheng-split-lines",&lines,sizeof lines)) {
       if(lines<8)lines=8;
@@ -1209,7 +1213,7 @@ static void split_console_banner(unsigned now) {
       *(volatile uint32_t *)(display.frame+(uintptr_t)y*display.stride+x*4)=0xff0d1117;
   }
   char head[120];
-  snprintf(head,sizeof head," UniXNU console%s%s%s  t=%us  last=%u lines",build_tag[0]?"  [":"",build_tag,
+  snprintf(head,sizeof head," UniXNU console / OSLog%s%s%s  t=%us  last=%u lines",build_tag[0]?"  [":"",build_tag,
            build_tag[0]?"]":"",now,count);
   px_text(0,top-cell,head,cols,0xffffffff,BP_BAR_LIVE);
   for(unsigned i=0;i<count;++i)
