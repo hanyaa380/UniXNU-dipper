@@ -1,0 +1,173 @@
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -7514,6 +7514,161 @@ native_gpu_addon_prepare(proc_t p, user_addr_t scratch)
+ 	    "7570.iPadOS_17_Flat_Background-1024w-1366h@2x~ipad.ca/J120.png", &native_gpu_addon3_stage, &native_gpu_addon3_status);
+ }
+ 
++/* Opt-in live unified-log console (boot-arg sheng-oslog=1). The system's own /usr/bin/log decodes
++ * tracepoints and uuidtext format strings, so the kernel does not need a second OSLog parser. launchd
++ * receives one small plist through a Data-backed union over the sealed LaunchDaemons directory; its
++ * stdout/stderr go to /dev/console, whose _cnputc path the boot-progress patch routes into the lower
++ * console ring. The Apple compositor keeps ownership of the framebuffer and boot_progress_after_scanout()
++ * redraws the ring below the Logo/progress UI. No userdata flash or separate helper binary is required. */
++volatile int native_oslog_live_stage;
++volatile int native_oslog_live_status = -1;
++static const char native_oslog_live_parent[] = "/private/var/ngpu";
++static const char native_oslog_live_directory[] = "/private/var/ngpu/daemons";
++static const char native_oslog_live_install_path[] =
++    "/private/var/ngpu/daemons/com.apple.iomfb_fdr_loader.plist";
++static const char native_oslog_live_path[] =
++    "/System/Library/LaunchDaemons/com.apple.iomfb_fdr_loader.plist";
++static const char native_oslog_live_plist[] =
++    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
++    "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
++    "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
++    "<plist version=\"1.0\"><dict>\n"
++    "<key>Label</key><string>com.apple.iomfb_fdr_loader</string>\n"
++    "<key>ProgramArguments</key><array>\n"
++    "<string>/usr/bin/log</string><string>stream</string>\n"
++    "<string>--style</string><string>compact</string>\n"
++    "<string>--level</string><string>debug</string>\n"
++    "<string>--type</string><string>log</string>\n"
++    "</array>\n"
++    "<key>StandardOutPath</key><string>/dev/console</string>\n"
++    "<key>StandardErrorPath</key><string>/dev/console</string>\n"
++    "<key>EnvironmentVariables</key><dict>\n"
++    "<key>TERM</key><string>dumb</string>\n"
++    "</dict>\n"
++    "<key>RunAtLoad</key><true/>\n"
++    "<key>KeepAlive</key><true/>\n"
++    "<key>ThrottleInterval</key><integer>2</integer>\n"
++    "<key>ProcessType</key><string>Interactive</string>\n"
++    "<key>LimitLoadToSessionType</key><string>System</string>\n"
++    "</dict></plist>\n";
++volatile int native_oslog_live_size = -1;
++volatile int native_oslog_live_readback = -1;
++
++static int
++native_oslog_live_mkdir(proc_t p, user_addr_t scratch, const char *path)
++{
++	struct mkdir_args request = { .path = scratch + 0x200, .mode = 0755 };
++	int32_t result = 0;
++	int error = copyout(path, request.path, strlen(path) + 1);
++	if (!error) {
++		error = mkdir(p, &request, &result);
++	}
++	return error == EEXIST ? 0 : error;
++}
++
++static int
++native_oslog_live_write(vfs_context_t ctx)
++{
++	vnode_t vp = NULLVP;
++	int error = vnode_open(native_oslog_live_install_path,
++	    O_CREAT | O_TRUNC | FWRITE | O_NOFOLLOW, 0644, 0, &vp, ctx);
++	if (error) {
++		return error;
++	}
++	int resid = 0;
++	error = vn_rdwr(UIO_WRITE, vp, (caddr_t)(uintptr_t)native_oslog_live_plist,
++	    (int)(sizeof(native_oslog_live_plist) - 1), 0, UIO_SYSSPACE, IO_NOAUTH | IO_UNIT,
++	    vfs_context_ucred(ctx), &resid, vfs_context_proc(ctx));
++	if (!error && resid) {
++		error = EIO;
++	}
++	if (!error) {
++		struct vnode_attr va;
++		VATTR_INIT(&va);
++		VATTR_SET(&va, va_mode, 0644);
++		VATTR_SET(&va, va_uid, 0);
++		VATTR_SET(&va, va_gid, 0);
++		error = vnode_setattr(vp, &va, ctx);
++	}
++	if (!error) {
++		error = VNOP_FSYNC(vp, MNT_WAIT, ctx);
++	}
++	int close_error = vnode_close(vp, FWRITE, ctx);
++	return error ? error : close_error;
++}
++
++static int
++native_oslog_live_verify(vfs_context_t ctx)
++{
++	vnode_t vp = NULLVP;
++	int error = vnode_lookup(native_oslog_live_path, 0, &vp, ctx);
++	if (error) {
++		return error;
++	}
++	struct vnode_attr va;
++	VATTR_INIT(&va);
++	VATTR_WANTED(&va, va_data_size);
++	error = vnode_getattr(vp, &va, ctx);
++	if (!error && VATTR_IS_SUPPORTED(&va, va_data_size)) {
++		native_oslog_live_size = (int)va.va_data_size;
++	} else if (!error) {
++		error = EINVAL;
++	}
++	char prefix[64] = {0};
++	int resid = 0;
++	if (!error) {
++		error = vn_rdwr(UIO_READ, vp, (caddr_t)prefix, sizeof(prefix), 0, UIO_SYSSPACE, IO_NOAUTH,
++		    vfs_context_ucred(ctx), &resid, vfs_context_proc(ctx));
++	}
++	if (!error && !resid) {
++		native_oslog_live_readback = !strncmp(prefix, "<?xml version=\"1.0\"", 19);
++		if (!native_oslog_live_readback) {
++			error = EINVAL;
++		}
++	}
++	vnode_put(vp);
++	return error;
++}
++
++static void
++native_oslog_live_prepare(proc_t p, user_addr_t scratch)
++{
++	uint32_t enabled = 0;
++	if (!PE_parse_boot_argn("sheng-oslog", &enabled, sizeof(enabled)) || enabled != 1) {
++		return;
++	}
++
++	vfs_context_t ctx = vfs_context_current();
++	int error;
++	native_oslog_live_stage = 1;
++	if ((error = native_oslog_live_mkdir(p, scratch, native_oslog_live_parent)) ||
++	    (error = native_oslog_live_mkdir(p, scratch, native_oslog_live_directory))) {
++		goto done;
++	}
++	native_oslog_live_stage = 2;
++	if ((error = native_oslog_live_write(ctx))) {
++		goto done;
++	}
++	native_oslog_live_stage = 3;
++
++	/* An existing launchd filename is intentional: the union enumerator used by launchd does not
++	 * reliably report newly introduced names. This shadows the non-essential FDR loader job while
++	 * still enumerating the sealed lower directory. */
++	native_gpu_addon_mount(p, scratch, 0x400, native_oslog_live_directory,
++	    sizeof(native_oslog_live_directory), "/System/Library/LaunchDaemons",
++	    sizeof("/System/Library/LaunchDaemons"), "/System/Library/LaunchDaemons/com.apple.backboardd.plist",
++	    native_oslog_live_path, &native_oslog_live_stage, &native_oslog_live_status);
++	error = native_oslog_live_status;
++	if (!error) {
++		error = native_oslog_live_verify(ctx);
++	}
++done:
++	native_oslog_live_status = error;
++	printf("UniXNU live OSLog: stage=%d status=%d plist=%d readback=%d\n",
++	    native_oslog_live_stage, native_oslog_live_status, native_oslog_live_size,
++	    native_oslog_live_readback);
++}
++
+ /* The deletable system apps (Weather, Notes, Calendar, ...) ship in the OS volume's /private/var/staged_system_apps. A restore copies
+  * them into the Data volume, where SystemAppMigrator installs them during the first-boot data migration; until then only the
+  * placeholders in /System/Library/AppPlaceholders exist and the widgets of those apps stay blank. The owner Data mount hides the OS
+@@ -7879,6 +8034,7 @@ native_owner_data_prepare(proc_t p, user_addr_t scratch)
+ 	if (actual != device || (vfs_flags(data_mount) & MNT_RDONLY) ||
+ 	    strcmp(vfs_statfs(data_mount)->f_fstypename, "apfs")) error = EINVAL;
+ 	if (!error) native_owner_data_stage = 4;
++	if (!error) native_oslog_live_prepare(p, scratch);
+ 	if (!error) native_gpu_addon_prepare(p, scratch);
+ 	if (!error) native_staged_apps_prepare(p, scratch, data_mount);
+ done:

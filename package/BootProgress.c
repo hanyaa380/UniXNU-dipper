@@ -167,6 +167,11 @@ extern volatile unsigned native_touch_stage_req __attribute__((weak_import));
 extern volatile unsigned boot_process_passes,boot_process_seen __attribute__((weak_import));
 extern volatile unsigned boot_process_attempts __attribute__((weak_import));
 extern volatile unsigned boot_process_busy __attribute__((weak_import));
+extern volatile int native_oslog_live_stage __attribute__((weak_import));
+extern volatile int native_oslog_live_status __attribute__((weak_import));
+extern volatile int native_oslog_live_size __attribute__((weak_import));
+extern volatile int native_oslog_live_readback __attribute__((weak_import));
+static volatile int oslog_exec_seen=-1,oslog_exit_status=-1;
 static unsigned process_worker_status,process_capture_age;
 extern volatile uint32_t __attribute__((weak_import)) armcpu_smp_requested,armcpu_smp_running,armcpu_smp_conduit,armcpu_boot_mpidr;
 extern volatile uint32_t __attribute__((weak_import)) armcpu_smp_step[8],armcpu_smp_seen_mpidr[8],armcpu_smp_fail[8],armcpu_smp_sys[8][5],armcpu_boot_sys[5],armcpu_gic_stride,armcpu_gic_typer_probe[2];
@@ -674,6 +679,8 @@ void boot_progress_main_stage(const char *text) {
 void boot_progress_process_stage(int pid,const char *name,const char *text) {
   if(!enabled || !take())return;
   char stamped[BP_COLS];unsigned now=seconds();
+  if(name && !strcmp(name,"log") && strnstr(text,"signature accepted",BP_COLS))
+    __atomic_store_n(&oslog_exec_seen,pid,__ATOMIC_RELEASE);
   if(!strncmp(text,"exec process signature",22))census_note(name,0);
   snprintf(stamped,sizeof(stamped),"target pid=%d %.24s %.70s",pid,name,text);
   bp_stage(&state,stamped,now);
@@ -683,6 +690,9 @@ void boot_progress_process_stage(int pid,const char *name,const char *text) {
 void boot_progress_exit(int pid,const char *name,int status,unsigned ns,uint64_t code) {
   if(!enabled)return;
   census_note(name,1);
+  if(name && !strcmp(name,"log")) {
+    __atomic_store_n(&oslog_exit_status,status,__ATOMIC_RELEASE);
+  }
   if(name && !strcmp(name,"xpcproxy") && pid==proc_selfpid())xpc_fail_note(status,ns,code);
   if(__atomic_exchange_n(&exit_lock,1,__ATOMIC_ACQUIRE)) {
     __atomic_fetch_add(&exit_dropped,1,__ATOMIC_RELAXED);return;
@@ -1156,6 +1166,85 @@ static void crash_banner(unsigned now) {
       !strncmp(r,"EXIT",4)?0xffffe066:!strncmp(r,"GPU",3)?0xff66e0ff:r[0]==' '?0xffff8a8a:0xffb4bcc6;
     px_text(0,top+i*cell,r,cols,color,0xff0d1117);
   }
+}
+static unsigned split_console_lines;
+static int split_console_mode(void) {
+  static int enabled=-1;
+  if(enabled<0) {
+    unsigned value=0;
+    enabled=PE_parse_boot_argn("sheng-split-console",&value,sizeof value) && value==1;
+    // The live OSLog launch job writes decoded userland lines to /dev/console. One switch
+    // enables both that producer and the lower console strip, so the boot arguments do not
+    // need a second option at their 1000-byte limit.
+    if(!enabled && PE_parse_boot_argn("sheng-oslog",&value,sizeof value) && value==1) enabled=1;
+    unsigned lines=32;
+    if(PE_parse_boot_argn("sheng-split-lines",&lines,sizeof lines)) {
+      if(lines<8)lines=8;
+      if(lines>BP_LOGS)lines=BP_LOGS;
+      split_console_lines=lines;
+    } else split_console_lines=32;
+  }
+  return enabled;
+}
+static unsigned copy_console_tail(char rows[BP_LOGS][BP_COLS], unsigned maximum) {
+  if(!take())return 0;
+  unsigned available=state.log_lines+(state.logs[state.log_row][0]?1:0);
+  if(available>BP_LOGS)available=BP_LOGS;
+  unsigned count=available<maximum?available:maximum;
+  unsigned newest=state.logs[state.log_row][0]?state.log_row:(state.log_row+BP_LOGS-1)%BP_LOGS;
+  for(unsigned i=0;i<count;++i) {
+    unsigned source=(newest+BP_LOGS-(count-1-i))%BP_LOGS;
+    strlcpy(rows[i],state.logs[source],BP_COLS);
+  }
+  release();
+  return count;
+}
+static void split_console_banner(unsigned now) {
+  if(!split_console_mode() || !display.frame || !display.scale)return;
+  char rows[BP_LOGS][BP_COLS];
+  unsigned count=copy_console_tail(rows,split_console_lines);
+  if(!count)return;
+  unsigned cell=14*display.scale,cols=display.width/(6*display.scale);
+  if(cols>119)cols=119;
+  unsigned reserve=display.height*2/3;
+  unsigned top=display.height-(count+1)*cell-8;
+  if(top<reserve) {
+    top=reserve;
+    unsigned fit=display.height>top+cell?(display.height-top)/cell-1:0;
+    if(count>fit)count=fit;
+    if(!count)return;
+  }
+  // Keep the upper two thirds for the system Logo/progress UI. Every system
+  // scanout is followed by this callback, so the console strip survives even
+  // though the compositor owns the full framebuffer.
+  for(unsigned y=top-cell;y<display.height;++y) {
+    if(__atomic_load_n(&display.yield_requested,__ATOMIC_ACQUIRE))return;
+    for(unsigned x=0;x<cols*6*display.scale;++x)
+      *(volatile uint32_t *)(display.frame+(uintptr_t)y*display.stride+x*4)=0xff0d1117;
+  }
+  char head[120];
+  int os_stage=&native_oslog_live_stage?__atomic_load_n(&native_oslog_live_stage,__ATOMIC_ACQUIRE):-1;
+  int os_status=&native_oslog_live_status?__atomic_load_n(&native_oslog_live_status,__ATOMIC_ACQUIRE):-1;
+  int os_size=&native_oslog_live_size?__atomic_load_n(&native_oslog_live_size,__ATOMIC_ACQUIRE):-1;
+  int os_read=&native_oslog_live_readback?__atomic_load_n(&native_oslog_live_readback,__ATOMIC_ACQUIRE):-1;
+  int os_exec=__atomic_load_n(&oslog_exec_seen,__ATOMIC_ACQUIRE);
+  int os_exit=__atomic_load_n(&oslog_exit_status,__ATOMIC_ACQUIRE);
+  snprintf(head,sizeof head," UniXNU console / OSLog%s%s%s t=%us l=%u O=%d/%d %d/%d E%d X%d",
+           build_tag[0]?"  [":"",build_tag,build_tag[0]?"]":"",now,count,
+           os_stage,os_status,os_size,os_read,os_exec,os_exit);
+  px_text(0,top-cell,head,cols,0xffffffff,BP_BAR_LIVE);
+  for(unsigned i=0;i<count;++i)
+    px_text(0,top+i*cell,rows[i],cols,0xffb4bcc6,0xff0d1117);
+}
+// NativeLegacyDisplay calls this after the system frame is fully copied. The async
+// monitor can otherwise race with scanout and leave the diagnostic banner hidden
+// under the system progress UI. crash_banner throttles repaint to once per 2 s.
+void boot_progress_after_scanout(void) {
+  if(!enabled || !boot_progress_display_owned || !display.frame || !display.scale)return;
+  if(__atomic_exchange_n(&render_busy,1,__ATOMIC_ACQUIRE))return;
+  if(split_console_mode()) split_console_banner(seconds());
+  else crash_banner(seconds());
+  __atomic_store_n(&render_busy,0,__ATOMIC_RELEASE);
 }
 static void touch_overlay_locked(void);
 static void touch_overlay(void) {

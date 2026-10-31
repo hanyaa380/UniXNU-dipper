@@ -25,10 +25,13 @@ extern const uint8_t verified_root_key[];
 #include <IOKit/IOBufferMemoryDescriptor.h>
 #include <IOKit/IOMemoryDescriptor.h>
 #include <IOKit/IOLib.h>
+#include <libkern/c++/OSArray.h>
 #include <libkern/c++/OSData.h>
 #include <libkern/c++/OSBoolean.h>
 #include <libkern/c++/OSKext.h>
+#include <libkern/c++/OSMetaClass.h>
 #include <libkern/c++/OSString.h>
+#include <libkern/c++/OSSymbol.h>
 #include <libkern/libkern.h>
 #include <pexpert/pexpert.h>
 #include <kern/debug.h>
@@ -40,6 +43,7 @@ extern const uint8_t verified_root_key[];
 static UfsRootDiagnostics gRootDiagnostic;
 static bool gRootDiagnosticEnabled;
 static bool gRootTraceEnabled;  // native-ufs-trace=1: a console line per UFS command (slow: the framebuffer console is synchronous)
+static bool gClaimWritableMedia; // native-ufs-claim-writable=1: diagnostic only; writes still fail
 // Each step of the root path; with native-ufs-diagnostics=1 it is also printed on the console as it happens.
 // printf, not IOLog: the iOS kernel's IOLog may reach only the log buffer, and the verbose console is what a board without a
 // serial port shows.
@@ -70,22 +74,74 @@ volatile uint32_t native_ufs_hce = 0;
 volatile uint32_t native_ufs_utrl_ready = 0;
 volatile uint32_t native_ufs_uic_status = 0;
 volatile uint32_t native_ufs_uic_result = 0;
+volatile uint32_t native_ufs_root_owner = 0;
+volatile uint32_t native_ufs_root_owner_skips = 0;
+volatile uint64_t native_ufs_root_owner_id = 0;
 #if defined(DEVELOPMENT) || defined(DEBUG)
 extern volatile int native_apfs_load_status;
 extern volatile uint32_t native_apfs_registered;
 extern volatile uintptr_t native_apfs_vfsops;
+volatile uint32_t native_apfs_kext_found = 0;
+volatile uint32_t native_apfs_loaded_before = 0;
+volatile uint32_t native_apfs_started_before = 0;
+volatile uint32_t native_apfs_loaded_after = 0;
+volatile uint32_t native_apfs_started_after = 0;
+volatile uint32_t native_apfs_load_tag = 0;
+volatile uint32_t native_apfs_personality_count = 0;
+volatile uint32_t native_apfs_class_mask = 0;
+volatile uint32_t native_apfs_catalog_refreshes = 0;
+volatile uint32_t native_apfs_media_found = 0;
 #endif
 }
 
 extern "C" int native_apfs_load_and_match (void)
 {
-  return OSKext::loadKextWithIdentifier (
-    "com.apple.filesystems.apfs",
+  const char *identifier = "com.apple.filesystems.apfs";
+#if defined(DEVELOPMENT) || defined(DEBUG)
+  OSKext *before = OSKext::lookupKextWithIdentifier (identifier);
+  native_apfs_kext_found = before ? 1U : 0U;
+  native_apfs_loaded_before = before && before->isLoaded () ? 1U : 0U;
+  native_apfs_started_before = before && before->isStarted () ? 1U : 0U;
+  native_apfs_load_tag = before ? before->getLoadTag () : 0U;
+  if (before) {
+    OSArray *personalities = before->copyPersonalitiesArray ();
+    native_apfs_personality_count = personalities ? personalities->getCount () : 0U;
+    OSSafeReleaseNULL (personalities);
+  }
+  OSSafeReleaseNULL (before);
+#endif
+  int result = OSKext::loadKextWithIdentifier (
+    identifier,
     false,
     false,
     kOSKextExcludeNone,
     kOSKextExcludeNone,
     nullptr);
+#if defined(DEVELOPMENT) || defined(DEBUG)
+  OSKext *after = OSKext::lookupKextWithIdentifier (identifier);
+  native_apfs_loaded_after = after && after->isLoaded () ? 1U : 0U;
+  native_apfs_started_after = after && after->isStarted () ? 1U : 0U;
+  if (after) {
+    native_apfs_load_tag = after->getLoadTag ();
+    OSArray *personalities = after->copyPersonalitiesArray ();
+    native_apfs_personality_count = personalities ? personalities->getCount () : 0U;
+    OSSafeReleaseNULL (personalities);
+  }
+  OSSafeReleaseNULL (after);
+  static const char *const classNames[] = {
+    "AppleAPFSContainerScheme",
+    "AppleAPFSContainerSchemeWholeDisk",
+    "AppleAPFSContainer",
+    "AppleAPFSVolume",
+  };
+  for (unsigned index = 0; index < sizeof (classNames) / sizeof (classNames[0]); ++index) {
+    const OSSymbol *symbol = OSSymbol::withCStringNoCopy (classNames[index]);
+    if (symbol && OSMetaClass::getMetaClassWithName (symbol)) {
+      native_apfs_class_mask |= 1U << index;
+    }
+  }
+#endif
+  return result;
 }
 
 class NativeUfs : public IOService {
@@ -1295,6 +1351,10 @@ public:
   bool signedVolumeUuid (char out[37]) const;
 #endif
   const char *windowLabel () const { return label; }
+  uintptr_t windowObject () const { return reinterpret_cast<uintptr_t> (this); }
+  uint64_t windowAbsolute () const { return absolute; }
+  uint64_t windowBytes () const { return bytes; }
+  uint64_t windowMaxValidBlock () const { return bytes / 512 - 1; }
   bool configure (const char *name, uint64_t absoluteOffset, uint64_t size);
   bool start (IOService *provider) override;
   void free () override;
@@ -1307,12 +1367,12 @@ public:
   char *getAdditionalDeviceInfoString () override { return const_cast<char *> ("UFS LUN 0 userdata window, read-only"); }
   IOReturn reportBlockSize (UInt64 *value) override { *value = 512; return kIOReturnSuccess; }
   IOReturn reportEjectability (bool *value) override { *value = false; return kIOReturnSuccess; }
-  IOReturn reportMaxValidBlock (UInt64 *value) override { *value = bytes / 512 - 1; return kIOReturnSuccess; }
+  IOReturn reportMaxValidBlock (UInt64 *value) override { *value = windowMaxValidBlock (); return kIOReturnSuccess; }
   IOReturn reportMediaState (bool *present, bool *changed) override {
     *present = online; if (changed) *changed = false; return kIOReturnSuccess;
   }
   IOReturn reportRemovability (bool *value) override { *value = false; return kIOReturnSuccess; }
-  IOReturn reportWriteProtection (bool *value) override { *value = true; return kIOReturnSuccess; }
+  IOReturn reportWriteProtection (bool *value) override { *value = !gClaimWritableMedia; return kIOReturnSuccess; }
   IOReturn doSynchronizeCache () override { return online ? kIOReturnSuccess : kIOReturnNotReady; }
   IOReturn doSynchronize (UInt64, UInt64, IOOptionBits) override { return doSynchronizeCache (); }
   IOReturn getWriteCacheState (bool *value) override { *value = false; return kIOReturnSuccess; }
@@ -1328,7 +1388,7 @@ volatile uint64_t native_ufs_block_failures = 0;
 }
 
 static char gRootDiagnosticText[2500];
-static char gRootMediaText[1000];
+static char gRootMediaText[2000];
 // Passive diagnostic reader: cached software values only. It must remain safe
 // when called from an IRQ while the transport is busy: no locks, allocations,
 // MMIO reads, queue resets, or changes to the command/trust state. Fields can
@@ -1645,13 +1705,58 @@ static bool mediaWithUuidExists (const char *uuid, NativeUfsBlock *window)
   return found;
 }
 
+static void refreshApfsPersonalities (void)
+{
+#if defined(DEVELOPMENT) || defined(DEBUG)
+  OSKext *apfs = OSKext::lookupKextWithIdentifier ("com.apple.filesystems.apfs");
+  if (apfs) {
+    OSArray *personalities = apfs->copyPersonalitiesArray ();
+    if (personalities) {
+      apfs->updatePersonalitiesInCatalog (personalities);
+      __atomic_fetch_add (&native_apfs_catalog_refreshes, 1U, __ATOMIC_RELAXED);
+      OSSafeReleaseNULL (personalities);
+    }
+  }
+  OSSafeReleaseNULL (apfs);
+#endif
+}
+
+static unsigned countWholeMediaForWindow (NativeUfsBlock *window)
+{
+  unsigned found = 0;
+  OSDictionary *matching = IOService::serviceMatching ("IOMedia");
+  OSIterator *iterator = matching ? IOService::getMatchingServices (matching) : nullptr;
+  while (iterator && found < 8) {
+    IOService *media = OSDynamicCast (IOService, iterator->getNextObject ());
+    if (!media) break;
+    OSBoolean *whole = OSDynamicCast (OSBoolean, media->getProperty (kIOMediaWholeKey));
+    if (!whole || !whole->getValue ()) continue;
+    IORegistryIterator *parents = IORegistryIterator::iterateOver (
+      media, gIOServicePlane, kIORegistryIterateRecursively | kIORegistryIterateParents);
+    bool belongs = parents ? ufsMediaHasAncestor (*parents, window) : false;
+    if (parents) parents->release ();
+    if (!belongs) continue;
+    found++;
+  }
+  OSSafeReleaseNULL (iterator);
+  OSSafeReleaseNULL (matching);
+  native_apfs_media_found = found;
+  return found;
+}
+
 static void captureMissingMedia (const char *uuid)
 {
   int used = snprintf (gRootMediaText, sizeof (gRootMediaText), "Waiting for signed UUID %s\n", uuid);
 #if defined(DEVELOPMENT) || defined(DEBUG)
   used += snprintf (gRootMediaText + used, sizeof (gRootMediaText) - used,
-                    "APFS load=%d registered=%u vfsops=%llx\n", native_apfs_load_status,
-                    native_apfs_registered, (unsigned long long)native_apfs_vfsops);
+                    "APFS load=%d registered=%u vfsops=%llx found=%u loaded=%u/%u started=%u/%u "
+                    "tag=%x personalities=%u classes=%x refresh=%u mediaFound=%u\n",
+                    native_apfs_load_status, native_apfs_registered,
+                    (unsigned long long)native_apfs_vfsops, native_apfs_kext_found,
+                    native_apfs_loaded_before, native_apfs_loaded_after,
+                    native_apfs_started_before, native_apfs_started_after,
+                    native_apfs_load_tag, native_apfs_personality_count, native_apfs_class_mask,
+                    native_apfs_catalog_refreshes, native_apfs_media_found);
 #endif
   OSDictionary *matching = IOService::serviceMatching ("IOMedia");
   OSIterator *iterator = matching ? IOService::getMatchingServices (matching) : nullptr;
@@ -1711,12 +1816,23 @@ static void publishThread (void *, wait_result_t)
       gRootDiagnostic.publicationPhase = static_cast<unsigned> (UfsRootPhase::Media);
       gRootDiagnostic.publicationWindow = index;
       bool ready = false;
+      bool catalogueRefreshed = false;
+      bool wholeMediaFound = false;
       // Diagnostic mode affects reporting only, never the dependency gate.
       for (unsigned tick = 0; tick <= 300; ++tick) {
+        if (!catalogueRefreshed && native_apfs_load_status != -1) {
+          refreshApfsPersonalities ();
+          catalogueRefreshed = true;
+        }
+        if (catalogueRefreshed && !wholeMediaFound) {
+          wholeMediaFound = countWholeMediaForWindow (device) != 0;
+        }
         ready = mediaWithUuidExists (uuid, device);
         // Timer evidence: a stall between these lines means IOSleep never wakes (no architectural timer interrupt).
         if (!(tick % 10))
-          ROOT_LOG ("media wait %s tick %u ready %d now %llx timer irqs %llu\n", device->windowLabel (), tick, int (ready),
+          ROOT_LOG ("media wait %s tick %u ready %d mediaFound %d refresh %u now %llx timer irqs %llu\n",
+                    device->windowLabel (), tick, int (ready), int (wholeMediaFound),
+                    native_apfs_catalog_refreshes,
                     (unsigned long long) mach_absolute_time (), (unsigned long long) armcpu_timer_interrupts);
         if (ready || tick == 300) break;
         IOSleep (100);
@@ -1749,6 +1865,11 @@ extern unsigned int vm_page_free_count, vm_page_active_count, vm_page_inactive_c
 extern uint32_t vm_page_pages;
 extern unsigned int memorystatus_available_pages;
 extern int nprocs;
+extern char boot_process_rows[10][120] __attribute__((weak_import));
+extern volatile unsigned boot_process_passes __attribute__((weak_import));
+extern volatile unsigned boot_process_seen __attribute__((weak_import));
+extern void boot_process_snapshot(void) __attribute__((weak_import));
+extern size_t boot_progress_spawn_rows(char *, size_t) __attribute__((weak_import));
 }
 
 static void statsThread (void *argument, wait_result_t)
@@ -1763,44 +1884,129 @@ static void statsThread (void *argument, wait_result_t)
          memorystatus_available_pages, max_mem, nprocs, native_ufs_block_reads);
 }
 
+// Userland snapshot (native-ufs-probe=15): root mode as usual, then a delayed panic with the
+// process rows and exit census captured by BootProgress. Observation only.
+static char gRuntimeReport[4096];
+
+static void runtimeReportThread (void *argument, wait_result_t)
+{
+  unsigned delay = static_cast<unsigned> (reinterpret_cast<uintptr_t> (argument));
+  IOSleep (delay * 1000);
+  if (boot_process_snapshot) boot_process_snapshot ();
+  int used = snprintf (gRuntimeReport, sizeof (gRuntimeReport),
+                       "NATIVE_UFS userland snapshot after %u s\n"
+                       "pages=%u free=%u wired=%u procs=%d blocks=%llu\n",
+                       delay, vm_page_pages, vm_page_free_count, vm_page_wire_count, nprocs,
+                       native_ufs_block_reads);
+#if defined(DEVELOPMENT) || defined(DEBUG)
+  used += snprintf (gRuntimeReport + used, sizeof (gRuntimeReport) - used,
+                    "process passes=%u seen=%u\n",
+                    (&boot_process_passes ? boot_process_passes : 0),
+                    (&boot_process_seen ? boot_process_seen : 0));
+  if (&boot_process_rows) {
+    for (unsigned index = 0; index < 10 && used < int (sizeof (gRuntimeReport)) - 130; ++index) {
+      used += snprintf (gRuntimeReport + used, sizeof (gRuntimeReport) - used,
+                        "P%u %.119s\n", index, boot_process_rows[index]);
+    }
+  }
+  if (boot_progress_spawn_rows && used < int (sizeof (gRuntimeReport)) - 2) {
+    boot_progress_spawn_rows (gRuntimeReport + used, sizeof (gRuntimeReport) - used);
+  }
+#endif
+  panic ("%s", gRuntimeReport);
+}
+
 // Storage discovery report (native-ufs-probe=12): a separate thread waits for the original
 // IOStorageFamily to publish IOMedia for the root windows, then shows what exists on the screen.
 // It must not run inside the matching thread that is starting NativeUfs.
-static char gMediaReport[3000];
+static char gMediaReport[6000];
+
+static unsigned countMatchingService (const char *className)
+{
+  unsigned count = 0;
+  OSDictionary *matching = IOService::serviceMatching (className);
+  OSIterator *iterator = matching ? IOService::getMatchingServices (matching) : nullptr;
+  if (iterator) {
+    while (count < 256 && iterator->getNextObject ()) count++;
+    iterator->release ();
+  }
+  OSSafeReleaseNULL (matching);
+  return count;
+}
+
+static void formatRegistryParentChain (IORegistryEntry *entry, char *out, size_t size)
+{
+  unsigned used = 0;
+  for (unsigned depth = 0; entry && depth < 8 && used + 16 < size; ++depth) {
+    const char *className = entry->getMetaClass () ? entry->getMetaClass ()->getClassName () : "-";
+    used += snprintf (out + used, size - used, "%s%s(0x%llx)",
+                      depth ? " <- " : "", className, (unsigned long long)entry->getRegistryEntryID ());
+    entry = entry->getParentEntry (gIOServicePlane);
+  }
+}
+
+static unsigned countRegistryChildren (IORegistryEntry *entry)
+{
+  unsigned count = 0;
+  OSIterator *iterator = entry ? entry->getChildIterator (gIOServicePlane) : nullptr;
+  if (iterator) {
+    while (count < 256 && iterator->getNextObject ()) count++;
+    iterator->release ();
+  }
+  return count;
+}
 
 static void mediaReportThread (void *, wait_result_t)
 {
   unsigned count = 0;
   for (unsigned tick = 0; tick < 200; tick++) {      // up to 20 s
-    OSDictionary *matching = IOService::serviceMatching ("IOMedia");
-    OSIterator *iterator = matching ? IOService::getMatchingServices (matching) : nullptr;
-    count = 0;
-    if (iterator) {
-      while (iterator->getNextObject ()) {
-        count++;
-      }
-      iterator->release ();
-    }
-    if (matching) {
-      matching->release ();
-    }
+    count = countMatchingService ("IOMedia");
     if (count >= 4) {
       break;
     }
     IOSleep (100);
   }
+  // APFS is loaded from bsd_init, after this root-publication thread starts. Give its
+  // personalities a bounded settle window after observing the load result.
+  for (unsigned tick = 0; tick < 100 && native_apfs_load_status == -1; ++tick) IOSleep (100);
+  if (native_apfs_load_status != -1) {
+    for (unsigned tick = 0; tick < 50; ++tick) {
+      if (countMatchingService ("IOMedia") >= 4) break;
+      IOSleep (100);
+    }
+  }
   IOSleep (500);
+  count = countMatchingService ("IOMedia");
+  unsigned bsdClients = countMatchingService ("IOMediaBSDClient");
   int used = snprintf (gMediaReport, sizeof (gMediaReport),
-                       "NATIVE_UFS media report: published=%u reads=%llu failures=%llu media=%u\n",
-                       native_ufs_blocks_published, native_ufs_block_reads, native_ufs_block_failures, count);
+                       "NATIVE_UFS media report: published=%u reads=%llu failures=%llu media=%u bsdClients=%u "
+                       "rootOwner=%u id=%llx skips=%u\n",
+                       native_ufs_blocks_published, native_ufs_block_reads, native_ufs_block_failures, count,
+                       bsdClients, native_ufs_root_owner,
+                       (unsigned long long)native_ufs_root_owner_id, native_ufs_root_owner_skips);
 #if defined(DEVELOPMENT) || defined(DEBUG)
   used += snprintf (gMediaReport + used, sizeof (gMediaReport) - used,
-                    "APFS load=%d registered=%u vfsops=%llx\n", native_apfs_load_status,
-                    native_apfs_registered, (unsigned long long)native_apfs_vfsops);
+                    "APFS load=%d registered=%u vfsops=%llx found=%u loaded=%u/%u started=%u/%u "
+                    "tag=%x personalities=%u classes=%x refresh=%u mediaFound=%u\n",
+                    native_apfs_load_status, native_apfs_registered,
+                    (unsigned long long)native_apfs_vfsops, native_apfs_kext_found,
+                    native_apfs_loaded_before, native_apfs_loaded_after,
+                    native_apfs_started_before, native_apfs_started_after,
+                    native_apfs_load_tag, native_apfs_personality_count, native_apfs_class_mask,
+                    native_apfs_catalog_refreshes, native_apfs_media_found);
 #endif
+  for (unsigned index = 0; index < gPending && used < int (sizeof (gMediaReport)) - 300; ++index) {
+    NativeUfsBlock *window = gPendingDevice[index];
+    if (!window) continue;
+    used += snprintf (gMediaReport + used, sizeof (gMediaReport) - used,
+                      "window=%s object=0x%llx absolute=%llx bytes=%llx maxBlock=%llx\n",
+                      window->windowLabel (), (unsigned long long)window->windowObject (),
+                      (unsigned long long)window->windowAbsolute (), (unsigned long long)window->windowBytes (),
+                      (unsigned long long)window->windowMaxValidBlock ());
+  }
   OSDictionary *matching = IOService::serviceMatching ("IOMedia");
   OSIterator *iterator = matching ? IOService::getMatchingServices (matching) : nullptr;
-  while (iterator && used < int (sizeof (gMediaReport)) - 200) {
+  while (iterator && used < int (sizeof (gMediaReport)) - 400) {
     IOService *media = OSDynamicCast (IOService, iterator->getNextObject ());
     if (!media) {
       break;
@@ -1811,13 +2017,22 @@ static void mediaReportThread (void *, wait_result_t)
     OSString *hint = OSDynamicCast (OSString, media->getProperty (kIOMediaContentHintKey));
     OSBoolean *whole = OSDynamicCast (OSBoolean, media->getProperty (kIOMediaWholeKey));
     OSBoolean *leaf = OSDynamicCast (OSBoolean, media->getProperty (kIOMediaLeafKey));
-    OSNumber *size = OSDynamicCast (OSNumber, media->getProperty ("Size"));
+    OSBoolean *writable = OSDynamicCast (OSBoolean, media->getProperty (kIOMediaWritableKey));
+    OSNumber *size = OSDynamicCast (OSNumber, media->getProperty (kIOMediaSizeKey));
+    OSNumber *blockSize = OSDynamicCast (OSNumber, media->getProperty (kIOMediaPreferredBlockSizeKey));
+    char parents[320] = {};
+    formatRegistryParentChain (media->getParentEntry (gIOServicePlane), parents, sizeof (parents));
     used += snprintf (gMediaReport + used, sizeof (gMediaReport) - used,
-                      "%s content=%s hint=%s whole=%d leaf=%d size=%llx uuid=%s\n",
-                      bsd ? bsd->getCStringNoCopy () : "-", content ? content->getCStringNoCopy () : "-",
-                      hint ? hint->getCStringNoCopy () : "-", whole ? int (whole->getValue ()) : -1,
-                      leaf ? int (leaf->getValue ()) : -1, size ? size->unsigned64BitValue () : 0ULL,
-                      uuid ? uuid->getCStringNoCopy () : "-");
+                      "%s object=0x%llx id=%llx class=%s content=%s hint=%s whole=%d leaf=%d write=%d "
+                      "size=%llx block=%llu children=%u uuid=%s parents=%s\n",
+                      bsd ? bsd->getCStringNoCopy () : "-", (unsigned long long)(uintptr_t)media,
+                      (unsigned long long)media->getRegistryEntryID (), media->getMetaClass ()->getClassName (),
+                      content ? content->getCStringNoCopy () : "-", hint ? hint->getCStringNoCopy () : "-",
+                      whole ? int (whole->getValue ()) : -1, leaf ? int (leaf->getValue ()) : -1,
+                      writable ? int (writable->getValue ()) : -1,
+                      size ? size->unsigned64BitValue () : 0ULL,
+                      blockSize ? blockSize->unsigned64BitValue () : 0ULL,
+                      countRegistryChildren (media), uuid ? uuid->getCStringNoCopy () : "-", parents);
   }
   if (iterator) {
     iterator->release ();
@@ -1833,7 +2048,28 @@ bool NativeUfs::start (IOService *provider)
   unsigned probe = 0, rootMode = 0;
   PE_parse_boot_argn ("native-ufs-probe", &probe, sizeof (probe));
   PE_parse_boot_argn ("native-ufs-root", &rootMode, sizeof (rootMode));
+  {
+    uint32_t claim = 0;
+    gClaimWritableMedia = PE_parse_boot_argn ("native-ufs-claim-writable", &claim, sizeof (claim)) && claim;
+  }
   native_ufs_probe_requested = probe != 0;
+  // Three built-in personalities can instantiate NativeUfs. Exactly one instance may touch
+  // the controller and mutate the shared root-publication state. The root personality starts
+  // before the IOResources fallback on this boot path, so first-claim wins.
+  if ((probe || rootMode) &&
+      __atomic_exchange_n (&native_ufs_root_owner, 1U, __ATOMIC_ACQ_REL)) {
+    __atomic_fetch_add (&native_ufs_root_owner_skips, 1U, __ATOMIC_RELAXED);
+    printf ("NativeUfs: duplicate root owner skipped provider=%s id=%llx\n",
+            provider ? provider->getMetaClass ()->getClassName () : "-",
+            provider ? (unsigned long long)provider->getRegistryEntryID () : 0ULL);
+    return false;
+  }
+  if (probe || rootMode) {
+    native_ufs_root_owner_id = provider ? provider->getRegistryEntryID () : 0;
+    printf ("NativeUfs: root owner provider=%s id=%llx\n",
+            provider ? provider->getMetaClass ()->getClassName () : "-",
+            (unsigned long long)native_ufs_root_owner_id);
+  }
   // Default: match for observability only, never touch the controller. Hardware work runs once,
   // from the root-device personality; the ufshc nub match stays observation-only.
   if (!probe && !rootMode) {
@@ -1928,6 +2164,19 @@ bool NativeUfs::start (IOService *provider)
     thread_t thread = nullptr;
     if (kernel_thread_start (statsThread, reinterpret_cast<void *> (static_cast<uintptr_t> (delay)), &thread) != KERN_SUCCESS) {
       panic ("NATIVE_UFS memory snapshot: cannot start the thread");
+    }
+    thread_deallocate (thread);
+    return true;
+  }
+  if (probe == 15) {
+    unsigned delay = 60;
+    PE_parse_boot_argn ("native-ufs-runtime-delay", &delay, sizeof (delay));
+    if (!startRoot (provider)) {
+      panic ("NATIVE_UFS userland snapshot: root start failed");
+    }
+    thread_t thread = nullptr;
+    if (kernel_thread_start (runtimeReportThread, reinterpret_cast<void *> (static_cast<uintptr_t> (delay)), &thread) != KERN_SUCCESS) {
+      panic ("NATIVE_UFS userland snapshot: cannot start the thread");
     }
     thread_deallocate (thread);
     return true;
