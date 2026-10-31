@@ -19,7 +19,7 @@ diff --git a/iokit/Kernel/IOService.cpp b/iokit/Kernel/IOService.cpp
  			isDext = (NULL != match->getObject(gIOUserServerNameKey));
  			if (isDext && !(kIODKEnable & gIODKDebug)) {
  				continue;
-@@ -4032,11 +4040,27 @@
+@@ -4032,11 +4040,28 @@
  			do {
  				symbol = OSDynamicCast( OSSymbol,
  				    props->getObject( gIOClassKey));
@@ -35,9 +35,10 @@ diff --git a/iokit/Kernel/IOService.cpp b/iokit/Kernel/IOService.cpp
 +				uint32_t skipAppleCpu = 0;
 +				if (PE_parse_boot_argn("iokit-skip-apple-cpu", &skipAppleCpu,
 +				    sizeof(skipAppleCpu)) && skipAppleCpu &&
-+				    !strncmp(symbol->getCStringNoCopy(), "Apple", 5)) {
++				    (!strcmp(symbol->getCStringNoCopy(), "AppleARMCPU") ||
++				     !strcmp(symbol->getCStringNoCopy(), "AppleCPU"))) {
 +					char stage[96];
-+					snprintf(stage, sizeof(stage), "candidate skipped %s",
++					snprintf(stage, sizeof(stage), "candidate skipped Apple CPU class %s",
 +					    symbol->getCStringNoCopy());
 +					boot_progress_stage(stage);
 +					continue;
