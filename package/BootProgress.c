@@ -167,9 +167,11 @@ extern volatile unsigned native_touch_stage_req __attribute__((weak_import));
 extern volatile unsigned boot_process_passes,boot_process_seen __attribute__((weak_import));
 extern volatile unsigned boot_process_attempts __attribute__((weak_import));
 extern volatile unsigned boot_process_busy __attribute__((weak_import));
-extern volatile int native_oslog_live_stage,native_oslog_live_status __attribute__((weak_import));
-extern volatile int native_oslog_live_size,native_oslog_live_readback __attribute__((weak_import));
-static volatile int oslog_exec_seen=-1,oslog_exit_status=-1,oslog_exit_pid=-1;
+extern volatile int native_oslog_live_stage __attribute__((weak_import));
+extern volatile int native_oslog_live_status __attribute__((weak_import));
+extern volatile int native_oslog_live_size __attribute__((weak_import));
+extern volatile int native_oslog_live_readback __attribute__((weak_import));
+static volatile int oslog_exec_seen=-1,oslog_exit_status=-1;
 static unsigned process_worker_status,process_capture_age;
 extern volatile uint32_t __attribute__((weak_import)) armcpu_smp_requested,armcpu_smp_running,armcpu_smp_conduit,armcpu_boot_mpidr;
 extern volatile uint32_t __attribute__((weak_import)) armcpu_smp_step[8],armcpu_smp_seen_mpidr[8],armcpu_smp_fail[8],armcpu_smp_sys[8][5],armcpu_boot_sys[5],armcpu_gic_stride,armcpu_gic_typer_probe[2];
@@ -677,7 +679,7 @@ void boot_progress_main_stage(const char *text) {
 void boot_progress_process_stage(int pid,const char *name,const char *text) {
   if(!enabled || !take())return;
   char stamped[BP_COLS];unsigned now=seconds();
-  if(name && !strcmp(name,"log") && strstr(text,"signature accepted"))
+  if(name && !strcmp(name,"log") && strnstr(text,"signature accepted",BP_COLS))
     __atomic_store_n(&oslog_exec_seen,pid,__ATOMIC_RELEASE);
   if(!strncmp(text,"exec process signature",22))census_note(name,0);
   snprintf(stamped,sizeof(stamped),"target pid=%d %.24s %.70s",pid,name,text);
@@ -689,7 +691,6 @@ void boot_progress_exit(int pid,const char *name,int status,unsigned ns,uint64_t
   if(!enabled)return;
   census_note(name,1);
   if(name && !strcmp(name,"log")) {
-    __atomic_store_n(&oslog_exit_pid,pid,__ATOMIC_RELEASE);
     __atomic_store_n(&oslog_exit_status,status,__ATOMIC_RELEASE);
   }
   if(name && !strcmp(name,"xpcproxy") && pid==proc_selfpid())xpc_fail_note(status,ns,code);
