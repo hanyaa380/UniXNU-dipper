@@ -179,7 +179,7 @@ kernel_args = [
   "native-ufs-smmu-mask=0xf",
   "native-ufs-smmu-size=0x80000",     # apps_smmu reg size
   "native-ufs-smmu-adopt=1",          # the firmware leaves 0x800f0100 on its own bank 2 with translation off; keep it
-  "native-ufs-diagnostics=1",
+  "sheng-gpu-addon=1",
   "sheng-pmgr=2",
   # CPU-rendered UI, the sheng set (UniXNU-sheng board.toml kernel_args) without its GPU, touch, cpufreq and SMP arguments.
   "offline-mobile-graphics-load=1",   # load IOMobileGraphicsFamily, register NativeLegacyDisplay (offline-component-load-probes.patch)

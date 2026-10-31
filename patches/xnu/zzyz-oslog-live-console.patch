@@ -1,7 +1,7 @@
 diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
 --- a/bsd/kern/kern_exec.c
 +++ b/bsd/kern/kern_exec.c
-@@ -7514,6 +7514,161 @@ native_gpu_addon_prepare(proc_t p, user_addr_t scratch)
+@@ -7514,6 +7514,158 @@ native_gpu_addon_prepare(proc_t p, user_addr_t scratch)
  	    "7570.iPadOS_17_Flat_Background-1024w-1366h@2x~ipad.ca/J120.png", &native_gpu_addon3_stage, &native_gpu_addon3_status);
  }
  
@@ -26,10 +26,7 @@ diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
 +    "<plist version=\"1.0\"><dict>\n"
 +    "<key>Label</key><string>com.apple.iomfb_fdr_loader</string>\n"
 +    "<key>ProgramArguments</key><array>\n"
-+    "<string>/usr/bin/log</string><string>stream</string>\n"
-+    "<string>--style</string><string>compact</string>\n"
-+    "<string>--level</string><string>debug</string>\n"
-+    "<string>--type</string><string>log</string>\n"
++    "<string>/private/var/ngpu/bin/oslogprobe</string>\n"
 +    "</array>\n"
 +    "<key>StandardOutPath</key><string>/dev/console</string>\n"
 +    "<key>StandardErrorPath</key><string>/dev/console</string>\n"
@@ -163,7 +160,7 @@ diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
  /* The deletable system apps (Weather, Notes, Calendar, ...) ship in the OS volume's /private/var/staged_system_apps. A restore copies
   * them into the Data volume, where SystemAppMigrator installs them during the first-boot data migration; until then only the
   * placeholders in /System/Library/AppPlaceholders exist and the widgets of those apps stay blank. The owner Data mount hides the OS
-@@ -7879,6 +8034,7 @@ native_owner_data_prepare(proc_t p, user_addr_t scratch)
+@@ -7879,6 +8031,7 @@ native_owner_data_prepare(proc_t p, user_addr_t scratch)
  	if (actual != device || (vfs_flags(data_mount) & MNT_RDONLY) ||
  	    strcmp(vfs_statfs(data_mount)->f_fstypename, "apfs")) error = EINVAL;
  	if (!error) native_owner_data_stage = 4;
