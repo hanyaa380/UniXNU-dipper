@@ -1157,6 +1157,15 @@ static void crash_banner(unsigned now) {
     px_text(0,top+i*cell,r,cols,color,0xff0d1117);
   }
 }
+// NativeLegacyDisplay calls this after the system frame is fully copied. The async
+// monitor can otherwise race with scanout and leave the diagnostic banner hidden
+// under the system progress UI. crash_banner throttles repaint to once per 2 s.
+void boot_progress_after_scanout(void) {
+  if(!enabled || !boot_progress_display_owned || !display.frame || !display.scale)return;
+  if(__atomic_exchange_n(&render_busy,1,__ATOMIC_ACQUIRE))return;
+  crash_banner(seconds());
+  __atomic_store_n(&render_busy,0,__ATOMIC_RELEASE);
+}
 static void touch_overlay_locked(void);
 static void touch_overlay(void) {
   // sheng-banner=0 switches every on-screen diagnostic painting off once the system owns the display (the UFS log carries the same rows):
