@@ -33,8 +33,9 @@ def linux_candidates(serial):
    try:
     vendor=(device/'idVendor').read_text().strip().lower()
     product=(device/'idProduct').read_text().strip().lower()
-    usb_serial=(device/'serial').read_text().strip()
    except OSError:continue
+   try:usb_serial=(device/'serial').read_text().strip()
+   except OSError:usb_serial=''
    if (usb_serial!=serial and not (vendor=='1209' and product=='316d')):continue
    ports=[]
    for interface in root.glob(device.name+':*'):
@@ -69,7 +70,9 @@ def find(serial,wait,observations=None,should_stop=None):
   if should_stop and should_stop():raise CaptureStopped()
   try:candidates=darwin_candidates(serial) if sys.platform=='darwin' else linux_candidates(serial)
   except (OSError,subprocess.SubprocessError):candidates=[]
-  matching=[item for item in candidates if item[0].get('USB Serial Number')==serial]
+  matching=[item for item in candidates
+            if item[0].get('USB Serial Number')==serial or
+            (item[0].get('idVendor')==0x1209 and item[0].get('idProduct')==0x316d)]
   for candidate,paths in candidates:
    state,ports=candidate,paths
    if state.get('USB Serial Number')==serial or (state.get('idVendor')==0x1209 and state.get('idProduct')==0x316d):
