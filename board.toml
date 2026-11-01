@@ -60,6 +60,7 @@ archives = [
   "build-fajita-verified-root.py",    # owner keys, OS and SystemOS policies, libVerifiedRootProbe.a (needs the OS images)
   "build-arm-driver.py NativeUfs",
   "build-fajita-dwc3.py",             # NativeDwc3: SDM845 DWC3 USB device-mode probe (default-off; native-dwc3-probe=1), for the SSH-over-USB channel
+  "build-qcom-usb-debug.py",          # QcomXnuUsbDebug: SDM845 DWC3 CDC-ACM XNU console (default-off; qcom-usb-debug=1)
   "build-sheng-platform-power.py",
   "build-boot-progress.py",          # kits/fajita (from UniXNU-sheng d92e799): boot progress, fault probe, watchdog/lite job policy, diag export    # the PMGR the original AMFI needs, from UniXNU-sheng
   "build-native-legacy-display.py",  # CPU-rendered display (NativeLegacyDisplay over the UEFI framebuffer), HID input, keystore stub

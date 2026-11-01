@@ -1,0 +1,29 @@
+--- a/bsd/kern/subr_prf.c
++++ b/bsd/kern/subr_prf.c
+@@ -88,6 +88,9 @@
+ #include <sys/lock.h>
+ #include <sys/malloc.h>
+ #include <sys/msgbuf.h>
++#if XNU_QCOM_USB_DEBUG
++#include <QcomXnuUsbDebug.h>
++#endif
+ #include <sys/param.h>
+ #include <sys/proc_internal.h>
+ #include <sys/reboot.h>
+@@ -388,6 +391,16 @@
+ 	    (pca->flags & TOCONS) && pca->tty == constty) {
+ 		constty = 0;
+ 	}
++#if XNU_QCOM_USB_DEBUG
++	/* TOCONS already tees at console_write_char. constty can redirect that
++	 * route to a tty, in which case this is the only USB copy. Queue only:
++	 * TOLOGLOCKED callers hold the BSD message-buffer lock. */
++	if ((pca->flags & (TOLOG | TOLOGLOCKED)) &&
++	    (!(pca->flags & TOCONS) || constty != 0) &&
++	    c != '\0' && c != '\r' && c != 0177) {
++		qcom_usb_debug_enqueue_putc((char)c);
++	}
++#endif
+ 	if ((pca->flags & TOLOG) && c != '\0' && c != '\r' && c != 0177) {
+ 		log_putc((char)c);
+ 	}

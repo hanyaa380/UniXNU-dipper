@@ -1,0 +1,103 @@
+--- a/osfmk/arm/arm_init.c
++++ b/osfmk/arm/arm_init.c
+@@ -1,3 +1,9 @@
++#if XNU_QCOM_USB_DEBUG
++#include <QcomEarlyLog.h>
++#define QCOM_EARLY_STAGE(s) qcom_early_log_stage(s)
++#else
++#define QCOM_EARLY_STAGE(s) ((void)0)
++#endif
+ /*
+  * Copyright (c) 2007-2021 Apple Inc. All rights reserved.
+  *
+@@ -349,12 +355,14 @@
+ 	arm_setup_pre_sign();
+ 
+ 	arm_slide_rebase_and_sign_image();
++	QCOM_EARLY_STAGE("arm_init_rebased");
+ 
+ 	/* If kernel integrity is supported, use a constant copy of the boot args. */
+ 	const_boot_args = *args;
+ 	BootArgs = args = &const_boot_args;
+ 
+ 	cpu_data_init(&BootCpuData);
++	QCOM_EARLY_STAGE("cpu_data_ready");
+ #if defined(HAS_APPLE_PAC)
+ 	/* bootstrap cpu process dependent key for kernel has been loaded by start.s */
+ 	BootCpuData.rop_key = ml_default_rop_pid();
+@@ -362,6 +370,7 @@
+ #endif /* defined(HAS_APPLE_PAC) */
+ 
+ 	PE_init_platform(FALSE, args); /* Get platform expert set up */
++	QCOM_EARLY_STAGE("platform_ready");
+ 
+ #if __arm64__
+ 	configure_timer_apple_regs();
+@@ -423,6 +432,7 @@
+ #endif
+ 
+ 	ml_parse_cpu_topology();
++	QCOM_EARLY_STAGE("topology_ready");
+ 
+ 
+ 	master_cpu = ml_get_boot_cpu_number();
+@@ -453,11 +463,14 @@
+ 	 */
+ 	thread->machine.preemption_count = 0;
+ 	cpu_bootstrap();
++	QCOM_EARLY_STAGE("bootstrap_thread_ready");
+ 
+ 	rtclock_early_init();
++	QCOM_EARLY_STAGE("rtclock_ready");
+ 
+ 	kernel_debug_string_early("kernel_startup_bootstrap");
+ 	kernel_startup_bootstrap();
++	QCOM_EARLY_STAGE("startup_bootstrap_ready");
+ 
+ 	/*
+ 	 * Initialize the timer callout world
+@@ -467,6 +480,7 @@
+ 	cpu_init();
+ 
+ 	processor_bootstrap();
++	QCOM_EARLY_STAGE("processor_ready");
+ 
+ 	if (PE_parse_boot_argn("maxmem", &maxmem, sizeof(maxmem))) {
+ 		xmaxmem = (uint64_t) maxmem * (1024 * 1024);
+@@ -513,7 +527,9 @@
+ 	__builtin_arm_wsr("pan", 1);
+ #endif  /* __ARM_PAN_AVAILABLE__ */
+ 
++	QCOM_EARLY_STAGE("arm_vm_init_begin");
+ 	arm_vm_init(xmaxmem, args);
++	QCOM_EARLY_STAGE("arm_vm_init_returned");
+ 
+ 	if (debug_boot_arg) {
+ 		patch_low_glo();
+@@ -527,7 +543,9 @@
+ 
+ 	/* Setup debugging output. */
+ 	const unsigned int serial_exists = serial_init();
++	QCOM_EARLY_STAGE("serial_init_returned");
+ 	kernel_startup_initialize_upto(STARTUP_SUB_KPRINTF);
++	QCOM_EARLY_STAGE("kprintf_startup_ready");
+ 	kprintf("kprintf initialized\n");
+ 
+ 	serialmode = 0;
+--- a/osfmk/arm64/start.s
++++ b/osfmk/arm64/start.s
+@@ -455,6 +455,14 @@
+ 	.align 2
+ 	.globl EXT(start_first_cpu)
+ LEXT(start_first_cpu)
++#if XNU_QCOM_USB_DEBUG
++	// Preserve x0 boot_args. PC-relative PA store before bootstrap mappings.
++	isb
++	mrs x9, CNTVCT_EL0
++	adrp x10, EXT(qcom_early_entry_ticks)@page
++	add x10, x10, EXT(qcom_early_entry_ticks)@pageoff
++	str x9, [x10]
++#endif
+ 
+ 	// Unlock the core for debugging
+ 	msr		OSLAR_EL1, xzr
