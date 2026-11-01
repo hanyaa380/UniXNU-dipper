@@ -114,7 +114,8 @@ def main():
         external = symbols('--undefined-only') - defined
         allowed = {'_PE_halt_restart', '_PE_parse_boot_argn', '_cpu_number', '_master_cpu',
                    '_ml_io_map', '_ml_static_vtop', '___stack_chk_guard', '___stack_chk_fail',
-                   '_bzero', '_memcpy', '_memset', '_panic', '_proc_suser', '_current_proc', '_snprintf',
+                   '_boot_progress_stage', '_bzero', '_memcpy', '_memset', '_panic',
+                   '_proc_suser', '_current_proc', '_snprintf',
                    '_sysctl_register_oid_early', '_sysctl__debug_children'}
         if external - allowed:
             raise RuntimeError('unexpected XNU imports: ' + str(sorted(external - allowed)))

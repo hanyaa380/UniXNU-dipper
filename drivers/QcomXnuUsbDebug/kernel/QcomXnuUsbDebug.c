@@ -35,6 +35,7 @@
 /* The platform callback ABI is unchanged from Darwin22 IOPlatformExpert.h.
  * Only the control opt-in may atomically install into this NULL global. */
 extern int (*PE_halt_restart)(unsigned int);
+extern void boot_progress_stage(const char *text) __attribute__((weak_import));
 
 static uint8_t usb_dma[DWC3_DMA_BYTES] __attribute__((aligned(DWC3_DMA_ALIGNMENT)));
 static uint8_t usb_tables[QUSB_DOMAIN_PT_BYTES] __attribute__((aligned(PAGE_BYTES)));
@@ -228,6 +229,36 @@ static char *append_decimal(char *to, uint64_t value)
     do { digits[n++] = (char)('0' + value % 10u); value /= 10u; } while (value);
     while (n) *to++ = digits[--n];
     return to;
+}
+static char *append_hex32(char *to, uint32_t value)
+{
+    static const char digits[] = "0123456789abcdef";
+    unsigned int shift = 32;
+    while (shift) {
+        shift -= 4;
+        *to++ = digits[(value >> shift) & 15u];
+    }
+    return to;
+}
+static void publish_status(void)
+{
+    char text[160], *p;
+    if (!&boot_progress_stage) return;
+    p = append_text(text, native.status.phase == QCOM_USB_DEBUG_ACTIVE ?
+                    "QCOM USB ACTIVE e=" : "QCOM USB FAIL e=");
+    p = append_decimal(p, native.status.error);
+    p = append_text(p, " c=");
+    p = append_decimal(p, (uint32_t)native.status.core_result);
+    p = append_text(p, " q=");
+    p = append_decimal(p, native.status.qcom_result);
+    p = append_text(p, " t=");
+    p = append_decimal(p, native.status.last_trace);
+    p = append_text(p, " a=");
+    p = append_hex32(p, native.status.trace_a);
+    p = append_text(p, " b=");
+    p = append_hex32(p, native.status.trace_b);
+    *p = 0;
+    boot_progress_stage(text);
 }
 /* Small in-band accounting records use no printf/console recursion. */
 static size_t loss_record(char *text, int final)
@@ -825,6 +856,7 @@ int qcom_usb_debug_init(void)
 out:
     buffer_status_owned();
     release(flags);
+    publish_status();
     if (usb_fail_panic && native.status.phase == QCOM_USB_DEBUG_REFUSED)
         panic("QCOM USB FAIL error=%u core=%d qcom=%u trace=%u a=%08x b=%08x",
               native.status.error, native.status.core_result, native.status.qcom_result,
