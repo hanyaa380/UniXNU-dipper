@@ -1203,6 +1203,14 @@ static int split_console_mode(void) {
   }
   return enabled;
 }
+static int full_console_mode(void) {
+  static int enabled=-1;
+  if(enabled<0) {
+    unsigned value=0;
+    enabled=PE_parse_boot_argn("sheng-full-console",&value,sizeof value) && value==1;
+  }
+  return enabled;
+}
 static unsigned copy_console_tail(char rows[BP_LOGS][BP_COLS], unsigned maximum) {
   if(!take())return 0;
   unsigned available=state.log_lines+(state.logs[state.log_row][0]?1:0);
@@ -1215,6 +1223,31 @@ static unsigned copy_console_tail(char rows[BP_LOGS][BP_COLS], unsigned maximum)
   }
   release();
   return count;
+}
+static void full_console_banner(unsigned now) {
+  if(!full_console_mode() || !display.frame || !display.scale)return;
+  char rows[BP_LOGS][BP_COLS],head[120],qcom[112]={0};
+  unsigned count=copy_console_tail(rows,BP_LOGS);
+  unsigned cell=14*display.scale,cols=display.width/(6*display.scale);
+  if(cols>119)cols=119;
+  unsigned fit=display.height>cell*3?(display.height/cell)-2:0;
+  if(count>fit)count=fit;
+  if(!count)return;
+  for(unsigned y=0;y<display.height;++y) {
+    if(__atomic_load_n(&display.yield_requested,__ATOMIC_ACQUIRE))return;
+    for(unsigned x=0;x<display.width;++x)
+      *(volatile uint32_t *)(display.frame+(uintptr_t)y*display.stride+x*4)=0xff0d1117;
+  }
+  snprintf(head,sizeof head," UniXNU verbose console%s%s%s  t=%us  lines=%u",build_tag[0]?"  [":"",build_tag,
+    build_tag[0]?"]":"",now,count);
+  px_text(0,0,head,cols,0xffffffff,BP_BAR_LIVE);
+  for(unsigned i=0;i<count;++i)
+    px_text(0,(i+1)*cell,rows[i],cols,0xffb4bcc6,0xff0d1117);
+  if(&qcom_usb_debug_status_row)
+    (void)qcom_usb_debug_status_row(qcom,sizeof qcom);
+  if(qcom[0])snprintf(head,sizeof head," QUD %s",qcom);
+  else snprintf(head,sizeof head," XNU alive  LOAD/IO shown below when available");
+  px_text(0,(count+1)*cell,head,cols,qcom[0]?0xffffcf70:0xffffffff,0xff0d1117);
 }
 static void split_console_banner(unsigned now) {
   if(!split_console_mode() || !display.frame || !display.scale)return;
@@ -1270,7 +1303,8 @@ static void split_console_banner(unsigned now) {
 void boot_progress_after_scanout(void) {
   if(!enabled || !boot_progress_display_owned || !display.frame || !display.scale)return;
   if(__atomic_exchange_n(&render_busy,1,__ATOMIC_ACQUIRE))return;
-  if(split_console_mode()) split_console_banner(seconds());
+  if(full_console_mode()) full_console_banner(seconds());
+  else if(split_console_mode()) split_console_banner(seconds());
   else crash_banner(seconds());
   __atomic_store_n(&render_busy,0,__ATOMIC_RELEASE);
 }
@@ -1285,8 +1319,15 @@ static void touch_overlay(void) {
   // Same rule as the text renderer: draw only while holding render_busy, so a display handoff (which takes it before
   // retiring the mapping) can never overlap these stores. A pass that finds it taken is simply skipped.
   if(__atomic_exchange_n(&render_busy,1,__ATOMIC_ACQUIRE))return;
-  ext_overlay_locked();
-  crash_banner(seconds());
+  if(full_console_mode()) {
+    static unsigned last_full;
+    unsigned now=seconds();
+    if(now!=last_full){last_full=now;full_console_banner(now);}
+  }
+  else {
+    ext_overlay_locked();
+    crash_banner(seconds());
+  }
   if(&native_touch_stage_req && native_touch_stage_req)touch_overlay_locked();
   __atomic_store_n(&render_busy,0,__ATOMIC_RELEASE);
 }
