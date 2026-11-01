@@ -60,6 +60,7 @@ archives = [
   "build-fajita-verified-root.py",    # owner keys, OS and SystemOS policies, libVerifiedRootProbe.a (needs the OS images)
   "build-arm-driver.py NativeUfs",
   "build-fajita-dwc3.py",             # NativeDwc3: SDM845 DWC3 USB device-mode probe (default-off; native-dwc3-probe=1), for the SSH-over-USB channel
+  "build-qcom-usb-debug.py",          # QcomXnuUsbDebug: SDM845 DWC3 CDC-ACM XNU console (default-off; qcom-usb-debug=1)
   "build-sheng-platform-power.py",
   "build-boot-progress.py",          # kits/fajita (from UniXNU-sheng d92e799): boot progress, fault probe, watchdog/lite job policy, diag export    # the PMGR the original AMFI needs, from UniXNU-sheng
   "build-native-legacy-display.py",  # CPU-rendered display (NativeLegacyDisplay over the UEFI framebuffer), HID input, keystore stub
@@ -171,7 +172,7 @@ kernel_args = [
   "kt_fixed_zones=120",
   # First hardware boot stays read-only: inspect the live OSM LUT without
   # voting, and prove the Data-store window without writing Android userdata.
-  "armcpu-timer-intid=19","-apfs_shared_datavolume","ml-timeout-lock-panic-scale=40","sheng-staged-apps=1","sheng-disable-watchdogd=1","sheng-lite=1","sheng-data-persist=1","boot-progress=2","sheng-log=1","sheng-autoreset=2400","pcpu=0xf0","fajita-wdog=3","sheng-smp=1","cpus=8","armcpu-self-ipi=1","fajita-cpufreq=1","native-data-writeback=0",
+  "armcpu-timer-intid=19","-apfs_shared_datavolume","ml-timeout-lock-panic-scale=40","sheng-staged-apps=1","sheng-disable-watchdogd=1","sheng-lite=1","sheng-data-persist=1","boot-progress=2","sheng-log=1","sheng-autoreset=2400","pcpu=0xf0","fajita-wdog=3","sheng-smp=1","cpus=8","armcpu-self-ipi=1","fajita-cpufreq=1","native-data-writeback=0","sheng-oslog=1",
   "-no_slto_panic",
   "native-ufs-root=1",
   
@@ -179,7 +180,7 @@ kernel_args = [
   "native-ufs-smmu-mask=0xf",
   "native-ufs-smmu-size=0x80000",     # apps_smmu reg size
   "native-ufs-smmu-adopt=1",          # the firmware leaves 0x800f0100 on its own bank 2 with translation off; keep it
-  "native-ufs-diagnostics=1",
+  "sheng-gpu-addon=1",
   "sheng-pmgr=2",
   # CPU-rendered UI, the sheng set (UniXNU-sheng board.toml kernel_args) without its GPU, touch, cpufreq and SMP arguments.
   "offline-mobile-graphics-load=1",   # load IOMobileGraphicsFamily, register NativeLegacyDisplay (offline-component-load-probes.patch)
@@ -199,7 +200,6 @@ kernel_args = [
   "offline-hid-home=1",               # publish NativeHidInput (keyboard/Home collection; no touch until a fajita touch driver)
   "offline-key-events=1",             # the owned AppleKeyStore (NativeKeyStoreEvents): no SEP on this board
   "sheng-aks=1",                      # it answers the keybag state queries: no passcode, unlocked
-  "sheng-gpu-addon=1",                # mount the PNG wallpaper of the payload's addon (scripts/make-fajita-wallpaper-addon.py), if any
 ]
 
 # Fixups of signed text, applied by the kernel after signature validation (patches/xnu/native-text-fixup.patch); they reach it as

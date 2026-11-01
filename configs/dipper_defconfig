@@ -8,6 +8,7 @@
 # scripts/build-native-legacy-display.py; NATIVE_MOBILE_DISPLAY (the prototype) and NATIVE_ADRENO (A740 only) stay off.
 
 CONFIG_XNU_BUILD_ARCHIVES=y
+CONFIG_XNU_EXTRA_CFLAGS="-Wno-reserved-identifier -Wno-pre-c11-compat -Wno-missing-designated-field-initializers -Wno-suggest-override -Wno-unnecessary-virtual-specifier -Wno-suggest-destructor-override -Wno-ms-bitfield-padding -DXNU_QCOM_USB_DEBUG=1"
 CONFIG_XNU_SOURCE_CORECRYPTO14=y
 CONFIG_XNU_SOURCE_PTHREAD=y
 CONFIG_XNU_ARM_DT_PLATFORM=y
@@ -32,7 +33,7 @@ CONFIG_XNU_CRYPTO_BOOTSTRAP="prelinked"
 # IOKit personality is added unconditionally by patches/xnu/zzv-native-dwc3-personality.patch.
 # The touch bring-up (scripts/build-fajita-touch.py, default off: fajita-touch=<stage>) is force-loaded as well; it defines the
 # touch snapshot NativeHidInput reads. The CPU clock probe (scripts/build-fajita-cpufreq.py, default off: fajita-cpufreq=<n>) too.
-CONFIG_XNU_EXTRA_LD_ARCHIVES="-Wl,-force_load,{tree}/build/fajita-dwc3/libNativeDwc3.a -Wl,-force_load,{tree}/build/fajita-touch/libFajitaTouch.a -Wl,-force_load,{tree}/build/fajita-cpufreq/libFajitaCpuFreq.a"
+CONFIG_XNU_EXTRA_LD_ARCHIVES="-Wl,-force_load,{tree}/build/fajita-dwc3/libNativeDwc3.a -Wl,-force_load,{tree}/build/qcom-usb-debug/libQcomXnuUsbDebug.a -Wl,-force_load,{tree}/build/fajita-touch/libFajitaTouch.a -Wl,-force_load,{tree}/build/fajita-cpufreq/libFajitaCpuFreq.a"
 CONFIG_XNU_NATIVE_VIRTIO_BLOCK_ARCHIVE="{tree}/build/native-virtio-block-verified-bundle/libNativeVirtioBlock.a"
 CONFIG_XNU_VERIFIED_ROOT_ARCHIVE="{tree}/build/verified-root-os-xnu-bundle/libVerifiedRootProbe.a"
 CONFIG_XNU_NATIVE_RAM_BLOCK=y

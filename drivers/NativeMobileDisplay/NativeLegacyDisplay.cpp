@@ -33,6 +33,7 @@ extern "C" void native_legacy_swap_validation_observed(bool,unsigned,const void 
 extern "C" void native_legacy_surface_rejected(uint64_t,uint64_t,uint32_t,uint32_t,uint64_t,uint64_t,uint64_t);
 extern "C" bool native_legacy_prepare_scanout(void);
 extern "C" void native_legacy_transfer_observed(IOReturn,const void *,uint64_t);
+extern "C" void boot_progress_after_scanout(void) __attribute__((weak_import));
 extern "C" void native_legacy_copy_timing_observed(uint64_t ticks,uint64_t bytes);
 extern "C" void native_legacy_retirement_observed(IOService *);
 // GPU hand-off (boot-arg sheng-fb-gpu=1): the frame is offered to the privileged GPU client instead of being copied; the swap retires when the
@@ -467,6 +468,7 @@ public:
     }
     // Separately gated retirement after a real scanout store, shared by copied and blank frames.
     void finishTransfer(const OriginalLegacySwapRequest *request,bool force=false) {
+        if (boot_progress_after_scanout) boot_progress_after_scanout();
         unsigned retire=0,cpuPresent=0;
         PE_parse_boot_argn("offline-legacy-retire",&retire,sizeof(retire));
         PE_parse_boot_argn("offline-legacy-cpu-present",&cpuPresent,sizeof(cpuPresent));

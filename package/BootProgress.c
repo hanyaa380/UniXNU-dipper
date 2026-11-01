@@ -167,6 +167,19 @@ extern volatile unsigned native_touch_stage_req __attribute__((weak_import));
 extern volatile unsigned boot_process_passes,boot_process_seen __attribute__((weak_import));
 extern volatile unsigned boot_process_attempts __attribute__((weak_import));
 extern volatile unsigned boot_process_busy __attribute__((weak_import));
+extern volatile int native_oslog_live_stage __attribute__((weak_import));
+extern volatile int native_oslog_live_status __attribute__((weak_import));
+extern volatile int native_oslog_live_size __attribute__((weak_import));
+extern volatile int native_oslog_live_readback __attribute__((weak_import));
+extern volatile int native_oslog_live_binary_size __attribute__((weak_import));
+extern volatile int native_oslog_live_binary_status __attribute__((weak_import));
+extern volatile int native_gpu_addon_files __attribute__((weak_import));
+extern volatile int native_gpu_addon_written __attribute__((weak_import));
+extern volatile int native_gpu_addon_failed __attribute__((weak_import));
+extern volatile int native_gpu_addon_error __attribute__((weak_import));
+extern volatile int native_gpu_addon2_stage __attribute__((weak_import));
+extern volatile int native_gpu_addon2_status __attribute__((weak_import));
+static volatile int oslog_exec_seen=-1,oslog_exit_status=-1,oslog_refused,oslog_imfb_seen;
 static unsigned process_worker_status,process_capture_age;
 extern volatile uint32_t __attribute__((weak_import)) armcpu_smp_requested,armcpu_smp_running,armcpu_smp_conduit,armcpu_boot_mpidr;
 extern volatile uint32_t __attribute__((weak_import)) armcpu_smp_step[8],armcpu_smp_seen_mpidr[8],armcpu_smp_fail[8],armcpu_smp_sys[8][5],armcpu_boot_sys[5],armcpu_gic_stride,armcpu_gic_typer_probe[2];
@@ -674,6 +687,12 @@ void boot_progress_main_stage(const char *text) {
 void boot_progress_process_stage(int pid,const char *name,const char *text) {
   if(!enabled || !take())return;
   char stamped[BP_COLS];unsigned now=seconds();
+  if(name && !strcmp(name,"oslogprobe") && strnstr(text,"signature accepted",BP_COLS))
+    __atomic_store_n(&oslog_exec_seen,pid,__ATOMIC_RELEASE);
+  if(name && !strcmp(name,"oslogprobe") && (strnstr(text,"REFUSED",BP_COLS) || strnstr(text,"FAILED",BP_COLS)))
+    __atomic_store_n(&oslog_refused,1,__ATOMIC_RELEASE);
+  if(name && !strcmp(name,"IOMFB_FDR_Loader") && strnstr(text,"signature accepted",BP_COLS))
+    __atomic_store_n(&oslog_imfb_seen,pid,__ATOMIC_RELEASE);
   if(!strncmp(text,"exec process signature",22))census_note(name,0);
   snprintf(stamped,sizeof(stamped),"target pid=%d %.24s %.70s",pid,name,text);
   bp_stage(&state,stamped,now);
@@ -683,6 +702,9 @@ void boot_progress_process_stage(int pid,const char *name,const char *text) {
 void boot_progress_exit(int pid,const char *name,int status,unsigned ns,uint64_t code) {
   if(!enabled)return;
   census_note(name,1);
+  if(name && !strcmp(name,"oslogprobe")) {
+    __atomic_store_n(&oslog_exit_status,status,__ATOMIC_RELEASE);
+  }
   if(name && !strcmp(name,"xpcproxy") && pid==proc_selfpid())xpc_fail_note(status,ns,code);
   if(__atomic_exchange_n(&exit_lock,1,__ATOMIC_ACQUIRE)) {
     __atomic_fetch_add(&exit_dropped,1,__ATOMIC_RELAXED);return;
@@ -902,6 +924,7 @@ char boot_progress_ext_wide[2][112];
 // Data persistence counters (NativeRamBlock): ext slots 2-3 are formatted here from them. State: 0 off, 1 blank probe, 2 resumed,
 // 3 fresh, 4 refused/failed, 5 degraded by an I/O error, 6 resumed read-only probe.
 extern volatile uint32_t native_data_persist_state __attribute__((weak_import));
+extern int qcom_usb_debug_status_row(char *, unsigned int) __attribute__((weak_import));
 extern volatile uint32_t native_data_persist_header __attribute__((weak_import));
 extern volatile uint32_t native_data_persist_gpt __attribute__((weak_import));
 extern volatile uint32_t native_data_persist_gpt_after __attribute__((weak_import));
@@ -1027,6 +1050,10 @@ static void crash_banner(unsigned now) {
     snprintf(rows[n++],120,"%s%.108s",part?"       ":"REASON ",exit_records.reason+part*108);
   for(unsigned i=0;i<3 && i<failed;++i)snprintf(rows[n++],120,"EXIT  %.100s",exit_records.failures[(failed-1-i)%3]);
   __atomic_store_n(&exit_lock,0,__ATOMIC_RELEASE);
+  if(&qcom_usb_debug_status_row) {
+    char qrow[112];
+    if(qcom_usb_debug_status_row(qrow,sizeof qrow)>0)snprintf(rows[n++],120,"QUD   %.112s",qrow);
+  }
   // Presentation cost: swaps in the last second and the time of the pixel copy (last / mean / maximum, microseconds).
   if(&native_legacy_copy_n && native_legacy_copy_n) {
     uint64_t f=0,c=native_legacy_copy_n;__asm__ volatile("mrs %0, cntfrq_el0":"=r"(f));if(!f)f=19200000;
@@ -1157,6 +1184,130 @@ static void crash_banner(unsigned now) {
     px_text(0,top+i*cell,r,cols,color,0xff0d1117);
   }
 }
+static unsigned split_console_lines;
+static int split_console_mode(void) {
+  static int enabled=-1;
+  if(enabled<0) {
+    unsigned value=0;
+    enabled=PE_parse_boot_argn("sheng-split-console",&value,sizeof value) && value==1;
+    // The live OSLog launch job writes decoded userland lines to /dev/console. One switch
+    // enables both that producer and the lower console strip, so the boot arguments do not
+    // need a second option at their 1000-byte limit.
+    if(!enabled && PE_parse_boot_argn("sheng-oslog",&value,sizeof value) && value==1) enabled=1;
+    unsigned lines=32;
+    if(PE_parse_boot_argn("sheng-split-lines",&lines,sizeof lines)) {
+      if(lines<8)lines=8;
+      if(lines>BP_LOGS)lines=BP_LOGS;
+      split_console_lines=lines;
+    } else split_console_lines=32;
+  }
+  return enabled;
+}
+static int full_console_mode(void) {
+  static int enabled=-1;
+  if(enabled<0) {
+    unsigned value=0;
+    enabled=PE_parse_boot_argn("sheng-full-console",&value,sizeof value) && value==1;
+  }
+  return enabled;
+}
+static unsigned copy_console_tail(char rows[BP_LOGS][BP_COLS], unsigned maximum) {
+  if(!take())return 0;
+  unsigned available=state.log_lines+(state.logs[state.log_row][0]?1:0);
+  if(available>BP_LOGS)available=BP_LOGS;
+  unsigned count=available<maximum?available:maximum;
+  unsigned newest=state.logs[state.log_row][0]?state.log_row:(state.log_row+BP_LOGS-1)%BP_LOGS;
+  for(unsigned i=0;i<count;++i) {
+    unsigned source=(newest+BP_LOGS-(count-1-i))%BP_LOGS;
+    strlcpy(rows[i],state.logs[source],BP_COLS);
+  }
+  release();
+  return count;
+}
+static void full_console_banner(unsigned now) {
+  if(!full_console_mode() || !display.frame || !display.scale)return;
+  char rows[BP_LOGS][BP_COLS],head[120],qcom[112]={0};
+  unsigned count=copy_console_tail(rows,BP_LOGS);
+  unsigned cell=14*display.scale,cols=display.width/(6*display.scale);
+  if(cols>119)cols=119;
+  unsigned fit=display.height>cell*3?(display.height/cell)-2:0;
+  if(count>fit)count=fit;
+  if(!count)return;
+  for(unsigned y=0;y<display.height;++y) {
+    if(__atomic_load_n(&display.yield_requested,__ATOMIC_ACQUIRE))return;
+    for(unsigned x=0;x<display.width;++x)
+      *(volatile uint32_t *)(display.frame+(uintptr_t)y*display.stride+x*4)=0xff0d1117;
+  }
+  snprintf(head,sizeof head," UniXNU verbose console%s%s%s  t=%us  lines=%u",build_tag[0]?"  [":"",build_tag,
+    build_tag[0]?"]":"",now,count);
+  px_text(0,0,head,cols,0xffffffff,BP_BAR_LIVE);
+  for(unsigned i=0;i<count;++i)
+    px_text(0,(i+1)*cell,rows[i],cols,0xffb4bcc6,0xff0d1117);
+  if(&qcom_usb_debug_status_row)
+    (void)qcom_usb_debug_status_row(qcom,sizeof qcom);
+  if(qcom[0])snprintf(head,sizeof head," QUD %s",qcom);
+  else snprintf(head,sizeof head," XNU alive  LOAD/IO shown below when available");
+  px_text(0,(count+1)*cell,head,cols,qcom[0]?0xffffcf70:0xffffffff,0xff0d1117);
+}
+static void split_console_banner(unsigned now) {
+  if(!split_console_mode() || !display.frame || !display.scale)return;
+  char rows[BP_LOGS][BP_COLS];
+  unsigned count=copy_console_tail(rows,split_console_lines);
+  if(!count)return;
+  unsigned cell=14*display.scale,cols=display.width/(6*display.scale);
+  if(cols>119)cols=119;
+  unsigned reserve=display.height*2/3;
+  unsigned top=display.height-(count+1)*cell-8;
+  if(top<reserve) {
+    top=reserve;
+    unsigned fit=display.height>top+cell?(display.height-top)/cell-1:0;
+    if(count>fit)count=fit;
+    if(!count)return;
+  }
+  // Keep the upper two thirds for the system Logo/progress UI. Every system
+  // scanout is followed by this callback, so the console strip survives even
+  // though the compositor owns the full framebuffer.
+  for(unsigned y=top-cell;y<display.height;++y) {
+    if(__atomic_load_n(&display.yield_requested,__ATOMIC_ACQUIRE))return;
+    for(unsigned x=0;x<cols*6*display.scale;++x)
+      *(volatile uint32_t *)(display.frame+(uintptr_t)y*display.stride+x*4)=0xff0d1117;
+  }
+  char head[120];
+  int os_stage=&native_oslog_live_stage?__atomic_load_n(&native_oslog_live_stage,__ATOMIC_ACQUIRE):-1;
+  int os_status=&native_oslog_live_status?__atomic_load_n(&native_oslog_live_status,__ATOMIC_ACQUIRE):-1;
+  int os_size=&native_oslog_live_size?__atomic_load_n(&native_oslog_live_size,__ATOMIC_ACQUIRE):-1;
+  int os_read=&native_oslog_live_readback?__atomic_load_n(&native_oslog_live_readback,__ATOMIC_ACQUIRE):-1;
+  int os_binary_size=&native_oslog_live_binary_size?__atomic_load_n(&native_oslog_live_binary_size,__ATOMIC_ACQUIRE):-1;
+  int os_binary_status=&native_oslog_live_binary_status?__atomic_load_n(&native_oslog_live_binary_status,__ATOMIC_ACQUIRE):-1;
+  int gpu_files=&native_gpu_addon_files?__atomic_load_n(&native_gpu_addon_files,__ATOMIC_ACQUIRE):-1;
+  int gpu_written=&native_gpu_addon_written?__atomic_load_n(&native_gpu_addon_written,__ATOMIC_ACQUIRE):-1;
+  int gpu_failed=&native_gpu_addon_failed?__atomic_load_n(&native_gpu_addon_failed,__ATOMIC_ACQUIRE):-1;
+  int gpu_mount_stage=&native_gpu_addon2_stage?__atomic_load_n(&native_gpu_addon2_stage,__ATOMIC_ACQUIRE):-1;
+  int gpu_mount_status=&native_gpu_addon2_status?__atomic_load_n(&native_gpu_addon2_status,__ATOMIC_ACQUIRE):-1;
+  int os_exec=__atomic_load_n(&oslog_exec_seen,__ATOMIC_ACQUIRE);
+  int os_exit=__atomic_load_n(&oslog_exit_status,__ATOMIC_ACQUIRE);
+  int os_refused=__atomic_load_n(&oslog_refused,__ATOMIC_ACQUIRE);
+  int os_imfb=__atomic_load_n(&oslog_imfb_seen,__ATOMIC_ACQUIRE);
+  snprintf(head,sizeof head," OSLog%s%s%s t=%us O=%d/%d %d/%d B%d/%d G%d/%d/%d M%d/%d E%d R%d I%d X%d",
+           build_tag[0]?"  [":"",build_tag,build_tag[0]?"]":"",now,
+           os_stage,os_status,os_size,os_read,os_binary_size,os_binary_status,
+           gpu_files,gpu_written,gpu_failed,gpu_mount_stage,gpu_mount_status,
+           os_exec,os_refused,os_imfb,os_exit);
+  px_text(0,top-cell,head,cols,0xffffffff,BP_BAR_LIVE);
+  for(unsigned i=0;i<count;++i)
+    px_text(0,top+i*cell,rows[i],cols,0xffb4bcc6,0xff0d1117);
+}
+// NativeLegacyDisplay calls this after the system frame is fully copied. The async
+// monitor can otherwise race with scanout and leave the diagnostic banner hidden
+// under the system progress UI. crash_banner throttles repaint to once per 2 s.
+void boot_progress_after_scanout(void) {
+  if(!enabled || !boot_progress_display_owned || !display.frame || !display.scale)return;
+  if(__atomic_exchange_n(&render_busy,1,__ATOMIC_ACQUIRE))return;
+  if(full_console_mode()) full_console_banner(seconds());
+  else if(split_console_mode()) split_console_banner(seconds());
+  else crash_banner(seconds());
+  __atomic_store_n(&render_busy,0,__ATOMIC_RELEASE);
+}
 static void touch_overlay_locked(void);
 static void touch_overlay(void) {
   // sheng-banner=0 switches every on-screen diagnostic painting off once the system owns the display (the UFS log carries the same rows):
@@ -1168,8 +1319,15 @@ static void touch_overlay(void) {
   // Same rule as the text renderer: draw only while holding render_busy, so a display handoff (which takes it before
   // retiring the mapping) can never overlap these stores. A pass that finds it taken is simply skipped.
   if(__atomic_exchange_n(&render_busy,1,__ATOMIC_ACQUIRE))return;
-  ext_overlay_locked();
-  crash_banner(seconds());
+  if(full_console_mode()) {
+    static unsigned last_full;
+    unsigned now=seconds();
+    if(now!=last_full){last_full=now;full_console_banner(now);}
+  }
+  else {
+    ext_overlay_locked();
+    crash_banner(seconds());
+  }
   if(&native_touch_stage_req && native_touch_stage_req)touch_overlay_locked();
   __atomic_store_n(&render_busy,0,__ATOMIC_RELEASE);
 }
