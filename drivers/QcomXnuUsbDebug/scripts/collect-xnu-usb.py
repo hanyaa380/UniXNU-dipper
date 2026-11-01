@@ -18,22 +18,64 @@ def walk(n):
 
 class CaptureStopped(Exception):pass
 
+def linux_candidates(serial):
+ states=[]
+ by_id=Path('/dev/serial/by-id')
+ fallback=[]
+ if by_id.is_dir():
+  for link in by_id.iterdir():
+   if serial in link.name or ('1209' in link.name and '316d' in link.name.lower()):
+    try:fallback.append(str(link.resolve(strict=True)))
+    except OSError:pass
+ root=Path('/sys/bus/usb/devices')
+ if root.is_dir():
+  for device in root.iterdir():
+   try:
+    vendor=(device/'idVendor').read_text().strip().lower()
+    product=(device/'idProduct').read_text().strip().lower()
+    usb_serial=(device/'serial').read_text().strip()
+   except OSError:continue
+   if (usb_serial!=serial and not (vendor=='1209' and product=='316d')):continue
+   ports=[]
+   for interface in root.glob(device.name+':*'):
+    for port in interface.glob('tty/ttyACM*'):
+     ports.append('/dev/'+port.name)
+   state={'USB Product Name':(device/'product').read_text().strip() if (device/'product').is_file() else '',
+          'USB Serial Number':usb_serial,'idVendor':int(vendor,16),'idProduct':int(product,16),
+          'IORegistryEntryName':device.name,'ports':sorted(set(ports))}
+   states.append((state,state['ports']))
+ if not states and fallback:
+  states.append(({'USB Product Name':'','USB Serial Number':serial,'idVendor':0x1209,
+                  'idProduct':0x316d,'IORegistryEntryName':'by-id','ports':sorted(set(fallback))},
+                 sorted(set(fallback))))
+ return states
+
+def darwin_candidates(serial):
+ q=subprocess.run(['ioreg','-a','-l','-r','-c','IOUSBHostDevice'],capture_output=True,timeout=10);devices=[]
+ if q.returncode==0 and q.stdout.strip():
+  try:devices=plistlib.loads(q.stdout)
+  except plistlib.InvalidFileException:pass
+ candidates=[]
+ for n in walk(devices):
+  state={k:n.get(k) for k in ['USB Product Name','USB Serial Number','idVendor','idProduct','IORegistryEntryName']}
+  state['ports']=sorted(set(c['IOCalloutDevice'] for c in walk(n) if c.get('IOCalloutDevice','').startswith('/dev/cu.usbmodem')))
+  candidates.append((n,state))
+ return [(state,state['ports']) for n,state in candidates
+         if n.get('USB Serial Number')==serial or (n.get('idVendor')==0x1209 and n.get('idProduct')==0x316d)]
+
 def find(serial,wait,observations=None,should_stop=None):
  end=time.monotonic()+wait
  while time.monotonic()<end:
   if should_stop and should_stop():raise CaptureStopped()
-  q=subprocess.run(['ioreg','-a','-l','-r','-c','IOUSBHostDevice'],capture_output=True,timeout=10);devices=[]
-  if q.returncode==0 and q.stdout.strip():
-   try:devices=plistlib.loads(q.stdout)
-   except plistlib.InvalidFileException:pass
-  for n in walk(devices):
-   if n.get('USB Serial Number')==serial or (n.get('idVendor')==0x1209 and n.get('idProduct')==0x316d):
-    state={k:n.get(k) for k in ['USB Product Name','USB Serial Number','idVendor','idProduct','IORegistryEntryName']}
-    state['ports']=sorted(set(c['IOCalloutDevice'] for c in walk(n) if c.get('IOCalloutDevice','').startswith('/dev/cu.usbmodem')))
+  try:candidates=darwin_candidates(serial) if sys.platform=='darwin' else linux_candidates(serial)
+  except (OSError,subprocess.SubprocessError):candidates=[]
+  matching=[item for item in candidates if item[0].get('USB Serial Number')==serial]
+  for candidate,paths in candidates:
+   state,ports=candidate,paths
+   if state.get('USB Serial Number')==serial or (state.get('idVendor')==0x1209 and state.get('idProduct')==0x316d):
     if observations is not None and (not observations or observations[-1]['device']!=state):
      observations.append({'observed_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'device':state})
-   if n.get('USB Serial Number')!=serial:continue
-   paths=sorted(set(c['IOCalloutDevice'] for c in walk(n) if c.get('IOCalloutDevice','').startswith('/dev/cu.usbmodem')))
+  for state,paths in matching:
    if len(paths)==1:return paths[0]
    if len(paths)>1:raise RuntimeError('Multiple CDC interfaces; select the log interface after driver descriptors are finalized')
   time.sleep(1)
