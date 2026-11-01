@@ -29,6 +29,17 @@ XNU_PROFILES = {
             'osfmk/arm64/start.s',
         ),
     },
+    'darwin23': {
+        'xnu_version': '10063.141.1',
+        'xnu_revision': 'd8b80295118ef25ac3a784134bcf95cd8e88109f',
+        'translation_units': (
+            'pexpert/arm/pe_kprintf.c',
+            'osfmk/console/serial_console.c',
+            'osfmk/kern/printf.c',
+            'osfmk/kern/debug.c',
+            'bsd/kern/bsd_init.c',
+        ),
+    },
 }
 
 

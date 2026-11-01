@@ -1,6 +1,10 @@
 # 完整构建与接入方法
 
-接入目标为 Darwin22 / ARM64 / XNU 8796.141.3。更换 OS 版本时，先增加对应补丁 profile，再完成同样的检查。支持边界见 [boundaries.md](boundaries.md)，截图及协议见 [control-and-screenshot.md](control-and-screenshot.md)。
+模块保留 Darwin22 / ARM64 / XNU 8796.141.3 的上游 profile，并增加
+Darwin23 / ARM64 / XNU 10063.141.1 的 `darwin23` profile。Xiaomi Mi 8
+（SDM845 / `dipper`）使用后者。更换 OS 版本时，先增加对应补丁 profile，
+再完成同样的检查。支持边界见 [boundaries.md](boundaries.md)，截图及协议见
+[control-and-screenshot.md](control-and-screenshot.md)。
 
 ## 1. 准备输入
 
@@ -32,9 +36,9 @@ TARGET_CLANG="/absolute/path/to/clang"
 ## 3. 检查并应用模块内补丁
 
 ```sh
-python3 -B "$MODULE/scripts/xnu_patches.py" status --xnu "$XNU_SRC"
-python3 -B "$MODULE/scripts/xnu_patches.py" check --xnu "$XNU_SRC"
-python3 -B "$MODULE/scripts/xnu_patches.py" apply --xnu "$XNU_SRC"
+python3 -B "$MODULE/scripts/xnu_patches.py" status --profile darwin23 --xnu "$XNU_SRC"
+python3 -B "$MODULE/scripts/xnu_patches.py" check --profile darwin23 --xnu "$XNU_SRC"
+python3 -B "$MODULE/scripts/xnu_patches.py" apply --profile darwin23 --xnu "$XNU_SRC"
 ```
 
 工具校验 Git revision、连续的补丁编号和文件路径，整组预检查通过后才使用一次 `git apply` 应用四份补丁。状态为 `ready`、`applied` 或 `conflict-or-mixed`。重复应用、错误版本和冲突均拒绝；不会执行 `reset/stash/clean`，也不使用 `--reject` 或三方合并。
@@ -44,6 +48,7 @@ python3 -B "$MODULE/scripts/xnu_patches.py" apply --xnu "$XNU_SRC"
 | [0001 console](../patches/darwin22/0001-qcom-usb-debug-console.patch) | PE 初始化、kprintf、printf/debug、中央控制台、长消息及 panic |
 | [0003 msgbuf](../patches/darwin22/0003-qcom-usb-debug-msgbuf.patch) | TOLOG/TOLOGLOCKED、内核 os_log 的 CPU 入队 |
 | [0004 early](../patches/darwin22/0004-qcom-usb-debug-early-log.patch) | 冷入口计数器和早期初始化阶段 |
+| [Darwin23 接入](../patches/darwin23/0001-qcom-usb-debug-console-and-worker.patch) | XNU 10063 的 kprintf、console、panic 和 kminit worker |
 | [0002 worker](../patches/darwin22/0002-qcom-usb-debug-worker.patch) | kminit 后启动 CPU 轮询线程、可选正常重启线程 |
 
 补丁仅引用 `QcomXnuUsbDebug.h`、`qcom_usb_debug_*` 和 `XNU_QCOM_USB_DEBUG`，不含板级地址、旧设备宏或显示驱动调用。截图 provider 由显示驱动注册，USB worker 无需修改。
