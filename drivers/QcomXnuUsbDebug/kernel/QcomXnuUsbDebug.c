@@ -11,6 +11,7 @@
 #include "../soc/QcomUsbDmaDomain.h"
 #include <machine/machine_routines.h>
 #include <kern/cpu_number.h>
+#include <kern/debug.h>
 #include <pexpert/pexpert.h>
 
 #define NATIVE_CONTEXT_BYTES DWC3_CONTEXT_BYTES
@@ -41,6 +42,7 @@ static uint8_t usb_context[NATIVE_CONTEXT_BYTES] __attribute__((aligned(DWC3_CON
 static volatile unsigned int usb_busy;
 static volatile unsigned int usb_diag_enabled, usb_diag_checkpoint, usb_diag_resetting, usb_diag_target;
 static volatile unsigned int usb_diag_mode, usb_diag_polling;
+static unsigned int usb_fail_panic;
 static uint8_t usb_log_bytes[SOC_USB_LOG_BUFFER_BYTES];
 static struct soc_usb_buffer usb_log_buffer = {
     .data = usb_log_bytes, .capacity = sizeof(usb_log_bytes)
@@ -634,6 +636,8 @@ int qcom_usb_debug_init(void)
     if (!PE_parse_boot_argn("qcom-usb-debug", &enabled, sizeof(enabled)) || enabled != 1) {
         native.status.phase = QCOM_USB_DEBUG_DISABLED; goto out;
     }
+    if (PE_parse_boot_argn("qcom-usb-fail-panic", &enabled, sizeof(enabled)) && enabled == 1)
+        usb_fail_panic = 1;
     native.status.phase = QCOM_USB_DEBUG_PREPARING;
     diag_checkpoint(QCOM_USB_DEBUG_DIAG_AFTER_ACQUIRE);
     if (dwc3_context_bytes() > sizeof(usb_context)) {
@@ -821,6 +825,10 @@ int qcom_usb_debug_init(void)
 out:
     buffer_status_owned();
     release(flags);
+    if (usb_fail_panic && native.status.phase == QCOM_USB_DEBUG_REFUSED)
+        panic("QCOM USB FAIL error=%u core=%d qcom=%u trace=%u a=%08x b=%08x",
+              native.status.error, native.status.core_result, native.status.qcom_result,
+              native.status.last_trace, native.status.trace_a, native.status.trace_b);
     if (usb_diag_enabled && native.status.phase == QCOM_USB_DEBUG_REFUSED)
         diag_reset(12u + 4u * native.status.error);
     return ret;
