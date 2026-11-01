@@ -171,7 +171,11 @@ extern volatile int native_oslog_live_stage __attribute__((weak_import));
 extern volatile int native_oslog_live_status __attribute__((weak_import));
 extern volatile int native_oslog_live_size __attribute__((weak_import));
 extern volatile int native_oslog_live_readback __attribute__((weak_import));
-static volatile int oslog_exec_seen=-1,oslog_exit_status=-1;
+extern volatile int native_oslog_live_binary_size __attribute__((weak_import));
+extern volatile int native_oslog_live_binary_status __attribute__((weak_import));
+extern volatile int native_gpu_addon_files,native_gpu_addon_written,native_gpu_addon_failed,native_gpu_addon_error __attribute__((weak_import));
+extern volatile int native_gpu_addon2_stage,native_gpu_addon2_status __attribute__((weak_import));
+static volatile int oslog_exec_seen=-1,oslog_exit_status=-1,oslog_refused,oslog_imfb_seen;
 static unsigned process_worker_status,process_capture_age;
 extern volatile uint32_t __attribute__((weak_import)) armcpu_smp_requested,armcpu_smp_running,armcpu_smp_conduit,armcpu_boot_mpidr;
 extern volatile uint32_t __attribute__((weak_import)) armcpu_smp_step[8],armcpu_smp_seen_mpidr[8],armcpu_smp_fail[8],armcpu_smp_sys[8][5],armcpu_boot_sys[5],armcpu_gic_stride,armcpu_gic_typer_probe[2];
@@ -679,8 +683,12 @@ void boot_progress_main_stage(const char *text) {
 void boot_progress_process_stage(int pid,const char *name,const char *text) {
   if(!enabled || !take())return;
   char stamped[BP_COLS];unsigned now=seconds();
-  if(name && !strcmp(name,"log") && strnstr(text,"signature accepted",BP_COLS))
+  if(name && !strcmp(name,"oslogprobe") && strnstr(text,"signature accepted",BP_COLS))
     __atomic_store_n(&oslog_exec_seen,pid,__ATOMIC_RELEASE);
+  if(name && !strcmp(name,"oslogprobe") && (strnstr(text,"REFUSED",BP_COLS) || strnstr(text,"FAILED",BP_COLS)))
+    __atomic_store_n(&oslog_refused,1,__ATOMIC_RELEASE);
+  if(name && !strcmp(name,"IOMFB_FDR_Loader") && strnstr(text,"signature accepted",BP_COLS))
+    __atomic_store_n(&oslog_imfb_seen,pid,__ATOMIC_RELEASE);
   if(!strncmp(text,"exec process signature",22))census_note(name,0);
   snprintf(stamped,sizeof(stamped),"target pid=%d %.24s %.70s",pid,name,text);
   bp_stage(&state,stamped,now);
@@ -690,7 +698,7 @@ void boot_progress_process_stage(int pid,const char *name,const char *text) {
 void boot_progress_exit(int pid,const char *name,int status,unsigned ns,uint64_t code) {
   if(!enabled)return;
   census_note(name,1);
-  if(name && !strcmp(name,"log")) {
+  if(name && !strcmp(name,"oslogprobe")) {
     __atomic_store_n(&oslog_exit_status,status,__ATOMIC_RELEASE);
   }
   if(name && !strcmp(name,"xpcproxy") && pid==proc_selfpid())xpc_fail_note(status,ns,code);
@@ -1227,11 +1235,22 @@ static void split_console_banner(unsigned now) {
   int os_status=&native_oslog_live_status?__atomic_load_n(&native_oslog_live_status,__ATOMIC_ACQUIRE):-1;
   int os_size=&native_oslog_live_size?__atomic_load_n(&native_oslog_live_size,__ATOMIC_ACQUIRE):-1;
   int os_read=&native_oslog_live_readback?__atomic_load_n(&native_oslog_live_readback,__ATOMIC_ACQUIRE):-1;
+  int os_binary_size=&native_oslog_live_binary_size?__atomic_load_n(&native_oslog_live_binary_size,__ATOMIC_ACQUIRE):-1;
+  int os_binary_status=&native_oslog_live_binary_status?__atomic_load_n(&native_oslog_live_binary_status,__ATOMIC_ACQUIRE):-1;
+  int gpu_files=&native_gpu_addon_files?__atomic_load_n(&native_gpu_addon_files,__ATOMIC_ACQUIRE):-1;
+  int gpu_written=&native_gpu_addon_written?__atomic_load_n(&native_gpu_addon_written,__ATOMIC_ACQUIRE):-1;
+  int gpu_failed=&native_gpu_addon_failed?__atomic_load_n(&native_gpu_addon_failed,__ATOMIC_ACQUIRE):-1;
+  int gpu_mount_stage=&native_gpu_addon2_stage?__atomic_load_n(&native_gpu_addon2_stage,__ATOMIC_ACQUIRE):-1;
+  int gpu_mount_status=&native_gpu_addon2_status?__atomic_load_n(&native_gpu_addon2_status,__ATOMIC_ACQUIRE):-1;
   int os_exec=__atomic_load_n(&oslog_exec_seen,__ATOMIC_ACQUIRE);
   int os_exit=__atomic_load_n(&oslog_exit_status,__ATOMIC_ACQUIRE);
-  snprintf(head,sizeof head," UniXNU console / OSLog%s%s%s t=%us l=%u O=%d/%d %d/%d E%d X%d",
-           build_tag[0]?"  [":"",build_tag,build_tag[0]?"]":"",now,count,
-           os_stage,os_status,os_size,os_read,os_exec,os_exit);
+  int os_refused=__atomic_load_n(&oslog_refused,__ATOMIC_ACQUIRE);
+  int os_imfb=__atomic_load_n(&oslog_imfb_seen,__ATOMIC_ACQUIRE);
+  snprintf(head,sizeof head," OSLog%s%s%s t=%us O=%d/%d %d/%d B%d/%d G%d/%d/%d M%d/%d E%d R%d I%d X%d",
+           build_tag[0]?"  [":"",build_tag,build_tag[0]?"]":"",now,
+           os_stage,os_status,os_size,os_read,os_binary_size,os_binary_status,
+           gpu_files,gpu_written,gpu_failed,gpu_mount_stage,gpu_mount_status,
+           os_exec,os_refused,os_imfb,os_exit);
   px_text(0,top-cell,head,cols,0xffffffff,BP_BAR_LIVE);
   for(unsigned i=0;i<count;++i)
     px_text(0,top+i*cell,rows[i],cols,0xffb4bcc6,0xff0d1117);
