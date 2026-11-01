@@ -260,6 +260,32 @@ static void publish_status(void)
     *p = 0;
     boot_progress_stage(text);
 }
+int qcom_usb_debug_status_row(char *out, unsigned int capacity)
+{
+    char text[160], *p;
+    size_t length;
+    if (!out || capacity < 2u) return 0;
+    p = append_text(text, "p=");
+    p = append_decimal(p, native.status.phase);
+    p = append_text(p, " e=");
+    p = append_decimal(p, native.status.error);
+    p = append_text(p, " c=");
+    p = append_decimal(p, (uint32_t)native.status.core_result);
+    p = append_text(p, " q=");
+    p = append_decimal(p, native.status.qcom_result);
+    p = append_text(p, " t=");
+    p = append_decimal(p, native.status.last_trace);
+    p = append_text(p, " a=");
+    p = append_hex32(p, native.status.trace_a);
+    p = append_text(p, " b=");
+    p = append_hex32(p, native.status.trace_b);
+    *p = 0;
+    length = (size_t)(p - text);
+    if (length >= capacity) length = capacity - 1u;
+    bytes_copy(out, text, length);
+    out[length] = 0;
+    return (int)length;
+}
 /* Small in-band accounting records use no printf/console recursion. */
 static size_t loss_record(char *text, int final)
 {

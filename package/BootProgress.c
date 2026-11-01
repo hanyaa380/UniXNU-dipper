@@ -924,6 +924,7 @@ char boot_progress_ext_wide[2][112];
 // Data persistence counters (NativeRamBlock): ext slots 2-3 are formatted here from them. State: 0 off, 1 blank probe, 2 resumed,
 // 3 fresh, 4 refused/failed, 5 degraded by an I/O error, 6 resumed read-only probe.
 extern volatile uint32_t native_data_persist_state __attribute__((weak_import));
+extern int qcom_usb_debug_status_row(char *, unsigned int) __attribute__((weak_import));
 extern volatile uint32_t native_data_persist_header __attribute__((weak_import));
 extern volatile uint32_t native_data_persist_gpt __attribute__((weak_import));
 extern volatile uint32_t native_data_persist_gpt_after __attribute__((weak_import));
@@ -1049,6 +1050,10 @@ static void crash_banner(unsigned now) {
     snprintf(rows[n++],120,"%s%.108s",part?"       ":"REASON ",exit_records.reason+part*108);
   for(unsigned i=0;i<3 && i<failed;++i)snprintf(rows[n++],120,"EXIT  %.100s",exit_records.failures[(failed-1-i)%3]);
   __atomic_store_n(&exit_lock,0,__ATOMIC_RELEASE);
+  if(&qcom_usb_debug_status_row) {
+    char qrow[112];
+    if(qcom_usb_debug_status_row(qrow,sizeof qrow)>0)snprintf(rows[n++],120,"QUD   %.112s",qrow);
+  }
   // Presentation cost: swaps in the last second and the time of the pixel copy (last / mean / maximum, microseconds).
   if(&native_legacy_copy_n && native_legacy_copy_n) {
     uint64_t f=0,c=native_legacy_copy_n;__asm__ volatile("mrs %0, cntfrq_el0":"=r"(f));if(!f)f=19200000;

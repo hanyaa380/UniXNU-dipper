@@ -100,6 +100,7 @@ extern "C" {
  * Explicit qcom-usb-debug=1 is mandatory. No hook is installed here. */
 int qcom_usb_debug_init(void);
 int qcom_usb_debug_is_active(void);
+int qcom_usb_debug_status_row(char *out, unsigned int capacity);
 /* Candidate PE_kputc sink. All CPUs can enqueue before/during initialization.
  * IRQ-safe nonspinning CPU-only backlog preserves the oldest bytes; overflow
  * and producer contention are counted. Hardware service stays on the boot CPU.
