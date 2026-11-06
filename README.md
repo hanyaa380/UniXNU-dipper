@@ -6,6 +6,9 @@ This repository starts from UniXNU-fajita because both devices use SDM845. The f
 narrow: build a Mu-Silicium firmware volume containing UniXNU and DarwinBoot, boot it with `fastboot boot`, and
 reach the UniXNU menu with an empty ramdisk.
 
+从源码构建 XNU、生成自己的 prelink candidate，以及使用私有 CI 的完整步骤见
+[BUILDING-KERNEL.md](BUILDING-KERNEL.md)。
+
 ## State
 
 | Stage | State |
@@ -18,8 +21,10 @@ reach the UniXNU menu with an empty ramdisk.
 | Payload FAT | Works from the existing FAT `logfs` partition on hardware |
 | EFI payload | `HelloPayload.efi` runs and returns through UniXNU on hardware |
 | DarwinBoot | Synthetic ARM64 Mach-O/ADT handoff reaches EL1 and paints the framebuffer green |
-| Real XNU kernel | Public fajita kernel reaches BSD init; the stock artifact has no `NativeUfs`, so `_IOFindBSDRoot` waits forever for a root device |
-| UFS root, touch, charging, GPU | Not implemented or verified for dipper |
+| Real XNU kernel | Source kernel builds and prelinks; UFS, APFS, SystemOS/Data, launchd and the early userland have booted on hardware |
+| SMP | Eight logical CPUs have reached Running through PSCI/SMC |
+| Display and userland transition | Logo and progress bar work; backboardd/SpringBoard transition remains the current blocker |
+| Touch, charging, GPU | Not fully implemented or verified for dipper |
 
 The standard Mi 8 is `dipper`. The screen-fingerprint/UD model is normally `equuleus`; this repository targets
 `dipper`, although it uses equuleus vendor DXE binaries as the closest available SDM845 donor set.
