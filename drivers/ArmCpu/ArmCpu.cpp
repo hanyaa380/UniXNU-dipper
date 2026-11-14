@@ -356,6 +356,29 @@ static IOCPUInterruptController *gController = nullptr;
 static volatile uint32_t gGicShared = 0;
 static uint64_t gRedistStride = 0; // DT redistributor-stride; 0 = infer from GICR_TYPER.VLPIS
 volatile uint32_t armcpu_gic_stride = 0, armcpu_gic_typer_probe[2];
+
+// Read-only timer snapshot for the scrolling video console. The boot-progress monitor prints
+// this while the system is alive; a frozen last row therefore says whether the architectural
+// timer stopped, whether PPI 19 is pending, and whether the watchdog is still being petted.
+extern "C" int armcpu_timer_snapshot (uint64_t *out, unsigned count)
+{
+  if (out == nullptr || count < 6) {
+    return 0;
+  }
+  if (gFrames) {
+    const uintptr_t sgi = gFrames + 0x10000;
+    out[0] = read32 (sgi, 0x100);
+    out[1] = read32 (sgi, 0x200);
+    out[2] = read32 (sgi, 0x300);
+  } else {
+    out[0] = out[1] = out[2] = 0;
+  }
+  out[3] = gTimerIntid;
+  out[4] = armcpu_timer_interrupts;
+  out[5] = armcpu_wdog_pets;
+  return gFrames ? 1 : 0;
+}
+
 static bool gSmpWanted = false;
 // Secondary nubs never wait for the boot CPU (IOSleep needs the timer that only the boot nub enables): they queue here and
 // the boot nub, or a late secondary once the boot CPU is registered, finishes them.

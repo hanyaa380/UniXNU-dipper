@@ -116,6 +116,27 @@ volatile uint64_t boot_progress_last_pc;
 volatile uint64_t boot_progress_observation[24];
 __attribute__((noinline)) void boot_progress_stop_checkpoint(void) { __asm__ volatile("" ::: "memory"); }
 
+// The diagnostic page's TIMER row is a framebuffer overlay and can stop being useful when the
+// video console owns the display. Also emit the live values into the scrolling kernel console,
+// every five seconds during bring-up and every thirty seconds after five minutes.
+static void timer_console_tick(unsigned now) {
+  static unsigned next;
+  if (now < next) return;
+  next = now + (now < 300 ? 5 : 30);
+  uint64_t vct,cval,ctl,daif,snapshot[6]={0};
+  __asm__ volatile("isb\n\tmrs %0,cntvct_el0" : "=r"(vct));
+  __asm__ volatile("mrs %0,cntv_cval_el0" : "=r"(cval));
+  __asm__ volatile("mrs %0,cntv_ctl_el0" : "=r"(ctl));
+  __asm__ volatile("mrs %0,daif" : "=r"(daif));
+  const int have=armcpu_timer_snapshot ? armcpu_timer_snapshot(snapshot,6) : 0;
+  printf("[timer] t=%us irq=%llu pets=%llu vct=%llx cval=%llx dcv=%lld ctl=%llx daif=%llx ppi en=%u pend=%u act=%u raw=%x/%x/%x id=%llu\n",
+    now,(unsigned long long)snapshot[4],(unsigned long long)snapshot[5],(unsigned long long)vct,
+    (unsigned long long)cval,(long long)(cval-vct),(unsigned long long)ctl,(unsigned long long)daif,
+    have?(unsigned)((snapshot[0]>>snapshot[3])&1):0,have?(unsigned)((snapshot[1]>>snapshot[3])&1):0,
+    have?(unsigned)((snapshot[2]>>snapshot[3])&1):0,(unsigned)snapshot[0],(unsigned)snapshot[1],
+    (unsigned)snapshot[2],(unsigned long long)snapshot[3]);
+}
+
 extern volatile uint64_t native_ufs_block_reads, native_ufs_verified_blocks;
 extern volatile uint64_t native_ufs_verify_ticks __attribute__((weak_import)), native_ufs_read_ticks __attribute__((weak_import));
 extern volatile uint64_t native_ufs_block_failures;
@@ -191,6 +212,7 @@ extern volatile uint32_t __attribute__((weak_import)) armdt_platform_bus_count,a
 extern volatile uint32_t __attribute__((weak_import)) armdt_platform_nvram_proxy,armdt_platform_device_count;
 extern volatile int32_t __attribute__((weak_import)) armcpu_smp_psci_rc[8];
 extern volatile uint32_t __attribute__((weak_import)) armcpu_irq_phase,armcpu_irq_id,armcpu_quiesce_calls,armcpu_halt_calls;
+extern int armcpu_timer_snapshot(uint64_t *, unsigned) __attribute__((weak_import));
 extern int nprocs;
 extern volatile int native_owner_root_accepted;
 
@@ -1400,6 +1422,7 @@ static void monitor(void *arg, wait_result_t result) {
     if(nprocs>0 && !named){thread_set_thread_name(current_thread(),"boot_progress");named=1;}
     if(boot_process_snapshot)boot_process_snapshot();
     if(boot_log_tick)boot_log_tick(now);
+    timer_console_tick(now);
     if(sheng_cpufreq_poll)sheng_cpufreq_poll();
     if(native_touch_probe)native_touch_probe();
     if(boot_ui_trace_snapshot)boot_ui_trace_snapshot(now);
