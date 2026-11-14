@@ -119,7 +119,7 @@ static bool findRootLayout (RootLayout *layout, const char **why)
     if (!rootEntryUsed (entry)) continue;
     uint64_t entryFirst = le64 (entry + 32), entryLast = le64 (entry + 40);
     bool unixnu = named (entry, "unixnu");
-    bool userdata = named (entry, "userdata");
+    bool userdata = named (entry, "unixnudata") || named (entry, "userdata");
     if (entryFirst < first || entryLast < entryFirst || entryLast > last) {
       // Only the selected root partition is ever read; another partition outside the usable range is reported, not fatal.
       ROOT_LOG ("GPT entry %u %llx..%llx outside usable %llx..%llx%s\n", index, entryFirst, entryLast, first, last,

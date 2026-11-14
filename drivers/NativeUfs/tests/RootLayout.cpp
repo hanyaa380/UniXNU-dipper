@@ -42,7 +42,7 @@ static void fixture() {
   put64(header+24,1);put64(header+32,511);put64(header+40,6);put64(header+48,506);
   put64(header+72,2);put32(header+80,32);put32(header+84,128);
   entries[0]=1; entries[16]=2;put64(entries+32,8);put64(entries+40,90);
-  for(unsigned i=0;i<8;++i)entries[56+2*i]="userdata"[i];
+  for(unsigned i=0;i<10;++i)entries[56+2*i]=static_cast<uint8_t>("unixnudata"[i]);
   entries[128]=1; entries[144]=2;put64(entries+128+32,unixnu);put64(entries+128+40,200);
   for(unsigned i=0;i<6;++i)entries[184+2*i]=static_cast<uint8_t>("unixnu"[i]);
   memcpy(manifest,"SHNGROOT",8);put32(manifest+8,1);put32(manifest+12,2);put64(manifest+16,65536);
@@ -67,7 +67,19 @@ int main(int argc,char **argv) {
     assert(layout.storeFirst==8 && layout.storeLast==90);
   }
   {
-    fixture(); entries[128]=0; checksums(); RootLayout layout; const char *why=nullptr;
+    fixture();
+    for(unsigned i=0;i<10;++i)entries[56+2*i]=0;
+    for(unsigned i=0;i<8;++i)entries[56+2*i]=static_cast<uint8_t>("userdata"[i]);
+    checksums(); RootLayout layout; const char *why=nullptr;
+    assert(findRootLayout(&layout,&why) && layout.manifestStatus==0);
+    assert(layout.userdataFirst==100 && layout.userdataLast==200);
+    assert(layout.storeFirst==8 && layout.storeLast==90);
+  }
+  {
+    fixture();
+    for(unsigned i=0;i<10;++i)entries[56+2*i]=0;
+    for(unsigned i=0;i<8;++i)entries[56+2*i]=static_cast<uint8_t>("userdata"[i]);
+    entries[128]=0; checksums(); RootLayout layout; const char *why=nullptr;
     assert(findRootLayout(&layout,&why) && layout.manifestStatus==0);
     assert(layout.userdataFirst==8 && layout.userdataLast==90);
     assert(layout.storeFirst==0 && layout.storeLast==0);
