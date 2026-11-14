@@ -238,14 +238,11 @@
 @@ -1094,6 +1100,7 @@
  	}
  #endif
+ 
  	bsd_init_kprintf("bsd_do_post - done");
 +	boot_progress_start();
  
  	load_init_program(p);
- 	lock_trace = 1;
- }
- 
- kern_return_t
 @@ -1097,6 +1103,7 @@
  				extern void native_owner_root_accepted_checkpoint(int, int);
  				native_owner_root_accepted = owner_authorized;
