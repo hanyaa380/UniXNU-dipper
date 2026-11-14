@@ -243,6 +243,17 @@
  			}
  #endif
  		}
+@@ -1094,6 +1100,7 @@
+ 	}
+ #endif
+ 	bsd_init_kprintf("bsd_do_post - done");
++	boot_progress_start();
+ 
+ 	load_init_program(p);
+ 	lock_trace = 1;
+ }
+ 
+ kern_return_t
 --- a/bsd/kern/kern_exec.c
 +++ b/bsd/kern/kern_exec.c
 @@ -1,3 +1,4 @@

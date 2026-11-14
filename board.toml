@@ -226,8 +226,9 @@ root_match_volume_uuid = "04769D26-2CA0-4825-B443-E2E5F88300F2"   # the 21H461 O
 owned_memory_size = "0x130000000"   # 4.75 GiB, as sheng: 3 GiB ran out of memory 2 minutes into userland (2026-10-22)
 # The Data seed (data-seed.json, built by the Data seed workflow) arrives packed (DBRDISK1); NativeRamBlock serves it.
 packed_data_ramdisk = true
-# sheng-data-persist=2: Data writes go through to a store window at the end of userdata (NativeUfs), not to RAM.
-persistent_data = true
+# Temporary bring-up policy: advertise volatile Data so DataMigrator exits immediately and Setup can start.
+# The NativeUfs store remains enabled by sheng-data-persist=2; flip this back to true when migration must be tested.
+persistent_data = false
 # The iPad identity (model iPad7,1, target-type J120): libMobileGestalt prefix-matches hw.product against iPhone/iPod/iPad.
 ipad_identity = true
 # chip_id and the platform seed (/chosen/unique-chip-id) seed IOPlatformUUID; the seed is per device and kept out of Git
