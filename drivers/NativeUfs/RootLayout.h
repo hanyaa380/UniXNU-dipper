@@ -11,6 +11,7 @@ struct RootWindow {
 
 struct RootLayout {
   uint64_t userdataFirst, userdataLast;   // 4096-byte LBAs on LUN 0
+  uint64_t storeFirst, storeLast;         // separate Data store partition; zero = use the root partition
   uint64_t imageBytes;                    // size of the flashed root image from the manifest (0 when none)
   uint64_t gptEntriesLba;                 // GPT facts recorded for the persistent store's before/after comparison
   uint32_t gptHeaderCrc, gptEntriesCrc, gptEntryCount;
@@ -111,7 +112,7 @@ static bool findRootLayout (RootLayout *layout, const char **why)
     }
   };
   bool unixnuFound = false, userdataFound = false;
-  uint32_t unixnuIndex = 0, userdataIndex = 0;
+  uint32_t unixnuIndex = 0, userdataIndex = 0, storeIndex = 0;
   uint64_t unixnuFirst = 0, unixnuLast = 0, userdataFirst = 0, userdataLast = 0;
   for (uint32_t index = 0; index < count; index++) {
     const uint8_t *entry = gScratch + index * 128;
@@ -154,6 +155,9 @@ static bool findRootLayout (RootLayout *layout, const char **why)
   if (unixnuFound) {
     layout->userdataFirst = unixnuFirst;
     layout->userdataLast = unixnuLast;
+    layout->storeFirst = userdataFirst;
+    layout->storeLast = userdataLast;
+    storeIndex = userdataIndex;
     userdataIndex = unixnuIndex;
   } else if (userdataFound) {
     layout->userdataFirst = userdataFirst;
@@ -170,6 +174,24 @@ static bool findRootLayout (RootLayout *layout, const char **why)
         return false;
       }
     }
+    // A dedicated userdata partition may back Data while unixnu continues to
+    // hold the flashed root image. Validate it as a second, independent window.
+    if (layout->storeFirst || layout->storeLast) {
+      if (layout->storeLast < layout->storeFirst) {
+        *why = "GPT store bounds";
+        return false;
+      }
+      for (uint32_t index = 0; index < count; index++) {
+        const uint8_t *other = gScratch + index * 128;
+        if (index == storeIndex || !rootEntryUsed (other)) continue;
+        if (layout->storeFirst <= le64 (other + 40) && le64 (other + 32) <= layout->storeLast) {
+          ROOT_LOG ("GPT store %llx..%llx overlaps entry %u %llx..%llx\n",
+                    layout->storeFirst, layout->storeLast, index, le64 (other + 32), le64 (other + 40));
+          *why = "GPT store overlap";
+          return false;
+        }
+      }
+    }
   }
   if (!found || layout->userdataLast < layout->userdataFirst) {
     *why = "no unixnu or userdata partition";
@@ -178,6 +200,9 @@ static bool findRootLayout (RootLayout *layout, const char **why)
   gRootDiagnostic.first = layout->userdataFirst;
   gRootDiagnostic.last = layout->userdataLast;
   ROOT_LOG ("%s root LBA %llx..%llx\n", selected, layout->userdataFirst, layout->userdataLast);
+  if (layout->storeFirst || layout->storeLast) {
+    ROOT_LOG ("separate Data store LBA %llx..%llx\n", layout->storeFirst, layout->storeLast);
+  }
   ROOT_STAGE ("root manifest");
   // First block of the partition: manifest if the root image was flashed, ext4 otherwise.
   if (hostRead4k (0, layout->userdataFirst, 1, gScratch) != kIOReturnSuccess) {

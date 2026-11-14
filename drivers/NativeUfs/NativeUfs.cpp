@@ -2225,8 +2225,15 @@ bool NativeUfs::startRoot (IOService *provider)
     IOFree (layout, sizeof (RootLayout));
     return false;
   }
-  gStoreGeometry = { true, layout->userdataFirst, layout->userdataLast, layout->imageBytes, layout->gptEntriesLba,
+  const bool separateStore = layout->storeFirst || layout->storeLast;
+  const uint64_t storeFirst = separateStore ? layout->storeFirst : layout->userdataFirst;
+  const uint64_t storeLast = separateStore ? layout->storeLast : layout->userdataLast;
+  const uint64_t storeImageBytes = separateStore ? 0 : layout->imageBytes;
+  gStoreGeometry = { true, storeFirst, storeLast, storeImageBytes, layout->gptEntriesLba,
                      layout->gptHeaderCrc, layout->gptEntriesCrc, layout->gptEntryCount };
+  if (separateStore) {
+    printf ("NativeUfs: separate Data store LBA %llx..%llx\n", storeFirst, storeLast);
+  }
   const char *names[4] = {};
   for (unsigned i = 0; i < layout->windows; ++i) names[i] = layout->window[i].name;
   if (!ufsBuildRootPlan (names, layout->windows, gPublicationPlan)) {
