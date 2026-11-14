@@ -73,6 +73,7 @@ class ArmCpu : public IOCPU {
   bool skipGic = false;
   bool diagnosePower = false;
   bool secondary = false;
+  bool bootInitialized = false;
   uint32_t logicalId = 0;
   bool mapGic (void);
   bool initDistributor (void);
@@ -722,19 +723,12 @@ bool ArmCpu::start (IOService *provider)
   }
   cpuName = OSSymbol::withCStringNoCopy ("ARM architectural boot CPU");
   if (cpuName == nullptr) { return false; }
-  boot_progress_stage ("ArmCpu processor register enter");
   ml_processor_info_t info = {};
   info.cpu_id = this;
   info.phys_id = physical;
   info.log_id = logicalId;
   info.cluster_id = static_cast<uint32_t> (ml_get_cluster_number (physical));
   info.cluster_type = ml_get_boot_cluster_type ();
-  perfmon_interrupt_handler_func pmi = nullptr;
-  kern_return_t status = ml_processor_register (&info, &machProcessor, &ipi_handler, &pmi);
-  if (status != KERN_SUCCESS) { panic ("ArmCpu: CPU %u registration failed: %d", logicalId, status); }
-  boot_progress_stage ("ArmCpu processor register returned");
-  setCPUNumber (info.log_id);
-  armcpu_registered = 1;
   unsigned smp = 0;
   PE_parse_boot_argn ("sheng-smp", &smp, sizeof (smp));
   gSmpWanted = smp != 0;
@@ -755,8 +749,17 @@ bool ArmCpu::start (IOService *provider)
   }
   boot_progress_stage ("ArmCpu IRQ controller returned");
   gController = controller;
+  // ml_processor_register() starts initCPU on newer kernels. Install the
+  // interrupt action first and do not initialize the timer/GIC a second time.
+  boot_progress_stage ("ArmCpu processor register enter");
+  perfmon_interrupt_handler_func pmi = nullptr;
+  kern_return_t status = ml_processor_register (&info, &machProcessor, &ipi_handler, &pmi);
+  if (status != KERN_SUCCESS) { panic ("ArmCpu: CPU %u registration failed: %d", logicalId, status); }
+  boot_progress_stage ("ArmCpu processor register returned");
+  setCPUNumber (info.log_id);
+  armcpu_registered = 1;
   boot_progress_stage ("ArmCpu initCPU enter");
-  initCPU (true);
+  if (!bootInitialized) { initCPU (true); }
   boot_progress_stage ("ArmCpu initCPU returned");
   registerService ();
   boot_progress_stage ("ArmCpu start returned");
@@ -876,6 +879,7 @@ void ArmCpu::initCPU (bool boot)
     // Explicit A/B hardware diagnostic: do not touch GIC MMIO or enable an
     // interrupt source. CPU registration still happens; the timer is left off.
     setCPUState (kIOCPUStateRunning);
+    bootInitialized = true;
     return;
   }
   boot_progress_stage ("ArmCpu initCPU boot path");
@@ -905,6 +909,7 @@ void ArmCpu::initCPU (bool boot)
   boot_progress_stage ("ArmCpu initCPU set state returned");
   if (gSelfIpi) { signalCPU (this); }
   boot_progress_stage ("ArmCpu initCPU returned");
+  bootInitialized = true;
 }
 
 void ArmCpu::dispatch (void *target, void *, void *, int)
