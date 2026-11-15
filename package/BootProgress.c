@@ -116,6 +116,8 @@ volatile uint64_t boot_progress_last_pc;
 volatile uint64_t boot_progress_observation[24];
 __attribute__((noinline)) void boot_progress_stop_checkpoint(void) { __asm__ volatile("" ::: "memory"); }
 
+extern int armcpu_timer_snapshot(uint64_t *, unsigned) __attribute__((weak_import));
+
 // The diagnostic page's TIMER row is a framebuffer overlay and can stop being useful when the
 // video console owns the display. Also emit the live values into the scrolling kernel console,
 // every five seconds during bring-up and every thirty seconds after five minutes.
@@ -212,7 +214,6 @@ extern volatile uint32_t __attribute__((weak_import)) armdt_platform_bus_count,a
 extern volatile uint32_t __attribute__((weak_import)) armdt_platform_nvram_proxy,armdt_platform_device_count;
 extern volatile int32_t __attribute__((weak_import)) armcpu_smp_psci_rc[8];
 extern volatile uint32_t __attribute__((weak_import)) armcpu_irq_phase,armcpu_irq_id,armcpu_quiesce_calls,armcpu_halt_calls;
-extern int armcpu_timer_snapshot(uint64_t *, unsigned) __attribute__((weak_import));
 extern int nprocs;
 extern volatile int native_owner_root_accepted;
 
