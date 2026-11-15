@@ -103,7 +103,7 @@ _Static_assert(offsetof(struct bp_panic_info,frame)==offsetof(struct vc_info,v_b
 static unsigned pulse_worker_status,bind_count,bind_result=3,bind_depth;
 static uintptr_t bind_base;
 static uint64_t irq_entries,irq_entry_pc;
-static unsigned enabled, busy, started, last_draw = ~0U;
+static unsigned enabled, monitor_only, busy, started, last_draw = ~0U;
 uint64_t boot_progress_epoch, boot_progress_frequency;
 static uint64_t irq_count, thread_count;
 static uint64_t last_pc, last_psr, last_sp;
@@ -651,7 +651,10 @@ void boot_progress_cancel_scanout(void) {
 }
 void boot_progress_init(void) {
   unsigned opt=0;
-  if (!PE_parse_boot_argn("boot-progress",&opt,sizeof(opt)) || (opt != 1 && opt != 2)) return;
+  if (!PE_parse_boot_argn("boot-progress",&opt,sizeof(opt)) || (opt != 1 && opt != 2)) opt=0;
+  uint32_t monitor=0;
+  monitor_only=PE_parse_boot_argn("boot-monitor",&monitor,sizeof(monitor)) && monitor==1;
+  if (!opt && !monitor_only) return;
   __asm__ volatile("mrs %0,cntfrq_el0" : "=r"(boot_progress_frequency));
   if (!boot_progress_frequency) return;
   boot_progress_epoch=ticks(); state.limit=120; state.stall=30;
@@ -1433,13 +1436,13 @@ static void monitor(void *arg, wait_result_t result) {
       if(attempt!=capture_attempt || !capturing)capture_at=now;
       capture_attempt=attempt;process_capture_age=capturing?now-capture_at:0;
     }
-    refresh(seconds());
+    if(!monitor_only)refresh(seconds());
     assert_wait_timeout((event_t)&thread_count,THREAD_UNINT,1000,NSEC_PER_MSEC);
     thread_block(THREAD_CONTINUE_NULL);
   }
 }
 void boot_progress_start(void) {
-  if (!enabled || started) return;
+  if ((!enabled && !monitor_only) || started) return;
   started=1;thread_t thread;
   uint32_t workers=1;
   if(PE_parse_boot_argn("boot-progress-workers",&workers,sizeof workers) && !workers) {
@@ -1450,6 +1453,7 @@ void boot_progress_start(void) {
     boot_progress_stage("monitor thread creation FAILED; IRQ sampling remains"); return;
   }
   thread_deallocate(thread);
+  if(monitor_only)return;
   __atomic_store_n(&pulse_worker_status,1,__ATOMIC_RELEASE);
   if(kernel_thread_start_priority(pulse_monitor,0,BASEPRI_PREEMPT_HIGH,&thread)==KERN_SUCCESS)thread_deallocate(thread);
   else __atomic_store_n(&pulse_worker_status,3,__ATOMIC_RELEASE);
