@@ -35,16 +35,22 @@
 #include <kern/clock.h>
 #include <kern/sched_prim.h>
 #include <kern/thread.h>
-#include <libkern/libkern.h>
 #include <mach/mach_types.h>
 #include <mach/vm_param.h>
 #include <pexpert/pexpert.h>
-#include <sys/systm.h>
 #include <vm/vm_kern.h>
 #include <vm/memory_types.h>
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern uint64_t kvtophys(vm_offset_t va);
+extern int printf(const char *, ...);
+extern int vsnprintf(char *, size_t, const char *, va_list);
+extern size_t strlcpy(char *, const char *, size_t);
+extern size_t strlen(const char *);
+extern int strcmp(const char *, const char *);
+extern int memcmp(const void *, const void *, size_t);
+extern void *memcpy(void *, const void *, size_t);
+extern void *memset(void *, int, size_t);
 
 /* Publication contract consumed by the original IOHIDDevice in NativeHidInput. */
 #define MI8_TOUCH_SLOTS 12
@@ -327,7 +333,7 @@ rpmh_address(const char *name)
 		const struct cmd_db_slave *slave = &db->slave[s];
 		const struct cmd_db_entry *entry = (const struct cmd_db_entry *)(db->data + slave->header_offset);
 
-		if (slave->id == 0 || slave->header_offset >= CMD_DB_SIZE - 0x1000 || slave->count > 512) {
+		if (slave->id == 0 || (uint32_t)slave->header_offset >= CMD_DB_SIZE - 0x1000 || slave->count > 512) {
 			continue;
 		}
 		for (unsigned i = 0; i < slave->count; i++) {
