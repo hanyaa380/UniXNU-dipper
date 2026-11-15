@@ -359,7 +359,7 @@ def compile_with(template, record, source, extra=()):
 
 probes = [KIT / 'LegacyDisplayProbe.cpp', KIT / 'HidInputProbe.cpp', KIT / 'KeyStoreProbe.cpp']
 probe_objs = [compile_with(cpp, r, source) for source in probes]
-c_sources = [KIT / 'BootProcessProbe.c', KIT / 'BootUiTraceProbe.c']
+c_sources = [KIT / 'BootProcessProbe.c', KIT / 'BootUiTraceProbe.c', KIT / 'A630GpuProbe.c']
 probe_objs += [compile_with(c, pr, source) for source in c_sources]
 
 # The drivers: NativeHidInput through UniXNU's qualification of the original IOHIDDevice, then NativeKeyStoreEvents and the presenter.

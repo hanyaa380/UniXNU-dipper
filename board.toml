@@ -207,6 +207,10 @@ kernel_args = [
 # Fixups of signed text, applied by the kernel after signature validation (patches/xnu/native-text-fixup.patch); they reach it as
 # /chosen/text-fixups, not on the command line. Each is <file name>,<file offset>,<original>,<replacement>, in hex.
 text_fixups = [
+  # Without a Metal device, CoreImage falls back to OpenGL ES and CUIShapeEffectStack's
+  # shared CIContext jumps through an empty GL dispatch table. Return nil instead, so the
+  # symbol rasterizer draws an empty glyph rather than crashing SpringBoard/iconservicesagent.
+  "dyld_shared_cache_arm64.11,34f3b84,979701944914d794,e0031faa4914d794",
   # +[AWAttentionAwarenessConfiguration initialize] (21H461) only forces +[AWClientPreferences initialize] and deadlocks
   # SpringBoard startup against it (ABBA between the main thread and Siri's SASMyriadController); it returns at once instead.
   "dyld_shared_cache_arm64.15,421e8bc,28ad1bb0008544f9,c0035fd6008544f9",

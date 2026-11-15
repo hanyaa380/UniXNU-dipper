@@ -481,11 +481,13 @@ void native_legacy_display_probe(void) {
 void native_legacy_display_late_probe(void);
 extern void native_hid_input_probe(void);
 extern void native_keystore_probe(void);
+extern void native_a630_gpu_probe(void);
 // fajita: sheng's sheng_cpufreq_probe (SM8550 EPSS), sheng_gpu_power_probe (Adreno 740) and native_touch_probe (Novatek over
 // GENI SPI) are not part of this board. The 6T's Synaptics S3706 sits on I2C (GENI SE4 of QUP wrapper 1) and has no driver yet,
 // so NativeHidInput only publishes its keyboard (Home) collection; see scripts/build-native-legacy-display.py.
 void native_legacy_display_late_probe(void) {
     native_keystore_probe();
+    native_a630_gpu_probe();
     native_hid_input_probe();
     IOService *display=pendingLegacyDisplay;if(!display)return;pendingLegacyDisplay=nullptr;
     native_legacy_surface_status=OSKextLoadKextWithIdentifier("com.apple.iokit.IOSurface");
