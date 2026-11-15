@@ -1,0 +1,38 @@
+diff --git a/libkern/c++/OSKext.cpp b/libkern/c++/OSKext.cpp
+index becc2f5..35a3a17 100644
+--- a/libkern/c++/OSKext.cpp
++++ b/libkern/c++/OSKext.cpp
+@@ -1710,6 +1710,33 @@ OSKextResetAfterUserspaceReboot(void)
+ 	OSKext::resetAfterUserspaceReboot();
+ }
+ 
++/*
++ * Board code built into the kernel registers its own classes into the kernel's kmod (preModLoad, its static constructors,
++ * postModLoad). OSKext::load takes sKextLock before preModLoad's class lock, and postModLoad looks its kext up under sKextLock,
++ * so a caller holding only the class lock deadlocks against a kext loading on an IOKit config thread: on asteroids (T75f) the
++ * boot thread sat in postModLoad waiting for sKextLock while IOConfigThread_'IOResources' held it in preModLoad, and the root
++ * disk's matching waited behind both. This takes the two locks in OSKext::load's order. Before OSKext is initialized no kext
++ * loads, and the class lock alone is taken.
++ */
++extern "C" OSReturn OSKextRegisterBoardClasses(const char *kextIdentifier, void (*constructors)(void));
++extern "C" OSReturn
++OSKextRegisterBoardClasses(const char *kextIdentifier, void (*constructors)(void))
++{
++	OSReturn result = kOSKextReturnNoMemory;
++	if (sKextLock) {
++		IORecursiveLockLock(sKextLock);
++	}
++	void *handle = OSMetaClass::preModLoad(kextIdentifier);
++	if (handle) {
++		constructors();
++		result = OSMetaClass::postModLoad(handle);
++	}
++	if (sKextLock) {
++		IORecursiveLockUnlock(sKextLock);
++	}
++	return result;
++}
++
+ /*
+  * Remove daemon exit requests from sKernelRequests
+  *
