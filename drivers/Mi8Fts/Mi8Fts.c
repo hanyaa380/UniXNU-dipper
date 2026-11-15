@@ -1476,10 +1476,15 @@ ftm5_start(void)
 	sleep_ms(10);
 	pin_set(PIN_RESET, CFG_OUTPUT_PULLUP_16MA, 1);
 	if (!ftm5_wait(ready, 1, 2000, event)) {
-		printf("fts: FTM5: no \"controller ready\" within 2 s of the reset: stopping\n");
-		return false;
+		/*
+		 * Replacement panels often omit the controller-ready notification. The stock
+		 * FTS driver keeps initializing after the same timeout, installs default system
+		 * info and issues Sense ON; touch then works. Do the same instead of aborting.
+		 */
+		printf("fts: FTM5: no \"controller ready\" within 2 s; continuing like stock FTS\n");
+	} else {
+		dump_bytes("FTM5 controller ready", event, FTM5_EVENT_SIZE);
 	}
-	dump_bytes("FTM5 controller ready", event, FTM5_EVENT_SIZE);
 
 	{
 		char mode[16] = { 0 };
@@ -1504,8 +1509,15 @@ ftm5_start(void)
 		printf("fts: FTM5: type %#x, api %u.%u, chip0 id %#06x, firmware version %#06x, config version %#06x\n", b[1], b[7], b[6],
 		    b[10] | b[11] << 8, b[16] | b[17] << 8, b[20] | b[21] << 8);
 	}
-	if (!ftm5_command(scan_on, sizeof(scan_on))) {
-		printf("fts: FTM5: scanning not confirmed; watching anyway\n");
+	bool scanning = false;
+	for (unsigned attempt = 0; attempt < 5 && !scanning; attempt++) {
+		scanning = ftm5_command(scan_on, sizeof(scan_on));
+		if (!scanning) {
+			sleep_ms(100);
+		}
+	}
+	if (!scanning) {
+		printf("fts: FTM5: scanning not confirmed after 5 attempts; watching anyway\n");
 	} else {
 		printf("fts: FTM5: scanning on (active mode)\n");
 	}
