@@ -117,6 +117,7 @@ volatile uint64_t boot_progress_observation[24];
 __attribute__((noinline)) void boot_progress_stop_checkpoint(void) { __asm__ volatile("" ::: "memory"); }
 
 extern int armcpu_timer_snapshot(uint64_t *, unsigned) __attribute__((weak_import));
+extern void mi8_fts_init(void) __attribute__((weak_import));
 
 // The diagnostic page's TIMER row is a framebuffer overlay and can stop being useful when the
 // video console owns the display. Also emit the live values into the scrolling kernel console,
@@ -1427,6 +1428,8 @@ static void monitor(void *arg, wait_result_t result) {
     if(boot_process_snapshot)boot_process_snapshot();
     if(boot_log_tick)boot_log_tick(now);
     timer_console_tick(now);
+    static int touch_started;
+    if(!touch_started && nprocs>0 && mi8_fts_init) {touch_started=1;mi8_fts_init();}
     if(sheng_cpufreq_poll)sheng_cpufreq_poll();
     if(native_touch_probe)native_touch_probe();
     if(boot_ui_trace_snapshot)boot_ui_trace_snapshot(now);
