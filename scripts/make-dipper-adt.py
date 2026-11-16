@@ -173,6 +173,9 @@ def main():
         # ~1950 live vnodes made vnode jetsam kill idle daemons about once a second (int-102 log). XNU reads the value from /defaults
         # before it clips; this is its own formula, memory/64K + 1024, for the iPad7,1's 4 GiB.
         node('defaults', [('sleep-disabled', struct.pack('<I', 1)), ('kern.maxvnodes', struct.pack('<I', 66560))]),
+        # The Data fixture is intentionally unencrypted and has no SEP-backed keybag.
+        # APFS checks this property before rejecting it on non-Apple hardware.
+        node('filesystems', [('DoNotUseSEP', struct.pack('<I', 1))]),
         node('options', []),
         # The original AppleImage4 panics without a product node. Name and model are the
         # board DT's own strings.

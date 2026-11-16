@@ -9,6 +9,7 @@
 #include <libkern/c++/OSKext.h>
 #include <pexpert/pexpert.h>
 #include <mach/kmod.h>
+#include "BoardClasses.h"
 extern kmod_info_t g_kernel_kmod_info;
 extern "C" void native_hid_static_init(void) __asm__("__GLOBAL__sub_I_NativeHidInput.cpp");
 extern "C" IOService *native_hid_input_allocate(void);
@@ -202,9 +203,8 @@ void native_hid_input_probe(void) {
         native_hid_resource_found=resource!=nullptr;
         unsigned sendHome=0;PE_parse_boot_argn("offline-hid-home",&sendHome,sizeof(sendHome));
         if(resource && sendHome==1 && native_hid_class_sizes[4]==208) {
-            void *handle=OSMetaClass::preModLoad(g_kernel_kmod_info.name);
-            if(handle) {
-                native_hid_static_init();native_hid_input_meta_status=OSMetaClass::postModLoad(handle);
+            native_hid_input_meta_status=OSKextRegisterBoardClasses(g_kernel_kmod_info.name,native_hid_static_init);
+            if(native_hid_input_meta_status!=kOSKextReturnNoMemory) {
                 if(!native_hid_input_meta_status) {
                     IOService *device=native_hid_input_allocate();
                     native_hid_input_object=(uintptr_t)device;

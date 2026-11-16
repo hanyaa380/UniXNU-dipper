@@ -3,7 +3,7 @@
 #ifndef SHENG_BOOT_PROGRESS_CORE_H
 #define SHENG_BOOT_PROGRESS_CORE_H
 #define BP_COLS 120
-#define BP_LOGS 14
+#define BP_LOGS 48
 #define BP_HISTORY 6
 struct bp_history { unsigned seconds; char text[BP_COLS]; };
 struct bp_core {

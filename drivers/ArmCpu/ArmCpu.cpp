@@ -73,6 +73,7 @@ class ArmCpu : public IOCPU {
   bool skipGic = false;
   bool diagnosePower = false;
   bool secondary = false;
+  bool bootInitialized = false;
   uint32_t logicalId = 0;
   bool mapGic (void);
   bool initDistributor (void);
@@ -355,6 +356,29 @@ static IOCPUInterruptController *gController = nullptr;
 static volatile uint32_t gGicShared = 0;
 static uint64_t gRedistStride = 0; // DT redistributor-stride; 0 = infer from GICR_TYPER.VLPIS
 volatile uint32_t armcpu_gic_stride = 0, armcpu_gic_typer_probe[2];
+
+// Read-only timer snapshot for the scrolling video console. The boot-progress monitor prints
+// this while the system is alive; a frozen last row therefore says whether the architectural
+// timer stopped, whether PPI 19 is pending, and whether the watchdog is still being petted.
+extern "C" int armcpu_timer_snapshot (uint64_t *out, unsigned count)
+{
+  if (out == nullptr || count < 6) {
+    return 0;
+  }
+  if (gFrames) {
+    const uintptr_t sgi = gFrames + 0x10000;
+    out[0] = read32 (sgi, 0x100);
+    out[1] = read32 (sgi, 0x200);
+    out[2] = read32 (sgi, 0x300);
+  } else {
+    out[0] = out[1] = out[2] = 0;
+  }
+  out[3] = gTimerIntid;
+  out[4] = armcpu_timer_interrupts;
+  out[5] = armcpu_wdog_pets;
+  return gFrames ? 1 : 0;
+}
+
 static bool gSmpWanted = false;
 // Secondary nubs never wait for the boot CPU (IOSleep needs the timer that only the boot nub enables): they queue here and
 // the boot nub, or a late secondary once the boot CPU is registered, finishes them.
@@ -722,19 +746,12 @@ bool ArmCpu::start (IOService *provider)
   }
   cpuName = OSSymbol::withCStringNoCopy ("ARM architectural boot CPU");
   if (cpuName == nullptr) { return false; }
-  boot_progress_stage ("ArmCpu processor register enter");
   ml_processor_info_t info = {};
   info.cpu_id = this;
   info.phys_id = physical;
   info.log_id = logicalId;
   info.cluster_id = static_cast<uint32_t> (ml_get_cluster_number (physical));
   info.cluster_type = ml_get_boot_cluster_type ();
-  perfmon_interrupt_handler_func pmi = nullptr;
-  kern_return_t status = ml_processor_register (&info, &machProcessor, &ipi_handler, &pmi);
-  if (status != KERN_SUCCESS) { panic ("ArmCpu: CPU %u registration failed: %d", logicalId, status); }
-  boot_progress_stage ("ArmCpu processor register returned");
-  setCPUNumber (info.log_id);
-  armcpu_registered = 1;
   unsigned smp = 0;
   PE_parse_boot_argn ("sheng-smp", &smp, sizeof (smp));
   gSmpWanted = smp != 0;
@@ -755,8 +772,17 @@ bool ArmCpu::start (IOService *provider)
   }
   boot_progress_stage ("ArmCpu IRQ controller returned");
   gController = controller;
+  // ml_processor_register() starts initCPU on newer kernels. Install the
+  // interrupt action first and do not initialize the timer/GIC a second time.
+  boot_progress_stage ("ArmCpu processor register enter");
+  perfmon_interrupt_handler_func pmi = nullptr;
+  kern_return_t status = ml_processor_register (&info, &machProcessor, &ipi_handler, &pmi);
+  if (status != KERN_SUCCESS) { panic ("ArmCpu: CPU %u registration failed: %d", logicalId, status); }
+  boot_progress_stage ("ArmCpu processor register returned");
+  setCPUNumber (info.log_id);
+  armcpu_registered = 1;
   boot_progress_stage ("ArmCpu initCPU enter");
-  initCPU (true);
+  if (!bootInitialized) { initCPU (true); }
   boot_progress_stage ("ArmCpu initCPU returned");
   registerService ();
   boot_progress_stage ("ArmCpu start returned");
@@ -876,6 +902,7 @@ void ArmCpu::initCPU (bool boot)
     // Explicit A/B hardware diagnostic: do not touch GIC MMIO or enable an
     // interrupt source. CPU registration still happens; the timer is left off.
     setCPUState (kIOCPUStateRunning);
+    bootInitialized = true;
     return;
   }
   boot_progress_stage ("ArmCpu initCPU boot path");
@@ -905,6 +932,7 @@ void ArmCpu::initCPU (bool boot)
   boot_progress_stage ("ArmCpu initCPU set state returned");
   if (gSelfIpi) { signalCPU (this); }
   boot_progress_stage ("ArmCpu initCPU returned");
+  bootInitialized = true;
 }
 
 void ArmCpu::dispatch (void *target, void *, void *, int)

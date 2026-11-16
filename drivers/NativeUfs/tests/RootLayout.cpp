@@ -12,15 +12,18 @@ using IOReturn=uint32_t;
 constexpr IOReturn kIOReturnSuccess=0;
 constexpr unsigned kDataMax=131072;
 static UfsRootDiagnostics gRootDiagnostic;
+static char gRootManifestText[900];
+#define ROOT_STAGE(...) do {} while (0)
+#define ROOT_LOG(...) do {} while (0)
 static uint8_t header[4096],entries[16384],manifest[4096];
-static uint64_t userdata=8;
+static uint64_t userdata=8,unixnu=100;
 static unsigned reads;
 static bool failRead;
 static IOReturn hostRead4k(uint8_t,uint64_t lba,uint32_t blocks,void *out) {
   ++reads; if(failRead) return 1;
   if(lba==1 && blocks==1) memcpy(out,header,4096);
   else if(lba==2 && blocks<=4) memcpy(out,entries,blocks*4096);
-  else if(lba==userdata && blocks==1) memcpy(out,manifest,4096);
+  else if((lba==userdata || lba==unixnu) && blocks==1) memcpy(out,manifest,4096);
   else { assert(false); }
   return 0;
 }
@@ -34,12 +37,14 @@ static void checksums() {
 }
 static void fixture() {
   memset(header,0,sizeof(header)); memset(entries,0,sizeof(entries)); memset(manifest,0,sizeof(manifest));
-  reads=0; failRead=false; userdata=8;
+  reads=0; failRead=false; userdata=8; unixnu=100;
   memcpy(header,"EFI PART",8); put32(header+8,0x10000);put32(header+12,92);
   put64(header+24,1);put64(header+32,511);put64(header+40,6);put64(header+48,506);
   put64(header+72,2);put32(header+80,32);put32(header+84,128);
-  entries[0]=1; entries[16]=2;put64(entries+32,8);put64(entries+40,506);
-  for(unsigned i=0;i<8;++i)entries[56+2*i]="userdata"[i];
+  entries[0]=1; entries[16]=2;put64(entries+32,8);put64(entries+40,90);
+  for(unsigned i=0;i<10;++i)entries[56+2*i]=static_cast<uint8_t>("unixnudata"[i]);
+  entries[128]=1; entries[144]=2;put64(entries+128+32,unixnu);put64(entries+128+40,200);
+  for(unsigned i=0;i<6;++i)entries[184+2*i]=static_cast<uint8_t>("unixnu"[i]);
   memcpy(manifest,"SHNGROOT",8);put32(manifest+8,1);put32(manifest+12,2);put64(manifest+16,65536);
   for(unsigned i=0;i<2;++i) {
     uint8_t *e=manifest+24+i*128;strcpy(reinterpret_cast<char *>(e),i?"SystemOS":"OS");
@@ -55,7 +60,30 @@ static void expect(const std::function<void()> &change,bool gpt,uint32_t status,
 }
 int main(int argc,char **argv) {
   assert(rootCrc32(reinterpret_cast<const uint8_t *>("123456789"),9)==0xcbf43926);
-  expect([]{},true,0);
+  {
+    fixture(); RootLayout layout; const char *why=nullptr;
+    assert(findRootLayout(&layout,&why) && layout.manifestStatus==0);
+    assert(layout.userdataFirst==100 && layout.userdataLast==200);
+    assert(layout.storeFirst==8 && layout.storeLast==90);
+  }
+  {
+    fixture();
+    for(unsigned i=0;i<10;++i)entries[56+2*i]=0;
+    for(unsigned i=0;i<8;++i)entries[56+2*i]=static_cast<uint8_t>("userdata"[i]);
+    checksums(); RootLayout layout; const char *why=nullptr;
+    assert(findRootLayout(&layout,&why) && layout.manifestStatus==0);
+    assert(layout.userdataFirst==100 && layout.userdataLast==200);
+    assert(layout.storeFirst==8 && layout.storeLast==90);
+  }
+  {
+    fixture();
+    for(unsigned i=0;i<10;++i)entries[56+2*i]=0;
+    for(unsigned i=0;i<8;++i)entries[56+2*i]=static_cast<uint8_t>("userdata"[i]);
+    entries[128]=0; checksums(); RootLayout layout; const char *why=nullptr;
+    assert(findRootLayout(&layout,&why) && layout.manifestStatus==0);
+    assert(layout.userdataFirst==8 && layout.userdataLast==90);
+    assert(layout.storeFirst==0 && layout.storeLast==0);
+  }
   expect([]{header[16]^=1;},false,0,false);
   expect([]{entries[16]^=1;},false,0,false);
   expect([]{put32(header+12,4097);},false,0);
@@ -67,7 +95,7 @@ int main(int argc,char **argv) {
   expect([]{put64(header+48,511);},false,0);
   expect([]{put64(entries+32,1);},false,0);
   expect([]{put64(entries+40,UINT64_MAX);},false,0);
-  expect([]{entries[0]=0;},false,0);
+  expect([]{entries[0]=0;entries[128]=0;},false,0);
   expect([]{memcpy(entries+128,entries,128);},false,0);
   expect([]{memcpy(entries+128,entries,128);put64(entries+40,100);put64(entries+128+32,101);},false,0);
   expect([]{failRead=true;},false,0);

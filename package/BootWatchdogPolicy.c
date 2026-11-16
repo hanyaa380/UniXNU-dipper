@@ -29,7 +29,10 @@ static const char lite_jobs[]=
  // Crash or respawn loops seen on hardware (int-176): fairplayd.A2 is KeepAlive and exits at once (22 launches in 6 minutes), passd crashes,
  // obliteration is a data-wipe daemon with nothing to do here. iconservicesagent also dies in CI::GLContext::init, but disabling it leaves
  // the icons missing (seen on hardware), so it stays enabled.
- "com.apple.fairplayd.A2,com.apple.passd,com.apple.mobile.obliteration";
+ "com.apple.fairplayd.A2,com.apple.passd,com.apple.mobile.obliteration,"
+ // They require a Data Vault that this bring-up Data volume cannot provide and otherwise
+ // respawn forever while Setup/SpringBoard is starting.
+ "com.apple.ScreenTimeAgent,com.apple.PerfPowerServices,com.apple.PerfPowerServicesExtended";
 static char policy[2048],jobs[200];
 volatile int sheng_watchdog_policy_status=-1;
 
