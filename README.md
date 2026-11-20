@@ -2,6 +2,10 @@
 
 Bring-up repository for the standard Xiaomi Mi 8 (`dipper`, Snapdragon 845).
 
+中文说明：[README.zh-CN.md](README.zh-CN.md)
+
+开源来源与致谢：[CREDITS.md](CREDITS.md)
+
 This repository starts from UniXNU-fajita because both devices use SDM845. The first milestone is deliberately
 narrow: build a Mu-Silicium firmware volume containing UniXNU and DarwinBoot, boot it with `fastboot boot`, and
 reach the UniXNU menu with an empty ramdisk.
