@@ -102,6 +102,29 @@ extern volatile uint32_t native_a630_gpu_gmu_boot_old __attribute__((weak_import
 extern volatile uint32_t native_a630_gpu_gmu_boot_want __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_boot_got __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_restore_bad __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_smmu_scr0 __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_smmu_sacr __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_smmu_id0 __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_smmu_id1 __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_smmu_id2 __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_smmu_id7 __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_smmu_sgfsr __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_smmu_sgfsynr0 __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_smmu_num_smr __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_smmu_num_cb __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_smmu_page_size __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_smmu_cb_base __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_smmu_used_cb __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_smmu_smr[16] __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_smmu_s2cr[16] __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_smmu_cbar[16] __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_smmu_cba2r[16] __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_smmu_cb_sctlr[16] __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_smmu_cb_ttbr0_lo[16] __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_smmu_cb_ttbr0_hi[16] __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_smmu_cb_tcr[16] __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_smmu_cb_mair0[16] __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_smmu_cb_fsr[16] __attribute__((weak_import));
 extern volatile int native_staged_apps_dirs __attribute__((weak_import));
 extern volatile int native_staged_apps_files __attribute__((weak_import));
 extern volatile int native_staged_apps_mib __attribute__((weak_import));
@@ -366,6 +389,36 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
              native_a630_gpu_gmu_boot_old, native_a630_gpu_gmu_boot_want,
              native_a630_gpu_gmu_boot_got);
     at = put(out, at, cap, row, sizeof row);
+  }
+  if (&native_a630_gpu_smmu_scr0 && native_a630_gpu_stage >= 11) {
+    char row[220];
+    snprintf(row, sizeof row, "[a630s] scr0=%08x sacr=%08x id0=%08x id1=%08x id2=%08x "
+             "id7=%08x fsr=%08x syn=%08x smr=%u cb=%u used=%u page=%x base=%x",
+             native_a630_gpu_smmu_scr0, native_a630_gpu_smmu_sacr,
+             native_a630_gpu_smmu_id0, native_a630_gpu_smmu_id1,
+             native_a630_gpu_smmu_id2, native_a630_gpu_smmu_id7,
+             native_a630_gpu_smmu_sgfsr, native_a630_gpu_smmu_sgfsynr0,
+             native_a630_gpu_smmu_num_smr, native_a630_gpu_smmu_num_cb,
+             native_a630_gpu_smmu_used_cb, native_a630_gpu_smmu_page_size,
+             native_a630_gpu_smmu_cb_base);
+    at = put(out, at, cap, row, sizeof row);
+    for (unsigned i = 0; i < native_a630_gpu_smmu_num_smr && i < 16; ++i) {
+      snprintf(row, sizeof row, "[a630r%u] smr=%08x s2cr=%08x", i,
+               native_a630_gpu_smmu_smr[i], native_a630_gpu_smmu_s2cr[i]);
+      at = put(out, at, cap, row, sizeof row);
+    }
+    for (unsigned i = 0; i < native_a630_gpu_smmu_num_cb && i < 16; ++i) {
+      snprintf(row, sizeof row, "[a630c%u] cbar=%08x cba2r=%08x sctlr=%08x "
+               "ttbr0=%08x/%08x tcr=%08x mair0=%08x fsr=%08x", i,
+               native_a630_gpu_smmu_cbar[i], native_a630_gpu_smmu_cba2r[i],
+               native_a630_gpu_smmu_cb_sctlr[i],
+               native_a630_gpu_smmu_cb_ttbr0_hi[i],
+               native_a630_gpu_smmu_cb_ttbr0_lo[i],
+               native_a630_gpu_smmu_cb_tcr[i],
+               native_a630_gpu_smmu_cb_mair0[i],
+               native_a630_gpu_smmu_cb_fsr[i]);
+      at = put(out, at, cap, row, sizeof row);
+    }
   }
   // SDM845 Adreno 630 qualification. Keep a dedicated row so early printf
   // output cannot be lost from the rolling console ring.
