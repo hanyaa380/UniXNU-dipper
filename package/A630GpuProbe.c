@@ -84,6 +84,37 @@ volatile uint32_t native_a630_gpu_gmu_cm3_cfg;
 volatile uint32_t native_a630_gpu_gmu_hfi_status;
 volatile uint32_t native_a630_gpu_gmu_counter_lo;
 volatile uint32_t native_a630_gpu_gmu_counter_hi;
+volatile uint32_t native_a630_gpu_gmu_boot_count;
+volatile uint32_t native_a630_gpu_gmu_boot_bad;
+volatile uint32_t native_a630_gpu_gmu_boot_index;
+volatile uint32_t native_a630_gpu_gmu_boot_old;
+volatile uint32_t native_a630_gpu_gmu_boot_want;
+volatile uint32_t native_a630_gpu_gmu_boot_got;
+volatile uint32_t native_a630_gpu_gmu_restore_bad;
+
+static const struct a630_gmu_boot_reg {
+	const char *name;
+	uint32_t word;
+	uint32_t value;
+} a630_gmu_boot_regs[] = {
+	{ "GMU_GENERAL_7", 0x51cc, 1 },
+	{ "GMU_CM3_FW_INIT_RESULT", 0x501c, 0 },
+	{ "GMU_CM3_BOOT_CONFIG", 0x5001, 2 },
+	{ "GMU_HFI_QTBL_ADDR", 0x5185, 0x60009000 },
+	{ "GMU_HFI_QTBL_INFO", 0x5184, 1 },
+	{ "GMU_AHB_FENCE_RANGE_0", 0x9311, 0x802800a0 },
+	{ "GMU_CM3_CFG", 0x502d, 0x4052 },
+	{ "GMU_HFI_SFR_ADDR", 0x5182, 0x6030100 },
+	{ "GPU_GMU_CX_GMU_PWR_COL_CP_MSG", 0x5100, 0x60005003 },
+	{ "GMU_SYS_BUS_CONFIG", 0x4c0f, 1 },
+	{ "GMU_ICACHE_CONFIG", 0x4c00, 1 },
+	{ "GMU_DCACHE_CONFIG", 0x4c01, 1 },
+	{ "GMU_PWR_COL_INTER_FRAME_CTRL", 0x50c0, 0x09c40400 },
+	{ "GMU_RPMH_CTRL", 0x50e8, 0xf11 },
+	{ "GPU_GMU_CX_GMU_PWR_COL_CP_RESP", 0x5101, 0 },
+};
+
+#define A630_GMU_BOOT_REGS (sizeof(a630_gmu_boot_regs) / sizeof(a630_gmu_boot_regs[0]))
 
 static inline uint32_t
 rd(volatile uint8_t *base, uint32_t offset)
@@ -352,8 +383,88 @@ native_a630_gpu_probe(void)
 			return;
 		}
 		native_a630_gpu_gmu_counter_lo = counter;
+
+		if (enabled < 4) {
+			native_a630_gpu_status = 0;
+			printf("a630gpu: stage 3 complete: GMU runs at 200MHz and its registers respond; reset/firmware/SMMU untouched\n");
+			return;
+		}
+
+		native_a630_gpu_stage = 9;
+		if (rd(gmu, GMU_WORD(GMU_CM3_SYSRESET_W)) != 1) {
+			native_a630_gpu_status = 13;
+			printf("a630gpu: CM3 is not held in reset before boot preflight\n");
+			return;
+		}
+
+		uint32_t old[A630_GMU_BOOT_REGS];
+		uint32_t written = 0;
+		for (uint32_t i = 0; i < A630_GMU_BOOT_REGS; i++) {
+			uint32_t value = a630_gmu_boot_regs[i].value;
+			old[i] = rd(gmu, GMU_WORD(a630_gmu_boot_regs[i].word));
+			if (a630_gmu_boot_regs[i].word == GMU_RPMH_CTRL_W) {
+				value |= old[i];
+			}
+			wr(gmu, GMU_WORD(a630_gmu_boot_regs[i].word), value);
+			uint32_t got = rd(gmu, GMU_WORD(a630_gmu_boot_regs[i].word));
+			written = i + 1;
+			printf("a630gpu: boot[%u] %s old %#010x want %#010x got %#010x\n",
+			    i, a630_gmu_boot_regs[i].name, old[i], value, got);
+			if (got != value) {
+				native_a630_gpu_gmu_boot_bad = 1;
+				native_a630_gpu_gmu_boot_index = i;
+				native_a630_gpu_gmu_boot_old = old[i];
+				native_a630_gpu_gmu_boot_want = value;
+				native_a630_gpu_gmu_boot_got = got;
+				native_a630_gpu_status = 14;
+				break;
+			}
+		}
+		native_a630_gpu_gmu_boot_count = written;
+
+		uint32_t restore_bad = 0;
+		for (uint32_t i = written; i > 0; i--) {
+			uint32_t index = i - 1;
+			uint32_t got;
+
+			wr(gmu, GMU_WORD(a630_gmu_boot_regs[index].word), old[index]);
+			got = rd(gmu, GMU_WORD(a630_gmu_boot_regs[index].word));
+			if (got != old[index]) {
+				if (!restore_bad) {
+					native_a630_gpu_gmu_boot_index = index;
+					native_a630_gpu_gmu_boot_old = old[index];
+					native_a630_gpu_gmu_boot_got = got;
+				}
+				restore_bad++;
+				printf("a630gpu: boot restore[%u] %s want %#010x got %#010x\n",
+				    index, a630_gmu_boot_regs[index].name, old[index], got);
+			}
+		}
+		native_a630_gpu_gmu_restore_bad = restore_bad;
+		native_a630_gpu_gmu_sysreset = rd(gmu, GMU_WORD(GMU_CM3_SYSRESET_W));
+		native_a630_gpu_gmu_boot_config = rd(gmu, GMU_WORD(GMU_CM3_BOOT_CONFIG_W));
+		native_a630_gpu_gmu_init_result = rd(gmu, GMU_WORD(GMU_CM3_FW_INIT_RESULT_W));
+		native_a630_gpu_gmu_cm3_cfg = rd(gmu, GMU_WORD(GMU_CM3_CFG_W));
+		if (restore_bad) {
+			native_a630_gpu_status = 15;
+			printf("a630gpu: GMU boot preflight restore failed: %u mismatches\n", restore_bad);
+			return;
+		}
+		if (native_a630_gpu_gmu_sysreset != 1) {
+			native_a630_gpu_status = 16;
+			printf("a630gpu: CM3 reset changed during boot preflight\n");
+			return;
+		}
+		native_a630_gpu_stage = 10;
+		if (native_a630_gpu_gmu_boot_bad) {
+			printf("a630gpu: GMU boot preflight failed at register %u\n",
+			    native_a630_gpu_gmu_boot_index);
+			return;
+		}
+		printf("a630gpu: GMU boot preflight: %u registers written, read back and restored; CM3 still held\n",
+		    written);
 	}
 
 	native_a630_gpu_status = 0;
-	printf("a630gpu: stage 3 complete: GMU runs at 200MHz and its registers respond; reset/firmware/SMMU untouched\n");
+	printf("a630gpu: stage 4 complete: GMU boot registers are writable; reset/firmware/SMMU untouched\n");
 }
