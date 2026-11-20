@@ -2,6 +2,34 @@
 
 Bring-up repository for the standard Xiaomi Mi 8 (`dipper`, Snapdragon 845).
 
+## 中文说明
+
+本仓库是 Xiaomi Mi 8（代号 `dipper`，Qualcomm Snapdragon 845）的
+UniXNU 设备移植与真机启动链工程。项目从 SDM845 平台的
+UniXNU-fajita 工程起步，逐步补齐 Mu-Silicium UEFI、DarwinBoot、XNU、
+UFS/APFS、显示、HID、触摸以及 GPU 资格检查。
+
+当前真机已经完成：
+
+- Mu-Silicium UEFI、UniXNU 菜单和 DarwinBoot 启动链；
+- 8 核 CPU、GIC、UFS、SMMU、APFS 和 Data 挂载；
+- launchd、backboardd、SpringBoard 和 iOS 用户态启动；
+- ST FTS 触摸，可操作 SpringBoard、初始引导和 Settings；
+- CPU framebuffer 显示、Apple Logo、进度条和用户界面呈现；
+- iOS 17.7.11（21H461）用户态下可进入 Settings。
+
+当前仍在进行：
+
+- Adreno 630 / GMU / HFI / SMMU 和 Metal 用户态 GPU 接入；
+- 首次设置状态修复与持久化 Data 分区；
+- Wi-Fi、蓝牙、音频、充电、相机等剩余外设。
+
+本项目只发布源码、补丁、构建脚本和诊断工具，不包含 Apple
+kernelcache、IPSW、ADT、iOS 根卷、私有密钥或用户数据。使用者必须从
+自己合法取得的系统镜像中提取输入文件。
+
+完整的仓库、人员及社区参考致谢见 [CREDITS.md](CREDITS.md)。
+
 This repository starts from UniXNU-fajita because both devices use SDM845. The first milestone is deliberately
 narrow: build a Mu-Silicium firmware volume containing UniXNU and DarwinBoot, boot it with `fastboot boot`, and
 reach the UniXNU menu with an empty ramdisk.
@@ -21,10 +49,12 @@ reach the UniXNU menu with an empty ramdisk.
 | Payload FAT | Works from the existing FAT `logfs` partition on hardware |
 | EFI payload | `HelloPayload.efi` runs and returns through UniXNU on hardware |
 | DarwinBoot | Synthetic ARM64 Mach-O/ADT handoff reaches EL1 and paints the framebuffer green |
-| Real XNU kernel | Source kernel builds and prelinks; UFS, APFS, SystemOS/Data, launchd and the early userland have booted on hardware |
+| Real XNU kernel | Source kernel builds and prelinks; UFS, APFS, SystemOS/Data, launchd and userland boot on hardware |
 | SMP | Eight logical CPUs have reached Running through PSCI/SMC |
-| Display and userland transition | Logo and progress bar work; backboardd/SpringBoard transition remains the current blocker |
-| Touch, charging, GPU | Not fully implemented or verified for dipper |
+| Display and userland transition | CPU framebuffer, Logo, progress bar, SpringBoard and Settings work |
+| Touch | ST FTS works through NativeHidInput, IOHIDEventDriver and backboardd |
+| GPU | A630 read-only qualification probe is integrated; GMU/Metal acceleration is in progress |
+| Charging and other peripherals | Partial or not yet implemented |
 
 The standard Mi 8 is `dipper`. The screen-fingerprint/UD model is normally `equuleus`; this repository targets
 `dipper`, although it uses equuleus vendor DXE binaries as the closest available SDM845 donor set.
@@ -100,13 +130,21 @@ phone to a normal Android configuration.
 
 ## Next stages
 
-1. Boot the UEFI firmware and UniXNU menu on hardware.
-2. Confirm `DipperBootMemoryDxe`, FAT payload parsing and EFI payload startup.
-3. Confirm DarwinBoot's Mach-O, ADT, boot-services exit and EL1 handoff. Complete.
-4. Build and prelink an SDM845 XNU kernel containing `NativeUfs`, `NativeLegacyDisplay` and boot progress.
-5. Measure dipper's `userdata` GPT geometry and DRAM size, then build and validate the target userdata.
-6. Verify dipper's UFS/SMMU, display, touch and power paths on hardware.
-7. Validate Data, launchd and userland before enabling optional services.
+1. Complete and validate the Adreno 630 clock, power, GMU/HFI, SMMU and
+   command-submission backend.
+2. Integrate the official UniXNU AdrenoMetal/Turnip path and render a
+   known image before enabling the desktop renderer.
+3. Resolve the first-setup `WFBuddyViewController` duplicate-push failure
+   and move from the temporary 2 GiB Data seed to persistent storage.
+4. Add charging, Wi-Fi, Bluetooth, audio, camera and other missing
+   peripherals.
+
+## Acknowledgements
+
+This project builds directly on UniXNU, Mu-Silicium, the SDM845 fajita
+bring-up, Xiaomi's released kernel sources and several community hardware
+references. Repository-level and person-level credits are maintained in
+[CREDITS.md](CREDITS.md).
 
 The bring-up firmware currently uses a 32 MiB DarwinBoot window because the
 dipper UEFI allocator stalls on a single 258 MiB allocation. A real XNU image
