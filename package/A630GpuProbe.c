@@ -61,6 +61,29 @@ extern int printf(const char *, ...);
 #define GMU_AO_COUNTER_LO_W      0x5088u
 #define GMU_AO_COUNTER_HI_W      0x5089u
 
+#define SMMU_PHYS                0x05040000UL
+#define SMMU_SIZE                0x10000UL
+#define SMMU_SCR0                0x000u
+#define SMMU_SACR                0x010u
+#define SMMU_ID0                 0x020u
+#define SMMU_ID1                 0x024u
+#define SMMU_ID2                 0x028u
+#define SMMU_ID7                 0x03cu
+#define SMMU_SGFSR               0x048u
+#define SMMU_SGFSYNR0            0x050u
+#define SMMU_SMR(n)              (0x800u + 4u * (n))
+#define SMMU_S2CR(n)             (0xc00u + 4u * (n))
+#define SMMU_GR1                 0x1000u
+#define SMMU_CBAR(n)             (SMMU_GR1 + 4u * (n))
+#define SMMU_CBA2R(n)            (SMMU_GR1 + 0x800u + 4u * (n))
+#define SMMU_CB_SCTLR            0x00u
+#define SMMU_CB_TTBR0_LO         0x20u
+#define SMMU_CB_TTBR0_HI         0x24u
+#define SMMU_CB_TCR              0x30u
+#define SMMU_CB_MAIR0            0x38u
+#define SMMU_CB_FSR              0x58u
+#define A630_SMMU_ROWS           16u
+
 volatile uint32_t native_a630_gpu_stage;
 volatile uint32_t native_a630_gpu_status;
 volatile uint32_t native_a630_gpu_votes;
@@ -91,6 +114,29 @@ volatile uint32_t native_a630_gpu_gmu_boot_old;
 volatile uint32_t native_a630_gpu_gmu_boot_want;
 volatile uint32_t native_a630_gpu_gmu_boot_got;
 volatile uint32_t native_a630_gpu_gmu_restore_bad;
+volatile uint32_t native_a630_gpu_smmu_scr0;
+volatile uint32_t native_a630_gpu_smmu_sacr;
+volatile uint32_t native_a630_gpu_smmu_id0;
+volatile uint32_t native_a630_gpu_smmu_id1;
+volatile uint32_t native_a630_gpu_smmu_id2;
+volatile uint32_t native_a630_gpu_smmu_id7;
+volatile uint32_t native_a630_gpu_smmu_sgfsr;
+volatile uint32_t native_a630_gpu_smmu_sgfsynr0;
+volatile uint32_t native_a630_gpu_smmu_num_smr;
+volatile uint32_t native_a630_gpu_smmu_num_cb;
+volatile uint32_t native_a630_gpu_smmu_page_size;
+volatile uint32_t native_a630_gpu_smmu_cb_base;
+volatile uint32_t native_a630_gpu_smmu_used_cb;
+volatile uint32_t native_a630_gpu_smmu_smr[A630_SMMU_ROWS];
+volatile uint32_t native_a630_gpu_smmu_s2cr[A630_SMMU_ROWS];
+volatile uint32_t native_a630_gpu_smmu_cbar[A630_SMMU_ROWS];
+volatile uint32_t native_a630_gpu_smmu_cba2r[A630_SMMU_ROWS];
+volatile uint32_t native_a630_gpu_smmu_cb_sctlr[A630_SMMU_ROWS];
+volatile uint32_t native_a630_gpu_smmu_cb_ttbr0_lo[A630_SMMU_ROWS];
+volatile uint32_t native_a630_gpu_smmu_cb_ttbr0_hi[A630_SMMU_ROWS];
+volatile uint32_t native_a630_gpu_smmu_cb_tcr[A630_SMMU_ROWS];
+volatile uint32_t native_a630_gpu_smmu_cb_mair0[A630_SMMU_ROWS];
+volatile uint32_t native_a630_gpu_smmu_cb_fsr[A630_SMMU_ROWS];
 
 static const struct a630_gmu_boot_reg {
 	const char *name;
@@ -463,8 +509,109 @@ native_a630_gpu_probe(void)
 		}
 		printf("a630gpu: GMU boot preflight: %u registers written, read back and restored; CM3 still held\n",
 		    written);
+
+		if (enabled < 5) {
+			native_a630_gpu_status = 0;
+			printf("a630gpu: stage 4 complete: GMU boot registers are writable; reset/firmware/SMMU untouched\n");
+			return;
+		}
+
+		native_a630_gpu_stage = 11;
+		if (!(native_a630_gpu_cx_gdscr & GDSC_PWR_ON) ||
+		    (native_a630_gpu_memnoc & CBCR_OFF)) {
+			native_a630_gpu_status = 17;
+			printf("a630gpu: CX or MEMNOC is off; GPU SMMU is deliberately not mapped\n");
+			return;
+		}
+
+		volatile uint8_t *smmu = (volatile uint8_t *)ml_io_map(SMMU_PHYS, SMMU_SIZE);
+		if (smmu == NULL) {
+			native_a630_gpu_status = 18;
+			printf("a630gpu: GPU SMMU mapping failed\n");
+			return;
+		}
+
+		native_a630_gpu_smmu_scr0 = rd(smmu, SMMU_SCR0);
+		native_a630_gpu_smmu_sacr = rd(smmu, SMMU_SACR);
+		native_a630_gpu_smmu_id0 = rd(smmu, SMMU_ID0);
+		native_a630_gpu_smmu_id1 = rd(smmu, SMMU_ID1);
+		native_a630_gpu_smmu_id2 = rd(smmu, SMMU_ID2);
+		native_a630_gpu_smmu_id7 = rd(smmu, SMMU_ID7);
+		native_a630_gpu_smmu_sgfsr = rd(smmu, SMMU_SGFSR);
+		native_a630_gpu_smmu_sgfsynr0 = rd(smmu, SMMU_SGFSYNR0);
+		native_a630_gpu_smmu_num_smr = native_a630_gpu_smmu_id0 & 0xff;
+		native_a630_gpu_smmu_num_cb = native_a630_gpu_smmu_id1 & 0xff;
+		native_a630_gpu_smmu_page_size =
+		    (native_a630_gpu_smmu_id1 & (1u << 31)) ? 0x10000 : 0x1000;
+		native_a630_gpu_smmu_cb_base =
+		    (1u << (((native_a630_gpu_smmu_id1 >> 28) & 7) + 1)) *
+		    native_a630_gpu_smmu_page_size;
+
+		printf("a630gpu: GPU SMMU SCR0 %#010x SACR %#010x ID0 %#010x ID1 %#010x ID2 %#010x ID7 %#010x\n",
+		    native_a630_gpu_smmu_scr0, native_a630_gpu_smmu_sacr,
+		    native_a630_gpu_smmu_id0, native_a630_gpu_smmu_id1,
+		    native_a630_gpu_smmu_id2, native_a630_gpu_smmu_id7);
+		printf("a630gpu: GPU SMMU SMR %u CB %u page %#x CB base %#x fault %#010x/%#010x\n",
+		    native_a630_gpu_smmu_num_smr, native_a630_gpu_smmu_num_cb,
+		    native_a630_gpu_smmu_page_size, native_a630_gpu_smmu_cb_base,
+		    native_a630_gpu_smmu_sgfsr, native_a630_gpu_smmu_sgfsynr0);
+
+		uint64_t context_end = (uint64_t)native_a630_gpu_smmu_cb_base +
+		    (uint64_t)native_a630_gpu_smmu_num_cb * native_a630_gpu_smmu_page_size;
+		if (native_a630_gpu_smmu_cb_base >= SMMU_SIZE ||
+		    context_end > SMMU_SIZE) {
+			native_a630_gpu_status = 19;
+			printf("a630gpu: GPU SMMU context layout is outside the mapped window: end %#llx\n",
+			    context_end);
+			return;
+		}
+
+		for (uint32_t i = 0; i < native_a630_gpu_smmu_num_smr &&
+		    i < A630_SMMU_ROWS; i++) {
+			native_a630_gpu_smmu_smr[i] = rd(smmu, SMMU_SMR(i));
+			native_a630_gpu_smmu_s2cr[i] = rd(smmu, SMMU_S2CR(i));
+			if ((native_a630_gpu_smmu_smr[i] & (1u << 31)) ||
+			    native_a630_gpu_smmu_s2cr[i] != 0x000200ff) {
+				printf("a630gpu: GPU SMMU route %u SMR %#010x S2CR %#010x\n",
+				    i, native_a630_gpu_smmu_smr[i],
+				    native_a630_gpu_smmu_s2cr[i]);
+			}
+		}
+
+		native_a630_gpu_smmu_used_cb = 0;
+		for (uint32_t i = 0; i < native_a630_gpu_smmu_num_cb &&
+		    i < A630_SMMU_ROWS; i++) {
+			uint32_t offset = native_a630_gpu_smmu_cb_base +
+			    i * native_a630_gpu_smmu_page_size;
+
+			native_a630_gpu_smmu_cbar[i] = rd(smmu, SMMU_CBAR(i));
+			native_a630_gpu_smmu_cba2r[i] = rd(smmu, SMMU_CBA2R(i));
+			native_a630_gpu_smmu_cb_sctlr[i] = rd(smmu, offset + SMMU_CB_SCTLR);
+			native_a630_gpu_smmu_cb_ttbr0_lo[i] = rd(smmu, offset + SMMU_CB_TTBR0_LO);
+			native_a630_gpu_smmu_cb_ttbr0_hi[i] = rd(smmu, offset + SMMU_CB_TTBR0_HI);
+			native_a630_gpu_smmu_cb_tcr[i] = rd(smmu, offset + SMMU_CB_TCR);
+			native_a630_gpu_smmu_cb_mair0[i] = rd(smmu, offset + SMMU_CB_MAIR0);
+			native_a630_gpu_smmu_cb_fsr[i] = rd(smmu, offset + SMMU_CB_FSR);
+			if (native_a630_gpu_smmu_cbar[i] ||
+			    native_a630_gpu_smmu_cba2r[i] ||
+			    native_a630_gpu_smmu_cb_sctlr[i]) {
+				native_a630_gpu_smmu_used_cb++;
+			}
+			printf("a630gpu: GPU SMMU context %u CBAR %#010x CBA2R %#010x SCTLR %#010x TTBR0 %#010x%08x TCR %#010x MAIR0 %#010x FSR %#010x\n",
+			    i, native_a630_gpu_smmu_cbar[i],
+			    native_a630_gpu_smmu_cba2r[i],
+			    native_a630_gpu_smmu_cb_sctlr[i],
+			    native_a630_gpu_smmu_cb_ttbr0_hi[i],
+			    native_a630_gpu_smmu_cb_ttbr0_lo[i],
+			    native_a630_gpu_smmu_cb_tcr[i],
+			    native_a630_gpu_smmu_cb_mair0[i],
+			    native_a630_gpu_smmu_cb_fsr[i]);
+		}
+		native_a630_gpu_stage = 12;
+		printf("a630gpu: GPU SMMU read-only qualification complete: %u used context banks\n",
+		    native_a630_gpu_smmu_used_cb);
 	}
 
 	native_a630_gpu_status = 0;
-	printf("a630gpu: stage 4 complete: GMU boot registers are writable; reset/firmware/SMMU untouched\n");
+	printf("a630gpu: stage 5 complete: GPU SMMU is readable and the stream/context layout is safe\n");
 }
