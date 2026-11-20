@@ -76,8 +76,15 @@ extern volatile uint32_t native_a630_gpu_stage __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_status __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_votes __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_ahb __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_memnoc __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_snoc __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_cx_gdscr __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_cx_hwctrl __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gx_gdscr __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_rcg_cmd __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_rcg_cfg __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_cxo __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_cx_gmu __attribute__((weak_import));
 extern volatile int native_staged_apps_dirs __attribute__((weak_import));
 extern volatile int native_staged_apps_files __attribute__((weak_import));
 extern volatile int native_staged_apps_mib __attribute__((weak_import));
@@ -323,13 +330,17 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
     at = put(out, at, cap, "[data]", 8);
     at = put(out, at, cap, row, sizeof row);
   }
-  // SDM845 Adreno 630 read-only qualification. Keep a dedicated row so
-  // early printf output cannot be lost from the rolling console ring.
+  // SDM845 Adreno 630 qualification. Keep a dedicated row so early printf
+  // output cannot be lost from the rolling console ring.
   if (&native_a630_gpu_stage && native_a630_gpu_stage) {
-    char row[180];
-    snprintf(row, sizeof row, "[a630] stage=%u st=%u votes=%08x ahb=%08x gx=%08x cx=%08x",
+    char row[240];
+    snprintf(row, sizeof row, "[a630] stage=%u st=%u votes=%08x ahb=%08x memnoc=%08x snoc=%08x "
+             "cxhw=%08x rcgcmd=%08x rcgcfg=%08x cxo=%08x cxgmu=%08x gx=%08x cx=%08x",
              native_a630_gpu_stage, native_a630_gpu_status, native_a630_gpu_votes,
-             native_a630_gpu_ahb, native_a630_gpu_gx_gdscr, native_a630_gpu_cx_gdscr);
+             native_a630_gpu_ahb, native_a630_gpu_memnoc, native_a630_gpu_snoc,
+             native_a630_gpu_cx_hwctrl, native_a630_gpu_rcg_cmd, native_a630_gpu_rcg_cfg,
+             native_a630_gpu_cxo, native_a630_gpu_cx_gmu,
+             native_a630_gpu_gx_gdscr, native_a630_gpu_cx_gdscr);
     at = put(out, at, cap, row, sizeof row);
   }
   // The payload's GPU addon (kern_exec.c native_gpu_addon_install): files in it (-1 none), written, already equal, failed, last error; then
