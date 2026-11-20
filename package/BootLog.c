@@ -85,6 +85,16 @@ extern volatile uint32_t native_a630_gpu_rcg_cmd __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_rcg_cfg __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_cxo __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_cx_gmu __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_gpll0_mode __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_gpll0_l __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_gpll0_user __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_gmu_sysreset __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_gmu_boot_config __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_gmu_init_result __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_gmu_cm3_cfg __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_gmu_hfi_status __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_gmu_counter_lo __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_gmu_counter_hi __attribute__((weak_import));
 extern volatile int native_staged_apps_dirs __attribute__((weak_import));
 extern volatile int native_staged_apps_files __attribute__((weak_import));
 extern volatile int native_staged_apps_mib __attribute__((weak_import));
@@ -328,6 +338,17 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
              (unsigned long long)native_data_persist_present, (unsigned long long)native_data_persist_loaded, (unsigned long long)native_data_persist_writes,
              (unsigned long long)native_data_persist_syncs, (unsigned long long)native_data_persist_errors, (unsigned long long)native_data_persist_pages);
     at = put(out, at, cap, "[data]", 8);
+    at = put(out, at, cap, row, sizeof row);
+  }
+  if (&native_a630_gpu_gpll0_mode && native_a630_gpu_stage >= 7) {
+    char row[240];
+    snprintf(row, sizeof row, "[a630g] gpll=%08x l=%08x user=%08x sys=%08x boot=%08x "
+             "init=%08x cm3=%08x hfi=%08x cnt=%08x/%08x",
+             native_a630_gpu_gpll0_mode, native_a630_gpu_gpll0_l,
+             native_a630_gpu_gpll0_user, native_a630_gpu_gmu_sysreset,
+             native_a630_gpu_gmu_boot_config, native_a630_gpu_gmu_init_result,
+             native_a630_gpu_gmu_cm3_cfg, native_a630_gpu_gmu_hfi_status,
+             native_a630_gpu_gmu_counter_lo, native_a630_gpu_gmu_counter_hi);
     at = put(out, at, cap, row, sizeof row);
   }
   // SDM845 Adreno 630 qualification. Keep a dedicated row so early printf

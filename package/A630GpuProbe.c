@@ -18,6 +18,10 @@ extern int printf(const char *, ...);
 #define GCC_GPU_CFG_AHB          0x71004
 #define GCC_GPU_MEMNOC_GFX       0x7100c
 #define GCC_GPU_SNOC_DVM_GFX     0x71018
+#define GCC_GPLL0_MODE           0x0000
+#define GCC_GPLL0_L              0x0004
+#define GCC_GPLL0_USER           0x000c
+#define GCC_GPLL0_FRAC           0x0038
 
 #define GPUCC_PHYS               0x05090000UL
 #define GPUCC_SIZE               0x9000UL
@@ -40,6 +44,22 @@ extern int printf(const char *, ...);
 #define RCG_CMD_ROOT_EN          (1u << 1)
 #define RCG_CMD_ROOT_OFF         (1u << 31)
 #define CX_GMU_CBCR_WAKE_SLEEP   ((0xfu << 8) | (0xfu << 4))
+#define GMU_RCG_200MHZ_CFG       0x602u
+
+#define GMU_PHYS                 0x0506a000UL
+#define GMU_SIZE                 0x30000UL
+#define GMU_WORD(w)              ((uint32_t)(w) * 4u)
+#define GMU_CM3_SYSRESET_W       0x5000u
+#define GMU_CM3_BOOT_CONFIG_W    0x5001u
+#define GMU_CM3_FW_INIT_RESULT_W 0x501cu
+#define GMU_CM3_CFG_W            0x502du
+#define GMU_POWER_COUNTER_EN_W   0x5040u
+#define GMU_PWR_COL_KEEPALIVE_W  0x50c3u
+#define GMU_RPMH_CTRL_W          0x50e8u
+#define GMU_HFI_CTRL_STATUS_W    0x5180u
+#define GMU_GENERAL_0_W          0x51c5u
+#define GMU_AO_COUNTER_LO_W      0x5088u
+#define GMU_AO_COUNTER_HI_W      0x5089u
 
 volatile uint32_t native_a630_gpu_stage;
 volatile uint32_t native_a630_gpu_status;
@@ -54,6 +74,16 @@ volatile uint32_t native_a630_gpu_rcg_cmd;
 volatile uint32_t native_a630_gpu_rcg_cfg;
 volatile uint32_t native_a630_gpu_cxo;
 volatile uint32_t native_a630_gpu_cx_gmu;
+volatile uint32_t native_a630_gpu_gpll0_mode;
+volatile uint32_t native_a630_gpu_gpll0_l;
+volatile uint32_t native_a630_gpu_gpll0_user;
+volatile uint32_t native_a630_gpu_gmu_sysreset;
+volatile uint32_t native_a630_gpu_gmu_boot_config;
+volatile uint32_t native_a630_gpu_gmu_init_result;
+volatile uint32_t native_a630_gpu_gmu_cm3_cfg;
+volatile uint32_t native_a630_gpu_gmu_hfi_status;
+volatile uint32_t native_a630_gpu_gmu_counter_lo;
+volatile uint32_t native_a630_gpu_gmu_counter_hi;
 
 static inline uint32_t
 rd(volatile uint8_t *base, uint32_t offset)
@@ -234,8 +264,96 @@ native_a630_gpu_probe(void)
 			native_a630_gpu_status = 7;
 			return;
 		}
+
+		if (enabled < 3) {
+			native_a630_gpu_status = 0;
+			printf("a630gpu: stage 2 complete: CX power and GMU clocks enabled; GMU firmware/SMMU untouched\n");
+			return;
+		}
+
+		native_a630_gpu_stage = 7;
+		native_a630_gpu_gpll0_mode = rd(gcc, GCC_GPLL0_MODE);
+		native_a630_gpu_gpll0_l = rd(gcc, GCC_GPLL0_L);
+		native_a630_gpu_gpll0_user = rd(gcc, GCC_GPLL0_USER);
+		uint32_t frac = rd(gcc, GCC_GPLL0_FRAC);
+		uint64_t hz = 19200000ull * native_a630_gpu_gpll0_l +
+		    ((19200000ull * (frac & 0xffff)) >> 16);
+		printf("a630gpu: GPLL0 mode %#010x L %#010x frac %#010x user %#010x: %llu Hz, postdiv %u\n",
+		    native_a630_gpu_gpll0_mode, native_a630_gpu_gpll0_l, frac,
+		    native_a630_gpu_gpll0_user, hz, (native_a630_gpu_gpll0_user >> 8) & 0xf);
+		if (!(native_a630_gpu_gpll0_mode & (1u << 31)) ||
+		    hz < 599999000 || hz > 600001000 ||
+		    ((native_a630_gpu_gpll0_user >> 8) & 0xf) != 1) {
+			native_a630_gpu_status = 8;
+			printf("a630gpu: GPLL0 prerequisites not confirmed; GMU stays on XO\n");
+			return;
+		}
+
+		native_a630_gpu_votes = rd(gcc, GCC_APPS_VOTE_0);
+		wr(gcc, GCC_APPS_VOTE_0, native_a630_gpu_votes | (1u << 16));
+		sleep_us(10);
+		native_a630_gpu_votes = rd(gcc, GCC_APPS_VOTE_0);
+		if (!(native_a630_gpu_votes & (1u << 16))) {
+			native_a630_gpu_status = 9;
+			printf("a630gpu: GPLL0/2 vote did not stick: %#010x\n", native_a630_gpu_votes);
+			return;
+		}
+
+		uint32_t cfg = (native_a630_gpu_rcg_cfg & ~0x71fu) | GMU_RCG_200MHZ_CFG;
+		wr(gpucc, GPUCC_GMU_RCG_CFG, cfg);
+		wr(gpucc, GPUCC_GMU_RCG_CMD,
+		    rd(gpucc, GPUCC_GMU_RCG_CMD) | RCG_CMD_UPDATE);
+		bool updated = false;
+		for (uint32_t waited = 0; waited <= 1000; waited += 5) {
+			uint32_t command = rd(gpucc, GPUCC_GMU_RCG_CMD);
+			if (!(command & (RCG_CMD_UPDATE | RCG_CMD_ROOT_OFF))) {
+				updated = true;
+				break;
+			}
+			sleep_us(5);
+		}
+		native_a630_gpu_rcg_cmd = rd(gpucc, GPUCC_GMU_RCG_CMD);
+		native_a630_gpu_rcg_cfg = rd(gpucc, GPUCC_GMU_RCG_CFG);
+		if (!updated || native_a630_gpu_rcg_cfg != cfg) {
+			native_a630_gpu_status = 10;
+			printf("a630gpu: GMU 200MHz clock failed: CMD %#010x CFG %#010x want %#010x\n",
+			    native_a630_gpu_rcg_cmd, native_a630_gpu_rcg_cfg, cfg);
+			return;
+		}
+		printf("a630gpu: GMU 200MHz clock selected: CMD %#010x CFG %#010x vote %#010x\n",
+		    native_a630_gpu_rcg_cmd, native_a630_gpu_rcg_cfg, native_a630_gpu_votes);
+
+		volatile uint8_t *gmu = (volatile uint8_t *)ml_io_map(GMU_PHYS, GMU_SIZE);
+		if (gmu == NULL) {
+			native_a630_gpu_status = 11;
+			printf("a630gpu: GMU mapping failed\n");
+			return;
+		}
+		native_a630_gpu_stage = 8;
+		native_a630_gpu_gmu_sysreset = rd(gmu, GMU_WORD(GMU_CM3_SYSRESET_W));
+		native_a630_gpu_gmu_boot_config = rd(gmu, GMU_WORD(GMU_CM3_BOOT_CONFIG_W));
+		native_a630_gpu_gmu_init_result = rd(gmu, GMU_WORD(GMU_CM3_FW_INIT_RESULT_W));
+		native_a630_gpu_gmu_cm3_cfg = rd(gmu, GMU_WORD(GMU_CM3_CFG_W));
+		native_a630_gpu_gmu_hfi_status = rd(gmu, GMU_WORD(GMU_HFI_CTRL_STATUS_W));
+		native_a630_gpu_gmu_counter_lo = rd(gmu, GMU_WORD(GMU_AO_COUNTER_LO_W));
+		sleep_us(1000);
+		uint32_t counter = rd(gmu, GMU_WORD(GMU_AO_COUNTER_LO_W));
+		native_a630_gpu_gmu_counter_hi = rd(gmu, GMU_WORD(GMU_AO_COUNTER_HI_W));
+		printf("a630gpu: GMU SYSRESET %#010x boot %#010x init %#010x CM3_CFG %#010x HFI %#010x\n",
+		    native_a630_gpu_gmu_sysreset, native_a630_gpu_gmu_boot_config,
+		    native_a630_gpu_gmu_init_result, native_a630_gpu_gmu_cm3_cfg,
+		    native_a630_gpu_gmu_hfi_status);
+		printf("a630gpu: GMU counter %u -> %u over 1 ms (high %u)\n",
+		    native_a630_gpu_gmu_counter_lo, counter, native_a630_gpu_gmu_counter_hi);
+		if (counter == native_a630_gpu_gmu_counter_lo) {
+			native_a630_gpu_gmu_counter_lo = counter;
+			native_a630_gpu_status = 12;
+			printf("a630gpu: GMU always-on counter did not advance; 200MHz clock is not proven\n");
+			return;
+		}
+		native_a630_gpu_gmu_counter_lo = counter;
 	}
 
 	native_a630_gpu_status = 0;
-	printf("a630gpu: stage 2 complete: CX power and GMU clocks enabled; GMU firmware/SMMU untouched\n");
+	printf("a630gpu: stage 3 complete: GMU runs at 200MHz and its registers respond; reset/firmware/SMMU untouched\n");
 }
