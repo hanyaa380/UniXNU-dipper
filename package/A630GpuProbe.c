@@ -353,6 +353,9 @@ volatile uint32_t native_a630_gpu_rail_slumber;
 volatile uint32_t native_a630_gpu_rail_gx_off;
 volatile uint32_t native_a630_gpu_core_read_ok;
 volatile uint32_t native_a630_gpu_core_regs[11];
+volatile uint32_t native_a630_gpu_core_write_ok;
+volatile uint32_t native_a630_gpu_core_write_bad;
+volatile uint32_t native_a630_gpu_core_write_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_boot_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_rsc_boot_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_tcm_boot_restore_bad;
@@ -1820,6 +1823,17 @@ a630_gmu_oob_clear(volatile uint8_t *gmu, uint32_t bit)
 	__asm__ volatile("dsb sy" ::: "memory");
 }
 
+static vm_offset_t a630_gpu_va;
+
+static vm_offset_t
+a630_gpu_map(void)
+{
+	if (a630_gpu_va == 0) {
+		a630_gpu_va = ml_io_map(GPU_PHYS, GPU_SIZE);
+	}
+	return a630_gpu_va;
+}
+
 static bool
 a630_gpu_read_stage15(void)
 {
@@ -1827,12 +1841,10 @@ a630_gpu_read_stage15(void)
 		0x0210, 0x0213, 0x0201, 0x0215, 0xf400, 0x00ae,
 		0x0500, 0x0808, 0x0806, 0x0807, 0x0841,
 	};
-	static vm_offset_t gpu;
+	vm_offset_t gpu;
 	uint32_t bad = 0;
 
-	if (gpu == 0) {
-		gpu = ml_io_map(GPU_PHYS, GPU_SIZE);
-	}
+	gpu = a630_gpu_map();
 	if (gpu == 0) {
 		printf("a630gpu: 3D core mapping failed\n");
 		native_a630_gpu_core_read_ok = 0;
@@ -1859,8 +1871,49 @@ a630_gpu_read_stage15(void)
 }
 
 static bool
+a630_gpu_write_address_stage16(void)
+{
+	static const uint32_t words[] = {
+		0x0842, 0x0c01, 0x8601, 0x8e05, 0x9e01, 0xbe05,
+		0xa601, 0x9601, 0x0e00, 0xae01, 0xb601,
+	};
+	uint32_t old[sizeof(words) / sizeof(words[0])] = { 0 };
+	vm_offset_t gpu = a630_gpu_map();
+	uint32_t written = 0, bad = 0, restore_bad = 0;
+
+	if (gpu == 0) {
+		native_a630_gpu_core_write_ok = 0;
+		return false;
+	}
+	for (uint32_t i = 0; i < sizeof(words) / sizeof(words[0]); i++) {
+		old[i] = rd((volatile uint8_t *)gpu, 4u * words[i]);
+		wr((volatile uint8_t *)gpu, 4u * words[i], 1);
+		written = i + 1;
+		if (rd((volatile uint8_t *)gpu, 4u * words[i]) != 1) {
+			bad++;
+			break;
+		}
+	}
+	for (uint32_t i = written; i > 0; i--) {
+		uint32_t index = i - 1;
+
+		wr((volatile uint8_t *)gpu, 4u * words[index], old[index]);
+		if (rd((volatile uint8_t *)gpu, 4u * words[index]) !=
+		    old[index]) {
+			restore_bad++;
+		}
+	}
+	native_a630_gpu_core_write_bad = bad;
+	native_a630_gpu_core_write_restore_bad = restore_bad;
+	native_a630_gpu_core_write_ok = bad == 0 && restore_bad == 0;
+	printf("a630gpu: 3D address mode writes=%u bad=%u restore=%u ok=%u\n",
+	    written, bad, restore_bad, native_a630_gpu_core_write_ok);
+	return native_a630_gpu_core_write_ok != 0;
+}
+
+static bool
 a630_gmu_gfx_rail_stage14(volatile uint8_t *gmu, volatile uint8_t *gpucc,
-    bool read_gpu)
+    uint32_t gpu_action)
 {
 	const struct a630_cmd_db_header *db = a630_cmd_db();
 	uint32_t old_option, old_gx, old_mx, old_control;
@@ -1912,8 +1965,11 @@ a630_gmu_gfx_rail_stage14(volatile uint8_t *gmu, volatile uint8_t *gpucc,
 	    rail_ack, native_a630_gpu_rail_gx_gdscr,
 	    native_a630_gpu_rail_gx_alias, native_a630_gpu_rail_sptprac,
 	    sptprac_on ? "on" : "not confirmed");
-	if (read_gpu) {
+	if (rail_ack && sptprac_on && gpu_action >= 1) {
 		(void)a630_gpu_read_stage15();
+	}
+	if (rail_ack && sptprac_on && gpu_action >= 2) {
+		(void)a630_gpu_write_address_stage16();
 	}
 
 	wr(gmu, GMU_WORD(GMU_GX_GDSCR_ALIAS_W),
@@ -2286,11 +2342,14 @@ a630_gmu_boot_stage11(volatile uint8_t *gmu, volatile uint8_t *smmu,
 		}
 		if (!failure && hfi_mode >= 3) {
 			if (!a630_gmu_gfx_rail_stage14(gmu, gpucc,
-			    hfi_mode >= 4)) {
+			    hfi_mode >= 5 ? 2 : (hfi_mode >= 4 ? 1 : 0))) {
 				failure = 46;
 			} else if (hfi_mode >= 4 &&
 			    !native_a630_gpu_core_read_ok) {
 				failure = 47;
+			} else if (hfi_mode >= 5 &&
+			    !native_a630_gpu_core_write_ok) {
+				failure = 48;
 			}
 		}
 	}
@@ -2847,16 +2906,19 @@ native_a630_gpu_probe(void)
 			printf("a630gpu: stage 10 complete: the current A630 GMU firmware loads and restores without releasing CM3\n");
 			return;
 		}
-		if (enabled < 15) {
-			uint32_t hfi_mode = enabled >= 14 ? 3 :
-			    (enabled >= 13 ? 2 : (enabled >= 12 ? 1 : 0));
+		if (enabled < 16) {
+			uint32_t hfi_mode = enabled >= 15 ? 4 :
+			    (enabled >= 14 ? 3 : (enabled >= 13 ? 2 :
+			    (enabled >= 12 ? 1 : 0)));
 
 			if (!a630_gmu_boot_stage11(gmu, smmu, gpucc,
 			    hfi_mode)) {
 				return;
 			}
 			native_a630_gpu_status = 0;
-			if (hfi_mode == 3) {
+			if (hfi_mode == 4) {
+				printf("a630gpu: stage 15 complete: the A630 3D core is readable while GX is on\n");
+			} else if (hfi_mode == 3) {
 				printf("a630gpu: stage 14 complete: the A630 GX rail powers on, SPTPRAC starts, and both return off\n");
 			} else if (hfi_mode == 2) {
 				printf("a630gpu: stage 13 complete: the complete A630 GMU HFI handshake is acknowledged and restored\n");
@@ -2867,11 +2929,11 @@ native_a630_gpu_probe(void)
 			}
 			return;
 		}
-		if (!a630_gmu_boot_stage11(gmu, smmu, gpucc, 4)) {
+		if (!a630_gmu_boot_stage11(gmu, smmu, gpucc, 5)) {
 			return;
 		}
 	}
 
 	native_a630_gpu_status = 0;
-	printf("a630gpu: stage 15 complete: the A630 3D core is readable while GX is on\n");
+	printf("a630gpu: stage 16 complete: A630 address-mode registers write, read back and restore\n");
 }
