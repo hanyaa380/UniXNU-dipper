@@ -363,8 +363,15 @@ a630_gmu_smmu_restore(volatile uint8_t *smmu, vm_offset_t block,
 	wr(smmu, SMMU_S2CR(A630_GMU_SMR_ENTRY), old->s2cr);
 	wr(smmu, SMMU_SMR(A630_GMU_SMR_ENTRY), old->smr);
 	wr(cb, SMMU_CB_SCTLR, old->sctlr);
-	sleep_us(100);
+	sleep_us(1000);
 	__asm__ volatile("dsb sy" ::: "memory");
+	bool inactive = rd(cb, SMMU_CB_SCTLR) == 0 &&
+	    rd(smmu, SMMU_SMR(A630_GMU_SMR_ENTRY)) == 0 &&
+	    rd(cb, SMMU_CB_TTBR0_LO) == 0 &&
+	    rd(cb, SMMU_CB_TTBR0_HI) == 0 &&
+	    rd(cb, SMMU_CB_TTBR1_LO) == 0 &&
+	    rd(cb, SMMU_CB_TTBR1_HI) == 0 &&
+	    rd(cb, SMMU_CB_TCR) == 0;
 
 	const struct {
 		volatile uint8_t *base;
@@ -388,9 +395,7 @@ a630_gmu_smmu_restore(volatile uint8_t *smmu, vm_offset_t block,
 	for (uint32_t i = 0; i < sizeof(restored) / sizeof(restored[0]); i++) {
 		uint32_t got = rd(restored[i].base, restored[i].offset);
 		if (got != restored[i].value) {
-			if ((i == 1 || i == 2) &&
-			    rd(cb, SMMU_CB_SCTLR) == 0 &&
-			    rd(smmu, SMMU_SMR(A630_GMU_SMR_ENTRY)) == 0) {
+			if ((i == 1 || i == 2) && inactive) {
 				/* No SMR can select this context; sticky fields are inert. */
 				if (i == 1) {
 					native_a630_gpu_smmu_gmu_s2cr_sticky = got;
