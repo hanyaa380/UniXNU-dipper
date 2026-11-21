@@ -168,6 +168,14 @@ extern volatile uint32_t native_a630_gpu_rsc_restore_bad __attribute__((weak_imp
 extern volatile uint32_t native_a630_gpu_rsc_written __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_rsc_old_enable __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_rsc_final_enable __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_gmu_fw_bytes __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_gmu_fw_hash __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_gmu_fw_sum __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_gmu_fw_head[2] __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_gmu_fw_bad __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_gmu_fw_first_bad __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_gmu_fw_restore_bad __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_gmu_fw_reset __attribute__((weak_import));
 extern volatile int native_staged_apps_dirs __attribute__((weak_import));
 extern volatile int native_staged_apps_files __attribute__((weak_import));
 extern volatile int native_staged_apps_mib __attribute__((weak_import));
@@ -525,6 +533,18 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
              native_a630_gpu_rsc_written, native_a630_gpu_rsc_write_bad,
              native_a630_gpu_rsc_restore_bad, native_a630_gpu_rsc_old_enable,
              native_a630_gpu_rsc_final_enable);
+    at = put(out, at, cap, row, sizeof row);
+  }
+  if (&native_a630_gpu_gmu_fw_bytes && native_a630_gpu_stage >= 19) {
+    char row[180];
+    snprintf(row, sizeof row, "[a630w] bytes=%u hash=%08x sum=%08x head=%08x/%08x "
+             "bad=%u first=%u restore=%u reset=%u",
+             native_a630_gpu_gmu_fw_bytes, native_a630_gpu_gmu_fw_hash,
+             native_a630_gpu_gmu_fw_sum, native_a630_gpu_gmu_fw_head[0],
+             native_a630_gpu_gmu_fw_head[1], native_a630_gpu_gmu_fw_bad,
+             native_a630_gpu_gmu_fw_first_bad,
+             native_a630_gpu_gmu_fw_restore_bad,
+             native_a630_gpu_gmu_fw_reset);
     at = put(out, at, cap, row, sizeof row);
   }
   // SDM845 Adreno 630 qualification. Keep a dedicated row so early printf

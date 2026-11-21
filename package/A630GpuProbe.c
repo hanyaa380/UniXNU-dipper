@@ -64,6 +64,9 @@ extern int printf(const char *, ...);
 #define GMU_AO_COUNTER_HI_W      0x5089u
 #define GMU_CM3_ITCM_W           0x0c00u
 #define GMU_CM3_DTCM_W           0x1c00u
+#define A630_GMU_FW_BYTES        0x8000u
+#define A630_GMU_FW_WORDS        (A630_GMU_FW_BYTES / 4u)
+#define A630_GMU_FW_FNV1A        0xc7fe81d5u
 
 #define PDC_PHYS                 0x0b280000UL
 #define PDC_SEQ_PHYS             0x0b480000UL
@@ -281,8 +284,26 @@ volatile uint32_t native_a630_gpu_rsc_restore_bad;
 volatile uint32_t native_a630_gpu_rsc_written;
 volatile uint32_t native_a630_gpu_rsc_old_enable;
 volatile uint32_t native_a630_gpu_rsc_final_enable;
+volatile uint32_t native_a630_gpu_gmu_fw_bytes;
+volatile uint32_t native_a630_gpu_gmu_fw_hash;
+volatile uint32_t native_a630_gpu_gmu_fw_sum;
+volatile uint32_t native_a630_gpu_gmu_fw_head[2];
+volatile uint32_t native_a630_gpu_gmu_fw_bad;
+volatile uint32_t native_a630_gpu_gmu_fw_first_bad;
+volatile uint32_t native_a630_gpu_gmu_fw_restore_bad;
+volatile uint32_t native_a630_gpu_gmu_fw_reset;
 static volatile uint8_t *a630_pdc_base;
 static volatile uint8_t *a630_pdc_seq_base;
+
+/*
+ * Cloud builds intentionally carry only this marker. scripts/patch-a630-firmware.py
+ * replaces the complete array in the downloaded private kernel; vendor firmware
+ * must never be committed to the public device or build repositories.
+ */
+const volatile uint8_t native_a630_gmu_firmware_blob[A630_GMU_FW_BYTES]
+    __attribute__((used, section("__DATA,__const"), aligned(64))) =
+    "A630-GMU-PLACEHOLDER";
+static uint32_t a630_gmu_itcm_backup[A630_GMU_FW_WORDS];
 
 static const struct a630_gmu_boot_reg {
 	const char *name;
@@ -954,6 +975,137 @@ a630_rsc_pdc_write_stage9(volatile uint8_t *gmu)
 	return true;
 }
 
+static uint32_t
+a630_fw_word(const volatile uint8_t *fw, uint32_t index)
+{
+	const volatile uint8_t *word = fw + 4u * index;
+
+	return (uint32_t)word[0] |
+	    (uint32_t)word[1] << 8 |
+	    (uint32_t)word[2] << 16 |
+	    (uint32_t)word[3] << 24;
+}
+
+static uint32_t
+a630_fw_fnv1a(const volatile uint8_t *fw, uint32_t bytes)
+{
+	uint32_t hash = 0x811c9dc5u;
+
+	for (uint32_t i = 0; i < bytes; i++) {
+		hash ^= fw[i];
+		hash *= 0x01000193u;
+	}
+	return hash;
+}
+
+/*
+ * Stage 10 proves the current phone's complete 32 KiB legacy GMU image can
+ * enter ITCM and read back. Unlike the production firmware load, this gate
+ * restores every original TCM word and keeps CM3 in reset.
+ */
+static bool
+a630_gmu_firmware_stage10(volatile uint8_t *gmu)
+{
+	volatile uint8_t *itcm = gmu + GMU_WORD(GMU_CM3_ITCM_W);
+	uint32_t bytes = sizeof(native_a630_gmu_firmware_blob);
+	uint32_t bad = 0, first_bad = 0, restore_bad = 0, sum = 0;
+
+	native_a630_gpu_stage = 19;
+	native_a630_gpu_gmu_fw_bytes = bytes;
+	native_a630_gpu_gmu_fw_hash =
+	    a630_fw_fnv1a(native_a630_gmu_firmware_blob, bytes);
+	native_a630_gpu_gmu_fw_head[0] =
+	    a630_fw_word(native_a630_gmu_firmware_blob, 0);
+	native_a630_gpu_gmu_fw_head[1] =
+	    a630_fw_word(native_a630_gmu_firmware_blob, 1);
+	native_a630_gpu_gmu_fw_reset =
+	    rd(gmu, GMU_WORD(GMU_CM3_SYSRESET_W));
+
+	if (native_a630_gpu_gmu_fw_reset != 1 ||
+	    (native_a630_gpu_gx_gdscr & (GDSC_PWR_ON | GDSCR_SW_COLLAPSE)) !=
+	    GDSCR_SW_COLLAPSE) {
+		native_a630_gpu_status = 30;
+		printf("a630gpu: GMU firmware load refused: CM3 reset or GX-off precondition failed\n");
+		return false;
+	}
+	if (bytes != A630_GMU_FW_BYTES ||
+	    native_a630_gpu_gmu_fw_hash != A630_GMU_FW_FNV1A) {
+		native_a630_gpu_status = 34;
+		printf("a630gpu: public kernel has no matching private a630_gmu.bin: %u bytes hash %#010x want %#010x\n",
+		    bytes, native_a630_gpu_gmu_fw_hash, A630_GMU_FW_FNV1A);
+		return false;
+	}
+
+	printf("a630gpu: A630 GMU firmware %u bytes hash %#010x head %08x %08x; backing up ITCM\n",
+	    bytes, native_a630_gpu_gmu_fw_hash, native_a630_gpu_gmu_fw_head[0],
+	    native_a630_gpu_gmu_fw_head[1]);
+	for (uint32_t i = 0; i < A630_GMU_FW_WORDS; i++) {
+		a630_gmu_itcm_backup[i] = rd(itcm, 4u * i);
+	}
+	for (uint32_t i = 0; i < A630_GMU_FW_WORDS; i++) {
+		uint32_t word = a630_fw_word(native_a630_gmu_firmware_blob, i);
+
+		wr(itcm, 4u * i, word);
+		sum += word;
+	}
+	native_a630_gpu_gmu_fw_sum = sum;
+	native_a630_gpu_gmu_fw_reset =
+	    rd(gmu, GMU_WORD(GMU_CM3_SYSRESET_W));
+	for (uint32_t i = 0; i < A630_GMU_FW_WORDS; i++) {
+		uint32_t want = a630_fw_word(native_a630_gmu_firmware_blob, i);
+		uint32_t got = rd(itcm, 4u * i);
+
+		if (got != want) {
+			if (bad == 0) {
+				first_bad = i;
+				printf("a630gpu: firmware word %u got %#010x want %#010x\n",
+				    i, got, want);
+			}
+			bad++;
+		}
+	}
+	native_a630_gpu_gmu_fw_bad = bad;
+	native_a630_gpu_gmu_fw_first_bad = first_bad;
+
+	for (uint32_t i = A630_GMU_FW_WORDS; i > 0; i--) {
+		uint32_t index = i - 1;
+
+		wr(itcm, 4u * index, a630_gmu_itcm_backup[index]);
+	}
+	for (uint32_t i = 0; i < A630_GMU_FW_WORDS; i++) {
+		if (rd(itcm, 4u * i) != a630_gmu_itcm_backup[i]) {
+			restore_bad++;
+		}
+	}
+	native_a630_gpu_gmu_fw_restore_bad = restore_bad;
+	native_a630_gpu_gmu_fw_reset =
+	    rd(gmu, GMU_WORD(GMU_CM3_SYSRESET_W));
+
+	if (restore_bad) {
+		native_a630_gpu_status = 36;
+		printf("a630gpu: GMU ITCM restore failed: %u of %u words differ\n",
+		    restore_bad, A630_GMU_FW_WORDS);
+		return false;
+	}
+	if (native_a630_gpu_gmu_fw_reset != 1) {
+		native_a630_gpu_status = 37;
+		printf("a630gpu: CM3 reset changed during firmware qualification: %#010x\n",
+		    native_a630_gpu_gmu_fw_reset);
+		return false;
+	}
+	if (bad) {
+		native_a630_gpu_status = 35;
+		printf("a630gpu: GMU firmware readback failed: %u words differ, first %u\n",
+		    bad, first_bad);
+		return false;
+	}
+
+	native_a630_gpu_status = 0;
+	printf("a630gpu: A630 GMU firmware loaded, all %u words read back and ITCM restored; CM3 still held\n",
+	    A630_GMU_FW_WORDS);
+	return true;
+}
+
 void
 native_a630_gpu_probe(void)
 {
@@ -1380,8 +1532,16 @@ native_a630_gpu_probe(void)
 		if (!a630_rsc_pdc_write_stage9(gmu)) {
 			return;
 		}
+		if (enabled < 10) {
+			native_a630_gpu_status = 0;
+			printf("a630gpu: stage 9 complete: A630 RSC/PDC table is writable and restorable\n");
+			return;
+		}
+		if (!a630_gmu_firmware_stage10(gmu)) {
+			return;
+		}
 	}
 
 	native_a630_gpu_status = 0;
-	printf("a630gpu: stage 9 complete: A630 RSC/PDC table is writable and restorable\n");
+	printf("a630gpu: stage 10 complete: the current A630 GMU firmware loads and restores without releasing CM3\n");
 }
