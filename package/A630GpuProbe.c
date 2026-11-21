@@ -59,6 +59,7 @@ extern int printf(const char *, ...);
 #define GMU_PWR_COL_KEEPALIVE_W  0x50c3u
 #define GMU_RPMH_CTRL_W          0x50e8u
 #define GMU_HFI_CTRL_STATUS_W    0x5180u
+#define GMU_HFI_CTRL_INIT_W      0x5186u
 #define GMU_G2H_INTR_CLR_W       0x5191u
 #define GMU_G2H_INTR_INFO_W      0x5192u
 #define GMU_GMU2HOST_MASK_W      0x5193u
@@ -311,6 +312,8 @@ volatile uint32_t native_a630_gpu_gmu_init_want;
 volatile uint32_t native_a630_gpu_gmu_cp_resp;
 volatile uint32_t native_a630_gpu_gmu_general7;
 volatile uint32_t native_a630_gpu_gmu_started;
+volatile uint32_t native_a630_gpu_gmu_hfi_started;
+volatile uint32_t native_a630_gpu_gmu_hfi_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_boot_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_rsc_boot_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_tcm_boot_restore_bad;
@@ -1470,7 +1473,8 @@ a630_gmu_boot_rsc_program(volatile uint8_t *gmu, uint32_t *old,
  * SMMU pages, HFI tables, ITCM, boot registers and RSC/PDC tables.
  */
 static bool
-a630_gmu_boot_stage11(volatile uint8_t *gmu, volatile uint8_t *smmu)
+a630_gmu_boot_stage11(volatile uint8_t *gmu, volatile uint8_t *smmu,
+    bool start_hfi)
 {
 	struct a630_gmu_smmu_old smmu_old = { 0 };
 	uint32_t boot_old[A630_GMU_BOOT_REGS] = { 0 };
@@ -1482,13 +1486,16 @@ a630_gmu_boot_stage11(volatile uint8_t *gmu, volatile uint8_t *smmu)
 	uint32_t bytes = sizeof(native_a630_gmu_firmware_blob);
 	uint32_t fw_bad = 0, fw_first = 0, fw_sum = 0;
 	uint32_t old_ao_mask = 0, old_gmu_mask = 0;
+	uint32_t old_hfi_init = 0;
 	uint32_t selector, result = 0, restore_bad = 0;
 	uint32_t failure = 0;
 	bool mapped = false, tcm_backed = false, rsc_touched = false;
-	bool masks_changed = false, released = false, halted = true;
+	bool masks_changed = false, hfi_control_touched = false;
+	bool released = false, halted = true;
 	bool started = false;
 
-	native_a630_gpu_stage = 20;
+	native_a630_gpu_stage = start_hfi ? 21 : 20;
+	native_a630_gpu_gmu_hfi_started = 0;
 	native_a630_gpu_gmu_fw_bytes = bytes;
 	native_a630_gpu_gmu_boot_bad = 0;
 	native_a630_gpu_gmu_fw_hash =
@@ -1642,6 +1649,28 @@ a630_gmu_boot_stage11(volatile uint8_t *gmu, volatile uint8_t *smmu)
 	    native_a630_gpu_gmu_init_mask,
 	    native_a630_gpu_gmu_cp_resp, native_a630_gpu_gmu_general7,
 	    native_a630_gpu_gmu_hfi_status);
+	if (started && start_hfi) {
+		native_a630_gpu_gmu_hfi_started = 0;
+		old_hfi_init = rd(gmu, GMU_WORD(GMU_HFI_CTRL_INIT_W));
+		wr(gmu, GMU_WORD(GMU_HFI_CTRL_INIT_W), 1);
+		hfi_control_touched = true;
+		for (uint32_t i = 0; i < 1000; i++) {
+			if (rd(gmu, GMU_WORD(GMU_HFI_CTRL_STATUS_W)) & 1u) {
+				native_a630_gpu_gmu_hfi_started = 1;
+				break;
+			}
+			sleep_us(100);
+		}
+		native_a630_gpu_gmu_hfi_status =
+		    rd(gmu, GMU_WORD(GMU_HFI_CTRL_STATUS_W));
+		printf("a630gpu: HFI control channel %s: status %#010x\n",
+		    native_a630_gpu_gmu_hfi_started ? "started" :
+		    "TIMED OUT (100 ms)",
+		    native_a630_gpu_gmu_hfi_status);
+		if (!native_a630_gpu_gmu_hfi_started) {
+			failure = 44;
+		}
+	}
 
 restore:
 	if (released) {
@@ -1707,6 +1736,13 @@ restore:
 		wr(gmu, GMU_WORD(GMU_AO_HOST_MASK_W), old_ao_mask);
 		wr(gmu, GMU_WORD(GMU_GMU2HOST_MASK_W), old_gmu_mask);
 		masks_changed = false;
+	}
+	if (hfi_control_touched) {
+		wr(gmu, GMU_WORD(GMU_HFI_CTRL_INIT_W), old_hfi_init);
+		native_a630_gpu_gmu_hfi_restore_bad =
+		    rd(gmu, GMU_WORD(GMU_HFI_CTRL_INIT_W)) == old_hfi_init ? 0 : 1;
+		restore_bad += native_a630_gpu_gmu_hfi_restore_bad;
+		hfi_control_touched = false;
 	}
 	if (mapped) {
 		native_a630_gpu_gmu_smmu_boot_restore_bad =
@@ -2182,11 +2218,19 @@ native_a630_gpu_probe(void)
 			printf("a630gpu: stage 10 complete: the current A630 GMU firmware loads and restores without releasing CM3\n");
 			return;
 		}
-		if (!a630_gmu_boot_stage11(gmu, smmu)) {
+		if (enabled < 12) {
+			if (!a630_gmu_boot_stage11(gmu, smmu, false)) {
+				return;
+			}
+			native_a630_gpu_status = 0;
+			printf("a630gpu: stage 11 complete: the A630 GMU cold-starts, reports firmware init, and is held again\n");
+			return;
+		}
+		if (!a630_gmu_boot_stage11(gmu, smmu, true)) {
 			return;
 		}
 	}
 
 	native_a630_gpu_status = 0;
-	printf("a630gpu: stage 11 complete: the A630 GMU cold-starts, reports firmware init, and is held again\n");
+	printf("a630gpu: stage 12 complete: GMU firmware and the HFI control channel start, then are held again\n");
 }

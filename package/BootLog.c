@@ -181,6 +181,8 @@ extern volatile uint32_t native_a630_gpu_gmu_init_want __attribute__((weak_impor
 extern volatile uint32_t native_a630_gpu_gmu_cp_resp __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_general7 __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_started __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_gmu_hfi_started __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_gmu_hfi_restore_bad __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_boot_restore_bad __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_rsc_boot_restore_bad __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_tcm_boot_restore_bad __attribute__((weak_import));
@@ -558,21 +560,22 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
     at = put(out, at, cap, row, sizeof row);
   }
   if (&native_a630_gpu_gmu_init_want && native_a630_gpu_stage >= 20) {
-    char row[200];
+    char row[240];
     snprintf(row, sizeof row, "[a630i] init=%08x want=%08x/%08x cp=%08x g7=%08x "
-             "started=%u reset=%u hfi=%08x",
+             "started=%u hfi_start=%u reset=%u hfi=%08x",
              native_a630_gpu_gmu_init_result, native_a630_gpu_gmu_init_want,
              native_a630_gpu_gmu_init_mask, native_a630_gpu_gmu_cp_resp,
              native_a630_gpu_gmu_general7, native_a630_gpu_gmu_started,
-             native_a630_gpu_gmu_sysreset,
+             native_a630_gpu_gmu_hfi_started, native_a630_gpu_gmu_sysreset,
              native_a630_gpu_gmu_hfi_status);
     at = put(out, at, cap, row, sizeof row);
-    snprintf(row, sizeof row, "[a630j] boot=%u tcm=%u rsc=%u smmu=%u "
+    snprintf(row, sizeof row, "[a630j] boot=%u tcm=%u rsc=%u smmu=%u hfi=%u "
              "log=%08x/%08x/%08x/%08x",
              native_a630_gpu_gmu_boot_restore_bad,
              native_a630_gpu_gmu_tcm_boot_restore_bad,
              native_a630_gpu_gmu_rsc_boot_restore_bad,
              native_a630_gpu_gmu_smmu_boot_restore_bad,
+             native_a630_gpu_gmu_hfi_restore_bad,
              native_a630_gpu_gmu_log[0], native_a630_gpu_gmu_log[1],
              native_a630_gpu_gmu_log[2], native_a630_gpu_gmu_log[3]);
     at = put(out, at, cap, row, sizeof row);
