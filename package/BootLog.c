@@ -207,6 +207,10 @@ extern volatile uint32_t native_a630_gpu_core_prefix_ok __attribute__((weak_impo
 extern volatile uint32_t native_a630_gpu_core_prefix_written __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_core_prefix_bad __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_core_prefix_restore_bad __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_core_prefix_index __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_core_prefix_old __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_core_prefix_want __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_core_prefix_got __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_boot_restore_bad __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_rsc_boot_restore_bad __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_tcm_boot_restore_bad __attribute__((weak_import));
@@ -658,12 +662,17 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
     at = put(out, at, cap, row, sizeof row);
   }
   if (&native_a630_gpu_core_prefix_ok && native_a630_gpu_stage >= 26) {
-    char row[140];
-    snprintf(row, sizeof row, "[a630y] ok=%u wrote=%u bad=%u restore=%u",
+    char row[220];
+    snprintf(row, sizeof row, "[a630y] ok=%u wrote=%u bad=%u restore=%u "
+             "idx=%u old=%08x want=%08x got=%08x",
              native_a630_gpu_core_prefix_ok,
              native_a630_gpu_core_prefix_written,
              native_a630_gpu_core_prefix_bad,
-             native_a630_gpu_core_prefix_restore_bad);
+             native_a630_gpu_core_prefix_restore_bad,
+             native_a630_gpu_core_prefix_index,
+             native_a630_gpu_core_prefix_old,
+             native_a630_gpu_core_prefix_want,
+             native_a630_gpu_core_prefix_got);
     at = put(out, at, cap, row, sizeof row);
   }
   // SDM845 Adreno 630 qualification. Keep a dedicated row so early printf

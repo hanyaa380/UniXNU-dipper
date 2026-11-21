@@ -360,6 +360,10 @@ volatile uint32_t native_a630_gpu_core_prefix_ok;
 volatile uint32_t native_a630_gpu_core_prefix_written;
 volatile uint32_t native_a630_gpu_core_prefix_bad;
 volatile uint32_t native_a630_gpu_core_prefix_restore_bad;
+volatile uint32_t native_a630_gpu_core_prefix_index;
+volatile uint32_t native_a630_gpu_core_prefix_old;
+volatile uint32_t native_a630_gpu_core_prefix_want;
+volatile uint32_t native_a630_gpu_core_prefix_got;
 volatile uint32_t native_a630_gpu_gmu_boot_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_rsc_boot_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_tcm_boot_restore_bad;
@@ -1939,6 +1943,10 @@ a630_gpu_write_core_prefix_stage17(void)
 		native_a630_gpu_core_prefix_ok = 0;
 		return false;
 	}
+	native_a630_gpu_core_prefix_index = 0xffffffffu;
+	native_a630_gpu_core_prefix_old = 0;
+	native_a630_gpu_core_prefix_want = 0;
+	native_a630_gpu_core_prefix_got = 0;
 	for (uint32_t i = 0; i < sizeof(writes) / sizeof(writes[0]); i++) {
 		old[i] = rd((volatile uint8_t *)gpu, 4u * writes[i].word);
 		wr((volatile uint8_t *)gpu, 4u * writes[i].word,
@@ -1946,6 +1954,11 @@ a630_gpu_write_core_prefix_stage17(void)
 		written = i + 1;
 		if (rd((volatile uint8_t *)gpu, 4u * writes[i].word) !=
 		    writes[i].value) {
+			native_a630_gpu_core_prefix_index = i;
+			native_a630_gpu_core_prefix_old = old[i];
+			native_a630_gpu_core_prefix_want = writes[i].value;
+			native_a630_gpu_core_prefix_got =
+			    rd((volatile uint8_t *)gpu, 4u * writes[i].word);
 			bad++;
 			break;
 		}
