@@ -27,6 +27,8 @@ extern int printf(const char *, ...);
 
 #define GPUCC_PHYS               0x05090000UL
 #define GPUCC_SIZE               0x9000UL
+#define GPU_PHYS                 0x05000000UL
+#define GPU_SIZE                 0x40000UL
 #define GPUCC_GX_GDSCR           0x100c
 #define GPUCC_CX_GDSCR           0x106c
 #define GPUCC_CX_GDSC_HWCTRL     0x1540
@@ -349,6 +351,8 @@ volatile uint32_t native_a630_gpu_rail_power_state;
 volatile uint32_t native_a630_gpu_rail_sptprac;
 volatile uint32_t native_a630_gpu_rail_slumber;
 volatile uint32_t native_a630_gpu_rail_gx_off;
+volatile uint32_t native_a630_gpu_core_read_ok;
+volatile uint32_t native_a630_gpu_core_regs[11];
 volatile uint32_t native_a630_gpu_gmu_boot_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_rsc_boot_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_tcm_boot_restore_bad;
@@ -1817,7 +1821,46 @@ a630_gmu_oob_clear(volatile uint8_t *gmu, uint32_t bit)
 }
 
 static bool
-a630_gmu_gfx_rail_stage14(volatile uint8_t *gmu, volatile uint8_t *gpucc)
+a630_gpu_read_stage15(void)
+{
+	static const uint32_t words[] = {
+		0x0210, 0x0213, 0x0201, 0x0215, 0xf400, 0x00ae,
+		0x0500, 0x0808, 0x0806, 0x0807, 0x0841,
+	};
+	static vm_offset_t gpu;
+	uint32_t bad = 0;
+
+	if (gpu == 0) {
+		gpu = ml_io_map(GPU_PHYS, GPU_SIZE);
+	}
+	if (gpu == 0) {
+		printf("a630gpu: 3D core mapping failed\n");
+		native_a630_gpu_core_read_ok = 0;
+		return false;
+	}
+	for (uint32_t i = 0; i < sizeof(words) / sizeof(words[0]); i++) {
+		uint32_t value = rd((volatile uint8_t *)gpu, 4u * words[i]);
+
+		native_a630_gpu_core_regs[i] = value;
+		if (value == 0xffffffffu) {
+			bad++;
+		}
+	}
+	printf("a630gpu: 3D core read: status %#010x status3 %#010x int %#010x reset %#010x trust %#010x clock %#010x\n",
+	    native_a630_gpu_core_regs[0], native_a630_gpu_core_regs[1],
+	    native_a630_gpu_core_regs[2], native_a630_gpu_core_regs[3],
+	    native_a630_gpu_core_regs[4], native_a630_gpu_core_regs[5]);
+	printf("a630gpu: 3D core CP read: perf %#010x sqe %#010x rptr %#010x wptr %#010x chicken %#010x\n",
+	    native_a630_gpu_core_regs[6], native_a630_gpu_core_regs[7],
+	    native_a630_gpu_core_regs[8], native_a630_gpu_core_regs[9],
+	    native_a630_gpu_core_regs[10]);
+	native_a630_gpu_core_read_ok = bad == 0;
+	return bad == 0;
+}
+
+static bool
+a630_gmu_gfx_rail_stage14(volatile uint8_t *gmu, volatile uint8_t *gpucc,
+    bool read_gpu)
 {
 	const struct a630_cmd_db_header *db = a630_cmd_db();
 	uint32_t old_option, old_gx, old_mx, old_control;
@@ -1869,6 +1912,9 @@ a630_gmu_gfx_rail_stage14(volatile uint8_t *gmu, volatile uint8_t *gpucc)
 	    rail_ack, native_a630_gpu_rail_gx_gdscr,
 	    native_a630_gpu_rail_gx_alias, native_a630_gpu_rail_sptprac,
 	    sptprac_on ? "on" : "not confirmed");
+	if (read_gpu) {
+		(void)a630_gpu_read_stage15();
+	}
 
 	wr(gmu, GMU_WORD(GMU_GX_GDSCR_ALIAS_W),
 	    rd(gmu, GMU_WORD(GMU_GX_GDSCR_ALIAS_W)) | (1u << 11));
@@ -2239,8 +2285,12 @@ a630_gmu_boot_stage11(volatile uint8_t *gmu, volatile uint8_t *smmu,
 			}
 		}
 		if (!failure && hfi_mode >= 3) {
-			if (!a630_gmu_gfx_rail_stage14(gmu, gpucc)) {
+			if (!a630_gmu_gfx_rail_stage14(gmu, gpucc,
+			    hfi_mode >= 4)) {
 				failure = 46;
+			} else if (hfi_mode >= 4 &&
+			    !native_a630_gpu_core_read_ok) {
+				failure = 47;
 			}
 		}
 	}
@@ -2797,16 +2847,18 @@ native_a630_gpu_probe(void)
 			printf("a630gpu: stage 10 complete: the current A630 GMU firmware loads and restores without releasing CM3\n");
 			return;
 		}
-		if (enabled < 14) {
-			uint32_t hfi_mode = enabled >= 13 ? 2 :
-			    (enabled >= 12 ? 1 : 0);
+		if (enabled < 15) {
+			uint32_t hfi_mode = enabled >= 14 ? 3 :
+			    (enabled >= 13 ? 2 : (enabled >= 12 ? 1 : 0));
 
 			if (!a630_gmu_boot_stage11(gmu, smmu, gpucc,
 			    hfi_mode)) {
 				return;
 			}
 			native_a630_gpu_status = 0;
-			if (hfi_mode == 2) {
+			if (hfi_mode == 3) {
+				printf("a630gpu: stage 14 complete: the A630 GX rail powers on, SPTPRAC starts, and both return off\n");
+			} else if (hfi_mode == 2) {
 				printf("a630gpu: stage 13 complete: the complete A630 GMU HFI handshake is acknowledged and restored\n");
 			} else if (hfi_mode == 1) {
 				printf("a630gpu: stage 12 complete: GMU firmware and the HFI control channel start, then are held again\n");
@@ -2815,11 +2867,11 @@ native_a630_gpu_probe(void)
 			}
 			return;
 		}
-		if (!a630_gmu_boot_stage11(gmu, smmu, gpucc, 3)) {
+		if (!a630_gmu_boot_stage11(gmu, smmu, gpucc, 4)) {
 			return;
 		}
 	}
 
 	native_a630_gpu_status = 0;
-	printf("a630gpu: stage 14 complete: the A630 GX rail powers on, SPTPRAC starts, and both return off\n");
+	printf("a630gpu: stage 15 complete: the A630 3D core is readable while GX is on\n");
 }

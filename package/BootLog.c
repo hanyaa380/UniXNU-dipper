@@ -198,6 +198,8 @@ extern volatile uint32_t native_a630_gpu_rail_power_state __attribute__((weak_im
 extern volatile uint32_t native_a630_gpu_rail_sptprac __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_rail_slumber __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_rail_gx_off __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_core_read_ok __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_core_regs[11] __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_boot_restore_bad __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_rsc_boot_restore_bad __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_tcm_boot_restore_bad __attribute__((weak_import));
@@ -617,6 +619,27 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
              native_a630_gpu_rail_power_state,
              native_a630_gpu_rail_slumber,
              native_a630_gpu_rail_gx_off);
+    at = put(out, at, cap, row, sizeof row);
+  }
+  if (&native_a630_gpu_core_read_ok && native_a630_gpu_stage >= 24) {
+    char row[220];
+    snprintf(row, sizeof row, "[a630n] ok=%u rb=%08x r3=%08x int=%08x "
+             "reset=%08x trust=%08x clock=%08x",
+             native_a630_gpu_core_read_ok,
+             native_a630_gpu_core_regs[0],
+             native_a630_gpu_core_regs[1],
+             native_a630_gpu_core_regs[2],
+             native_a630_gpu_core_regs[3],
+             native_a630_gpu_core_regs[4],
+             native_a630_gpu_core_regs[5]);
+    at = put(out, at, cap, row, sizeof row);
+    snprintf(row, sizeof row, "[a630o] perf=%08x sqe=%08x rptr=%08x "
+             "wptr=%08x chicken=%08x",
+             native_a630_gpu_core_regs[6],
+             native_a630_gpu_core_regs[7],
+             native_a630_gpu_core_regs[8],
+             native_a630_gpu_core_regs[9],
+             native_a630_gpu_core_regs[10]);
     at = put(out, at, cap, row, sizeof row);
   }
   // SDM845 Adreno 630 qualification. Keep a dedicated row so early printf
