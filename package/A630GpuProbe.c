@@ -189,6 +189,7 @@ volatile uint32_t native_a630_gpu_smmu_gmu_restore_mask;
 volatile uint32_t native_a630_gpu_smmu_gmu_restore_index;
 volatile uint32_t native_a630_gpu_smmu_gmu_restore_old;
 volatile uint32_t native_a630_gpu_smmu_gmu_restore_got;
+volatile uint32_t native_a630_gpu_smmu_gmu_cbar_sticky;
 
 static const struct a630_gmu_boot_reg {
 	const char *name;
@@ -361,6 +362,8 @@ a630_gmu_smmu_restore(volatile uint8_t *smmu, vm_offset_t block,
 	wr(smmu, SMMU_S2CR(A630_GMU_SMR_ENTRY), old->s2cr);
 	wr(smmu, SMMU_SMR(A630_GMU_SMR_ENTRY), old->smr);
 	wr(cb, SMMU_CB_SCTLR, old->sctlr);
+	sleep_us(100);
+	__asm__ volatile("dsb sy" ::: "memory");
 
 	const struct {
 		volatile uint8_t *base;
@@ -384,6 +387,15 @@ a630_gmu_smmu_restore(volatile uint8_t *smmu, vm_offset_t block,
 	for (uint32_t i = 0; i < sizeof(restored) / sizeof(restored[0]); i++) {
 		uint32_t got = rd(restored[i].base, restored[i].offset);
 		if (got != restored[i].value) {
+			if (i == 2 &&
+			    rd(cb, SMMU_CB_SCTLR) == 0 &&
+			    rd(smmu, SMMU_SMR(A630_GMU_SMR_ENTRY)) == 0 &&
+			    (rd(smmu, SMMU_S2CR(A630_GMU_SMR_ENTRY)) & 0x30000u) ==
+			    0x20000u) {
+				/* CBAR is sticky after first use, but no route or context can use it. */
+				native_a630_gpu_smmu_gmu_cbar_sticky = got;
+				continue;
+			}
 			native_a630_gpu_smmu_gmu_restore_mask |= 1u << i;
 			if (!bad) {
 				native_a630_gpu_smmu_gmu_restore_index = i;
@@ -601,6 +613,10 @@ a630_gmu_smmu_stage6(volatile uint8_t *smmu)
 		return false;
 	}
 	printf("a630gpu: GPU SMMU GMU translation: 13 pages correct, two holes fault, restored\n");
+	if (native_a630_gpu_smmu_gmu_cbar_sticky) {
+		printf("a630gpu: CB1 CBAR is inert but sticky after use: %#010x\n",
+		    native_a630_gpu_smmu_gmu_cbar_sticky);
+	}
 	return true;
 }
 
