@@ -74,6 +74,16 @@ extern int printf(const char *, ...);
 #define GMU_AO_FENCE_CTRL_W      0x9310u
 #define GMU_FENCE_STATUS_W       0x9313u
 #define GMU_FENCE_CLR_W          0x9314u
+#define GMU_BOOT_SLUMBER_OPT_W   0x23f8u
+#define GMU_GX_VOTE_IDX_W        0x23f9u
+#define GMU_MX_VOTE_IDX_W        0x23fau
+#define GMU_RPMH_POWER_STATE_W   0x50ecu
+#define GMU_SPTPRAC_STATUS_W     0x50d0u
+#define GMU_SPTPRAC_CTRL_W       0x0081u
+#define GMU_GX_GDSCR_ALIAS_W     0x9c03u
+#define GMU_BUSY_STATUS_W        0x930cu
+#define OOB_BOOT_SLUMBER_SET     22u
+#define OOB_BOOT_SLUMBER_ACK     30u
 #define GMU_CM3_ITCM_W           0x0c00u
 #define GMU_CM3_DTCM_W           0x1c00u
 #define A630_GMU_FW_BYTES        0x8000u
@@ -330,6 +340,15 @@ volatile uint32_t native_a630_gpu_hfi_last_msg;
 volatile uint32_t native_a630_gpu_hfi_last_seq;
 volatile uint32_t native_a630_gpu_hfi_last_error;
 volatile uint32_t native_a630_gpu_hfi_cmd_db_magic;
+volatile uint32_t native_a630_gpu_rail_gx_index;
+volatile uint32_t native_a630_gpu_rail_mx_index;
+volatile uint32_t native_a630_gpu_rail_oob;
+volatile uint32_t native_a630_gpu_rail_gx_gdscr;
+volatile uint32_t native_a630_gpu_rail_gx_alias;
+volatile uint32_t native_a630_gpu_rail_power_state;
+volatile uint32_t native_a630_gpu_rail_sptprac;
+volatile uint32_t native_a630_gpu_rail_slumber;
+volatile uint32_t native_a630_gpu_rail_gx_off;
 volatile uint32_t native_a630_gpu_gmu_boot_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_rsc_boot_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_tcm_boot_restore_bad;
@@ -1497,6 +1516,47 @@ a630_arc_vote(const struct a630_cmd_db_header *db, const char *primary_name,
 	return true;
 }
 
+static bool
+a630_gx_vote_indices(const struct a630_cmd_db_header *db, uint32_t level,
+    uint32_t *gx_index, uint32_t *mx_index)
+{
+	const uint16_t *primary, *secondary;
+	uint32_t primary_count = 0, secondary_count = 0;
+	uint32_t i;
+
+	primary = a630_rpmh_levels(db, "gfx.lvl", &primary_count);
+	secondary = a630_rpmh_levels(db, "mx.lvl", &secondary_count);
+	if (primary == NULL || secondary == NULL) {
+		printf("a630gpu: no gfx.lvl/mx.lvl data for the GX rail\n");
+		return false;
+	}
+	*gx_index = 0;
+	for (i = 0; i < primary_count; i++) {
+		if (primary[i] >= level) {
+			*gx_index = i;
+			break;
+		}
+	}
+	if (i == primary_count) {
+		printf("a630gpu: gfx.lvl has no level >= %u\n", level);
+		return false;
+	}
+	*mx_index = 0;
+	for (i = 0; i < secondary_count; i++) {
+		if (secondary[i] >= level) {
+			*mx_index = i;
+			break;
+		}
+		if (secondary[i] != 0) {
+			*mx_index = i;
+		}
+	}
+	printf("a630gpu: GX rail level %u chooses gfx.lvl[%u]=%u mx.lvl[%u]=%u\n",
+	    level, *gx_index, primary[*gx_index], *mx_index,
+	    secondary[*mx_index]);
+	return true;
+}
+
 static struct a630_hfi_queue *
 a630_hfi_header(vm_offset_t block, uint32_t queue)
 {
@@ -1728,6 +1788,120 @@ a630_hfi_handshake(volatile uint8_t *gmu, vm_offset_t block)
 	return true;
 }
 
+static bool
+a630_gmu_oob_set(volatile uint8_t *gmu, uint32_t set, uint32_t ack)
+{
+	wr(gmu, GMU_WORD(GMU_H2G_INTR_SET_W), 1u << set);
+	__asm__ volatile("dsb sy" ::: "memory");
+	for (uint32_t i = 0; i < 1000; i++) {
+		if (rd(gmu, GMU_WORD(GMU_G2H_INTR_INFO_W)) & (1u << ack)) {
+			native_a630_gpu_rail_oob =
+			    rd(gmu, GMU_WORD(GMU_G2H_INTR_INFO_W));
+			wr(gmu, GMU_WORD(GMU_G2H_INTR_CLR_W), 1u << ack);
+			return true;
+		}
+		sleep_us(100);
+	}
+	native_a630_gpu_rail_oob =
+	    rd(gmu, GMU_WORD(GMU_G2H_INTR_INFO_W));
+	printf("a630gpu: OOB %u received no ACK %u: INTR %#010x\n",
+	    set, ack, native_a630_gpu_rail_oob);
+	return false;
+}
+
+static void
+a630_gmu_oob_clear(volatile uint8_t *gmu, uint32_t bit)
+{
+	wr(gmu, GMU_WORD(GMU_H2G_INTR_SET_W), 1u << bit);
+	__asm__ volatile("dsb sy" ::: "memory");
+}
+
+static bool
+a630_gmu_gfx_rail_stage14(volatile uint8_t *gmu, volatile uint8_t *gpucc)
+{
+	const struct a630_cmd_db_header *db = a630_cmd_db();
+	uint32_t old_option, old_gx, old_mx, old_control;
+	uint32_t gx_index = 0, mx_index = 0;
+	bool rail_ack = false, sptprac_on = false, slumber_ack = false;
+	bool gx_on = false, gx_off = false;
+
+	if (db == NULL ||
+	    !a630_gx_vote_indices(db, 64, &gx_index, &mx_index)) {
+		return false;
+	}
+	if ((rd(gpucc, GPUCC_GX_GDSCR) &
+	    (GDSC_PWR_ON | GDSCR_SW_COLLAPSE)) != GDSCR_SW_COLLAPSE) {
+		printf("a630gpu: GX rail is not off before Stage 14\n");
+		return false;
+	}
+	old_option = rd(gmu, GMU_WORD(GMU_BOOT_SLUMBER_OPT_W));
+	old_gx = rd(gmu, GMU_WORD(GMU_GX_VOTE_IDX_W));
+	old_mx = rd(gmu, GMU_WORD(GMU_MX_VOTE_IDX_W));
+	old_control = rd(gmu, GMU_WORD(GMU_SPTPRAC_CTRL_W));
+	native_a630_gpu_rail_gx_index = gx_index;
+	native_a630_gpu_rail_mx_index = mx_index;
+
+	wr(gmu, GMU_WORD(GMU_BOOT_SLUMBER_OPT_W), 0);
+	wr(gmu, GMU_WORD(GMU_GX_VOTE_IDX_W), gx_index);
+	wr(gmu, GMU_WORD(GMU_MX_VOTE_IDX_W), mx_index);
+	rail_ack = a630_gmu_oob_set(gmu, OOB_BOOT_SLUMBER_SET,
+	    OOB_BOOT_SLUMBER_ACK);
+	sleep_us(1000);
+	native_a630_gpu_rail_gx_gdscr = rd(gpucc, GPUCC_GX_GDSCR);
+	native_a630_gpu_rail_gx_alias =
+	    rd(gmu, GMU_WORD(GMU_GX_GDSCR_ALIAS_W));
+	gx_on = (native_a630_gpu_rail_gx_gdscr & GDSC_PWR_ON) != 0;
+	if (rail_ack) {
+		wr(gmu, GMU_WORD(GMU_SPTPRAC_CTRL_W), 0x778000);
+		for (uint32_t i = 0; i < 1000; i++) {
+			if ((rd(gmu, GMU_WORD(GMU_SPTPRAC_STATUS_W)) & 0x38) ==
+			    0x28) {
+				sptprac_on = true;
+				break;
+			}
+			sleep_us(1);
+		}
+		native_a630_gpu_rail_sptprac =
+		    rd(gmu, GMU_WORD(GMU_SPTPRAC_STATUS_W));
+		a630_gmu_oob_clear(gmu, OOB_BOOT_SLUMBER_ACK);
+	}
+	printf("a630gpu: GX rail on: ack=%u GDSCR=%#010x alias=%#010x SPTPRAC=%#010x (%s)\n",
+	    rail_ack, native_a630_gpu_rail_gx_gdscr,
+	    native_a630_gpu_rail_gx_alias, native_a630_gpu_rail_sptprac,
+	    sptprac_on ? "on" : "not confirmed");
+
+	wr(gmu, GMU_WORD(GMU_GX_GDSCR_ALIAS_W),
+	    rd(gmu, GMU_WORD(GMU_GX_GDSCR_ALIAS_W)) | (1u << 11));
+	wr(gmu, GMU_WORD(GMU_SPTPRAC_CTRL_W), 0x778001);
+	for (uint32_t i = 0; i < 1000; i++) {
+		if (rd(gmu, GMU_WORD(GMU_SPTPRAC_STATUS_W)) & 0x04) {
+			break;
+		}
+		sleep_us(10);
+	}
+	wr(gmu, GMU_WORD(GMU_BOOT_SLUMBER_OPT_W), 1);
+	slumber_ack = a630_gmu_oob_set(gmu, OOB_BOOT_SLUMBER_SET,
+	    OOB_BOOT_SLUMBER_ACK);
+	a630_gmu_oob_clear(gmu, OOB_BOOT_SLUMBER_ACK);
+	sleep_us(1000);
+	native_a630_gpu_rail_power_state =
+	    rd(gmu, GMU_WORD(GMU_RPMH_POWER_STATE_W));
+	native_a630_gpu_rail_gx_gdscr = rd(gpucc, GPUCC_GX_GDSCR);
+	gx_off = (native_a630_gpu_rail_gx_gdscr &
+	    (GDSC_PWR_ON | GDSCR_SW_COLLAPSE)) == GDSCR_SW_COLLAPSE;
+	native_a630_gpu_rail_slumber = slumber_ack;
+	native_a630_gpu_rail_gx_off = gx_off;
+
+	wr(gmu, GMU_WORD(GMU_BOOT_SLUMBER_OPT_W), old_option);
+	wr(gmu, GMU_WORD(GMU_GX_VOTE_IDX_W), old_gx);
+	wr(gmu, GMU_WORD(GMU_MX_VOTE_IDX_W), old_mx);
+	wr(gmu, GMU_WORD(GMU_SPTPRAC_CTRL_W), old_control);
+	printf("a630gpu: GX rail off: slumber=%u power=%#x GDSCR=%#010x gx_off=%u\n",
+	    slumber_ack, native_a630_gpu_rail_power_state,
+	    native_a630_gpu_rail_gx_gdscr, gx_off);
+	return rail_ack && gx_on && sptprac_on && slumber_ack && gx_off;
+}
+
 static uint32_t
 a630_gmu_boot_restore(volatile uint8_t *gmu, const uint32_t *old,
     uint32_t written)
@@ -1859,7 +2033,7 @@ a630_gmu_boot_rsc_program(volatile uint8_t *gmu, uint32_t *old,
  */
 static bool
 a630_gmu_boot_stage11(volatile uint8_t *gmu, volatile uint8_t *smmu,
-    uint32_t hfi_mode)
+    volatile uint8_t *gpucc, uint32_t hfi_mode)
 {
 	struct a630_gmu_smmu_old smmu_old = { 0 };
 	uint32_t boot_old[A630_GMU_BOOT_REGS] = { 0 };
@@ -2062,6 +2236,11 @@ a630_gmu_boot_stage11(volatile uint8_t *gmu, volatile uint8_t *smmu,
 				failure = 45;
 			}
 		}
+		if (!failure && hfi_mode >= 3) {
+			if (!a630_gmu_gfx_rail_stage14(gmu, gpucc)) {
+				failure = 46;
+			}
+		}
 	}
 
 restore:
@@ -2085,6 +2264,12 @@ restore:
 	if (!halted) {
 		native_a630_gpu_status = 42;
 		printf("a630gpu: CM3 did NOT return to reset; retaining all live resources\n");
+		return false;
+	}
+	if ((rd(gpucc, GPUCC_GX_GDSCR) &
+	    (GDSC_PWR_ON | GDSCR_SW_COLLAPSE)) != GDSCR_SW_COLLAPSE) {
+		native_a630_gpu_status = 46;
+		printf("a630gpu: GX is not off/collapsed after the rail test; retaining live resources\n");
 		return false;
 	}
 
@@ -2610,25 +2795,29 @@ native_a630_gpu_probe(void)
 			printf("a630gpu: stage 10 complete: the current A630 GMU firmware loads and restores without releasing CM3\n");
 			return;
 		}
-		if (enabled < 13) {
-			uint32_t hfi_mode = enabled >= 12 ? 1 : 0;
+		if (enabled < 14) {
+			uint32_t hfi_mode = enabled >= 13 ? 2 :
+			    (enabled >= 12 ? 1 : 0);
 
-			if (!a630_gmu_boot_stage11(gmu, smmu, hfi_mode)) {
+			if (!a630_gmu_boot_stage11(gmu, smmu, gpucc,
+			    hfi_mode)) {
 				return;
 			}
 			native_a630_gpu_status = 0;
-			if (hfi_mode) {
+			if (hfi_mode == 2) {
+				printf("a630gpu: stage 13 complete: the complete A630 GMU HFI handshake is acknowledged and restored\n");
+			} else if (hfi_mode == 1) {
 				printf("a630gpu: stage 12 complete: GMU firmware and the HFI control channel start, then are held again\n");
 			} else {
 				printf("a630gpu: stage 11 complete: the A630 GMU cold-starts, reports firmware init, and is held again\n");
 			}
 			return;
 		}
-		if (!a630_gmu_boot_stage11(gmu, smmu, 2)) {
+		if (!a630_gmu_boot_stage11(gmu, smmu, gpucc, 3)) {
 			return;
 		}
 	}
 
 	native_a630_gpu_status = 0;
-	printf("a630gpu: stage 13 complete: the complete A630 GMU HFI handshake is acknowledged and restored\n");
+	printf("a630gpu: stage 14 complete: the A630 GX rail powers on, SPTPRAC starts, and both return off\n");
 }
