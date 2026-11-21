@@ -152,6 +152,17 @@ extern volatile uint32_t native_a630_gpu_gmu_tcm_itcm_old[2] __attribute__((weak
 extern volatile uint32_t native_a630_gpu_gmu_tcm_itcm_back[2] __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_tcm_dtcm_old[2] __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_tcm_dtcm_back[2] __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_rscc_status0 __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_rscc_seq_busy __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_pdc_tcs1_control __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_pdc_tcs1_enable __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_pdc_tcs1_wait __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_pdc_tcs3_control __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_pdc_tcs3_enable __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_pdc_tcs3_wait __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_pdc_enable __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_pdc_seq_start __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_pdc_seq_mem[5] __attribute__((weak_import));
 extern volatile int native_staged_apps_dirs __attribute__((weak_import));
 extern volatile int native_staged_apps_files __attribute__((weak_import));
 extern volatile int native_staged_apps_mib __attribute__((weak_import));
@@ -486,6 +497,21 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
              native_a630_gpu_gmu_tcm_dtcm_old[1],
              native_a630_gpu_gmu_tcm_dtcm_back[0],
              native_a630_gpu_gmu_tcm_dtcm_back[1]);
+    at = put(out, at, cap, row, sizeof row);
+  }
+  if (&native_a630_gpu_rscc_status0 && native_a630_gpu_stage >= 16) {
+    char row[220];
+    snprintf(row, sizeof row, "[a630p] rscc=%08x/%08x tcs1=%x/%x/%x tcs3=%x/%x/%x enable=%08x start=%x",
+             native_a630_gpu_rscc_status0, native_a630_gpu_rscc_seq_busy,
+             native_a630_gpu_pdc_tcs1_control, native_a630_gpu_pdc_tcs1_enable,
+             native_a630_gpu_pdc_tcs1_wait, native_a630_gpu_pdc_tcs3_control,
+             native_a630_gpu_pdc_tcs3_enable, native_a630_gpu_pdc_tcs3_wait,
+             native_a630_gpu_pdc_enable, native_a630_gpu_pdc_seq_start);
+    at = put(out, at, cap, row, sizeof row);
+    snprintf(row, sizeof row, "[a630q] seq=%08x/%08x/%08x/%08x/%08x",
+             native_a630_gpu_pdc_seq_mem[0], native_a630_gpu_pdc_seq_mem[1],
+             native_a630_gpu_pdc_seq_mem[2], native_a630_gpu_pdc_seq_mem[3],
+             native_a630_gpu_pdc_seq_mem[4]);
     at = put(out, at, cap, row, sizeof row);
   }
   // SDM845 Adreno 630 qualification. Keep a dedicated row so early printf

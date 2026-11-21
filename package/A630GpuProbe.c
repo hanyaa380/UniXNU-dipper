@@ -65,6 +65,11 @@ extern int printf(const char *, ...);
 #define GMU_CM3_ITCM_W           0x0c00u
 #define GMU_CM3_DTCM_W           0x1c00u
 
+#define PDC_PHYS                 0x0b280000UL
+#define PDC_SEQ_PHYS             0x0b480000UL
+#define PDC_SIZE                 0x10000UL
+#define RSCC_OFFSET              0x23000u
+
 #define SMMU_PHYS                0x05040000UL
 #define SMMU_SIZE                0x10000UL
 #define SMMU_SCR0                0x000u
@@ -199,6 +204,17 @@ volatile uint32_t native_a630_gpu_gmu_tcm_itcm_old[2];
 volatile uint32_t native_a630_gpu_gmu_tcm_itcm_back[2];
 volatile uint32_t native_a630_gpu_gmu_tcm_dtcm_old[2];
 volatile uint32_t native_a630_gpu_gmu_tcm_dtcm_back[2];
+volatile uint32_t native_a630_gpu_rscc_status0;
+volatile uint32_t native_a630_gpu_rscc_seq_busy;
+volatile uint32_t native_a630_gpu_pdc_tcs1_control;
+volatile uint32_t native_a630_gpu_pdc_tcs1_enable;
+volatile uint32_t native_a630_gpu_pdc_tcs1_wait;
+volatile uint32_t native_a630_gpu_pdc_tcs3_control;
+volatile uint32_t native_a630_gpu_pdc_tcs3_enable;
+volatile uint32_t native_a630_gpu_pdc_tcs3_wait;
+volatile uint32_t native_a630_gpu_pdc_enable;
+volatile uint32_t native_a630_gpu_pdc_seq_start;
+volatile uint32_t native_a630_gpu_pdc_seq_mem[5];
 
 static const struct a630_gmu_boot_reg {
 	const char *name;
@@ -701,6 +717,55 @@ a630_gmu_tcm_stage7(volatile uint8_t *gmu)
 	return true;
 }
 
+static bool
+a630_gmu_rsc_pdc_stage8(volatile uint8_t *gmu)
+{
+	native_a630_gpu_stage = 16;
+	if (rd(gmu, GMU_WORD(GMU_CM3_SYSRESET_W)) != 1) {
+		native_a630_gpu_status = 28;
+		printf("a630gpu: RSC/PDC read refused: CM3 is not held in reset\n");
+		return false;
+	}
+	volatile uint8_t *pdc = (volatile uint8_t *)ml_io_map(PDC_PHYS, PDC_SIZE);
+	volatile uint8_t *seq = (volatile uint8_t *)ml_io_map(PDC_SEQ_PHYS, PDC_SIZE);
+	if (pdc == NULL || seq == NULL) {
+		native_a630_gpu_status = 29;
+		printf("a630gpu: RSC/PDC mapping failed\n");
+		return false;
+	}
+
+	volatile uint8_t *rscc = gmu + RSCC_OFFSET;
+	native_a630_gpu_rscc_status0 = rd(rscc, 4u * 0x0004);
+	native_a630_gpu_rscc_seq_busy = rd(rscc, 4u * 0x0101);
+	native_a630_gpu_pdc_tcs1_control = rd(pdc, 4u * 0x1572);
+	native_a630_gpu_pdc_tcs1_enable = rd(pdc, 4u * 0x1573);
+	native_a630_gpu_pdc_tcs1_wait = rd(pdc, 4u * 0x1574);
+	native_a630_gpu_pdc_tcs3_control = rd(pdc, 4u * 0x15d6);
+	native_a630_gpu_pdc_tcs3_enable = rd(pdc, 4u * 0x15d7);
+	native_a630_gpu_pdc_tcs3_wait = rd(pdc, 4u * 0x15d8);
+	native_a630_gpu_pdc_enable = rd(pdc, 4u * 0x1140);
+	native_a630_gpu_pdc_seq_start = rd(pdc, 4u * 0x1148);
+	for (uint32_t i = 0; i < 5; i++) {
+		native_a630_gpu_pdc_seq_mem[i] = rd(seq, 4u * i);
+	}
+	if (rd(gmu, GMU_WORD(GMU_CM3_SYSRESET_W)) != 1) {
+		native_a630_gpu_status = 28;
+		printf("a630gpu: CM3 reset changed during RSC/PDC read\n");
+		return false;
+	}
+	printf("a630gpu: RSC status0 %#010x seq_busy %#010x; PDC TCS1 %#x/%#x/%#x TCS3 %#x/%#x/%#x enable %#010x start %#x\n",
+	    native_a630_gpu_rscc_status0, native_a630_gpu_rscc_seq_busy,
+	    native_a630_gpu_pdc_tcs1_control, native_a630_gpu_pdc_tcs1_enable,
+	    native_a630_gpu_pdc_tcs1_wait, native_a630_gpu_pdc_tcs3_control,
+	    native_a630_gpu_pdc_tcs3_enable, native_a630_gpu_pdc_tcs3_wait,
+	    native_a630_gpu_pdc_enable, native_a630_gpu_pdc_seq_start);
+	printf("a630gpu: PDC sequence memory %#010x %#010x %#010x %#010x %#010x\n",
+	    native_a630_gpu_pdc_seq_mem[0], native_a630_gpu_pdc_seq_mem[1],
+	    native_a630_gpu_pdc_seq_mem[2], native_a630_gpu_pdc_seq_mem[3],
+	    native_a630_gpu_pdc_seq_mem[4]);
+	return true;
+}
+
 void
 native_a630_gpu_probe(void)
 {
@@ -1111,8 +1176,16 @@ native_a630_gpu_probe(void)
 		if (!a630_gmu_tcm_stage7(gmu)) {
 			return;
 		}
+		if (enabled < 8) {
+			native_a630_gpu_status = 0;
+			printf("a630gpu: stage 7 complete: GMU TCM is writable while CM3 remains in reset\n");
+			return;
+		}
+		if (!a630_gmu_rsc_pdc_stage8(gmu)) {
+			return;
+		}
 	}
 
 	native_a630_gpu_status = 0;
-	printf("a630gpu: stage 7 complete: GMU TCM is writable while CM3 remains in reset\n");
+	printf("a630gpu: stage 8 complete: A630 RSC/PDC state is readable while CM3 remains in reset\n");
 }
