@@ -185,6 +185,10 @@ volatile uint32_t native_a630_gpu_smmu_gmu_mair0;
 volatile uint64_t native_a630_gpu_smmu_gmu_par;
 volatile uint64_t native_a630_gpu_smmu_gmu_hole_par;
 volatile uint32_t native_a630_gpu_smmu_gmu_restore_bad;
+volatile uint32_t native_a630_gpu_smmu_gmu_restore_mask;
+volatile uint32_t native_a630_gpu_smmu_gmu_restore_index;
+volatile uint32_t native_a630_gpu_smmu_gmu_restore_old;
+volatile uint32_t native_a630_gpu_smmu_gmu_restore_got;
 
 static const struct a630_gmu_boot_reg {
 	const char *name;
@@ -339,6 +343,7 @@ a630_gmu_smmu_restore(volatile uint8_t *smmu, vm_offset_t block,
 	    rd(cb, SMMU_CB_SCTLR) != 0 ||
 	    (rd(cb, SMMU_CB_TLBSTATUS) & 1)) {
 		/* Translation may still be live: keep the tables and DMA pages forever. */
+		native_a630_gpu_smmu_gmu_restore_index = 0xffffffffu;
 		return 0xffffffffu;
 	}
 
@@ -377,10 +382,38 @@ a630_gmu_smmu_restore(volatile uint8_t *smmu, vm_offset_t block,
 		{ cb, SMMU_CB_MAIR1, old->mair1 },
 	};
 	for (uint32_t i = 0; i < sizeof(restored) / sizeof(restored[0]); i++) {
-		if (rd(restored[i].base, restored[i].offset) != restored[i].value) {
+		uint32_t got = rd(restored[i].base, restored[i].offset);
+		if (got != restored[i].value) {
+			native_a630_gpu_smmu_gmu_restore_mask |= 1u << i;
+			if (!bad) {
+				native_a630_gpu_smmu_gmu_restore_index = i;
+				native_a630_gpu_smmu_gmu_restore_old =
+				    restored[i].value;
+				native_a630_gpu_smmu_gmu_restore_got = got;
+			}
 			bad++;
 		}
 	}
+	native_a630_gpu_smmu_smr[A630_GMU_SMR_ENTRY] =
+	    rd(smmu, SMMU_SMR(A630_GMU_SMR_ENTRY));
+	native_a630_gpu_smmu_s2cr[A630_GMU_SMR_ENTRY] =
+	    rd(smmu, SMMU_S2CR(A630_GMU_SMR_ENTRY));
+	native_a630_gpu_smmu_cbar[A630_GMU_CTX] =
+	    rd(smmu, SMMU_CBAR(A630_GMU_CTX));
+	native_a630_gpu_smmu_cba2r[A630_GMU_CTX] =
+	    rd(smmu, SMMU_CBA2R(A630_GMU_CTX));
+	native_a630_gpu_smmu_cb_sctlr[A630_GMU_CTX] =
+	    rd(cb, SMMU_CB_SCTLR);
+	native_a630_gpu_smmu_cb_ttbr0_lo[A630_GMU_CTX] =
+	    rd(cb, SMMU_CB_TTBR0_LO);
+	native_a630_gpu_smmu_cb_ttbr0_hi[A630_GMU_CTX] =
+	    rd(cb, SMMU_CB_TTBR0_HI);
+	native_a630_gpu_smmu_cb_tcr[A630_GMU_CTX] =
+	    rd(cb, SMMU_CB_TCR);
+	native_a630_gpu_smmu_cb_mair0[A630_GMU_CTX] =
+	    rd(cb, SMMU_CB_MAIR0);
+	native_a630_gpu_smmu_cb_fsr[A630_GMU_CTX] =
+	    rd(cb, SMMU_CB_FSR);
 	if (!bad) {
 		kmem_free(kernel_map, block, A630_GMU_DMA_BYTES);
 	}
