@@ -1850,7 +1850,7 @@ a630_gmu_gfx_rail_stage14(volatile uint8_t *gmu, volatile uint8_t *gpucc)
 	native_a630_gpu_rail_gx_gdscr = rd(gpucc, GPUCC_GX_GDSCR);
 	native_a630_gpu_rail_gx_alias =
 	    rd(gmu, GMU_WORD(GMU_GX_GDSCR_ALIAS_W));
-	gx_on = (native_a630_gpu_rail_gx_gdscr & GDSC_PWR_ON) != 0;
+	gx_on = (native_a630_gpu_rail_gx_alias & GDSC_PWR_ON) != 0;
 	if (rail_ack) {
 		wr(gmu, GMU_WORD(GMU_SPTPRAC_CTRL_W), 0x778000);
 		for (uint32_t i = 0; i < 1000; i++) {
@@ -1889,17 +1889,19 @@ a630_gmu_gfx_rail_stage14(volatile uint8_t *gmu, volatile uint8_t *gpucc)
 	native_a630_gpu_rail_gx_gdscr = rd(gpucc, GPUCC_GX_GDSCR);
 	gx_off = (native_a630_gpu_rail_gx_gdscr &
 	    (GDSC_PWR_ON | GDSCR_SW_COLLAPSE)) == GDSCR_SW_COLLAPSE;
-	native_a630_gpu_rail_slumber = slumber_ack;
+	bool slumber_complete = slumber_ack ||
+	    (native_a630_gpu_rail_power_state == 0x0fu && gx_off);
+	native_a630_gpu_rail_slumber = slumber_complete;
 	native_a630_gpu_rail_gx_off = gx_off;
 
 	wr(gmu, GMU_WORD(GMU_BOOT_SLUMBER_OPT_W), old_option);
 	wr(gmu, GMU_WORD(GMU_GX_VOTE_IDX_W), old_gx);
 	wr(gmu, GMU_WORD(GMU_MX_VOTE_IDX_W), old_mx);
 	wr(gmu, GMU_WORD(GMU_SPTPRAC_CTRL_W), old_control);
-	printf("a630gpu: GX rail off: slumber=%u power=%#x GDSCR=%#010x gx_off=%u\n",
-	    slumber_ack, native_a630_gpu_rail_power_state,
+	printf("a630gpu: GX rail off: ack=%u completed=%u power=%#x GDSCR=%#010x gx_off=%u\n",
+	    slumber_ack, slumber_complete, native_a630_gpu_rail_power_state,
 	    native_a630_gpu_rail_gx_gdscr, gx_off);
-	return rail_ack && gx_on && sptprac_on && slumber_ack && gx_off;
+	return rail_ack && gx_on && sptprac_on && slumber_complete && gx_off;
 }
 
 static uint32_t
