@@ -12,6 +12,8 @@
 | [hanyaa380](https://github.com/hanyaa380) | 设备移植维护、启动链调试、UFS/APFS、显示、触摸、A630 资格检查、真机测试与集成 |
 | [John Panos](https://github.com/johnpanos) | `UniXNU-fajita` 基础设备工程和 SDM845 UniXNU 启动基础 |
 | [bluseliu50](https://github.com/bluseliu50) | 独立 `unixnudata` 数据分区、UFS 分区识别和原生滚动 `vc-text` 控制台 |
+| [youzjuzi](https://github.com/youzjuzi) | 独立维护 `dipper-xnu`，提供 A630 GMU/HFI/SMMU、HWCG、CP Protect、UBWC、GMEM、零拷贝扫描输出和批量 GPU 页表映射的真机参考与验证数据 |
+| [manysuq](https://github.com/manysuq) | 维护 HakiOS dipper 分支，提供 GMU/HFI/SMMU 分阶段实现、Adreno 用户客户端和 AIR/Metal 边界的独立交叉参考 |
 
 同时感谢所有通过 issue、讨论、测试报告、日志分析和代码审查间接帮助
 本项目的人。名单如有遗漏，欢迎通过 issue 或 pull request 补充。
@@ -30,7 +32,8 @@
 | 仓库 | 用途 |
 | --- | --- |
 | [MiCode/Xiaomi_Kernel_OpenSource](https://github.com/MiCode/Xiaomi_Kernel_OpenSource) | Xiaomi Mi 8 `dipper-q-oss` 内核、ST FTS/FTM5、时钟、供电和 SoC 定义 |
-| [youzjuzi/dipper-xnu](https://github.com/youzjuzi/dipper-xnu) | SDM845、Mi 8 显示、触摸和 A630 GPU 早期真机参考 |
+| [youzjuzi/dipper-xnu](https://github.com/youzjuzi/dipper-xnu) | iOS 16.5 的 Mi 8 独立移植；A630 驱动、180 项初始化序列、105 项 HWCG、32 项 CP Protect、GMU/HFI/SMMU 与最新 GMEM/零拷贝性能修复参考 |
+| [manysuq/hakios-xnu-kernel-dipper](https://github.com/manysuq/hakios-xnu-kernel-dipper) | HakiOS 的 dipper 设备目录及 Adreno/GMU/SMMU 分阶段实现；用于寄存器顺序、超时和 Metal 边界的独立交叉核对 |
 | [UniXNU/NativeMobileDisplay](https://github.com/UniXNU/NativeMobileDisplay) | NativeLegacyDisplay 和 framebuffer 呈现 |
 | [UniXNU/NativeUfs](https://github.com/UniXNU/NativeUfs) | UFS 与 SDM845 apps-SMMU 接入 |
 | [UniXNU/ArmCpu](https://github.com/UniXNU/ArmCpu) | ARM CPU、GIC、SMP 和 timer 支持 |

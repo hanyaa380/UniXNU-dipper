@@ -62,6 +62,8 @@ extern int printf(const char *, ...);
 #define GMU_GENERAL_0_W          0x51c5u
 #define GMU_AO_COUNTER_LO_W      0x5088u
 #define GMU_AO_COUNTER_HI_W      0x5089u
+#define GMU_CM3_ITCM_W           0x0c00u
+#define GMU_CM3_DTCM_W           0x1c00u
 
 #define SMMU_PHYS                0x05040000UL
 #define SMMU_SIZE                0x10000UL
@@ -191,6 +193,12 @@ volatile uint32_t native_a630_gpu_smmu_gmu_restore_old;
 volatile uint32_t native_a630_gpu_smmu_gmu_restore_got;
 volatile uint32_t native_a630_gpu_smmu_gmu_cbar_sticky;
 volatile uint32_t native_a630_gpu_smmu_gmu_s2cr_sticky;
+volatile uint32_t native_a630_gpu_gmu_tcm_bad;
+volatile uint32_t native_a630_gpu_gmu_tcm_reset;
+volatile uint32_t native_a630_gpu_gmu_tcm_itcm_old[2];
+volatile uint32_t native_a630_gpu_gmu_tcm_itcm_back[2];
+volatile uint32_t native_a630_gpu_gmu_tcm_dtcm_old[2];
+volatile uint32_t native_a630_gpu_gmu_tcm_dtcm_back[2];
 
 static const struct a630_gmu_boot_reg {
 	const char *name;
@@ -630,6 +638,69 @@ a630_gmu_smmu_stage6(volatile uint8_t *smmu)
 	return true;
 }
 
+static bool
+a630_gmu_tcm_stage7(volatile uint8_t *gmu)
+{
+	static const uint32_t pattern[2] = { 0xa5a5a5a5u, 0x5a5a5a5au };
+	uint32_t bad = 0;
+
+	native_a630_gpu_stage = 15;
+	native_a630_gpu_gmu_tcm_reset = rd(gmu, GMU_WORD(GMU_CM3_SYSRESET_W));
+	if (native_a630_gpu_gmu_tcm_reset != 1) {
+		native_a630_gpu_status = 26;
+		printf("a630gpu: GMU TCM test refused: CM3 is not held in reset (%#x)\n",
+		    native_a630_gpu_gmu_tcm_reset);
+		return false;
+	}
+
+	const struct {
+		const char *name;
+		uint32_t word;
+		volatile uint32_t *old;
+		volatile uint32_t *back;
+	} regions[] = {
+		{ "ITCM", GMU_CM3_ITCM_W, native_a630_gpu_gmu_tcm_itcm_old,
+		    native_a630_gpu_gmu_tcm_itcm_back },
+		{ "DTCM", GMU_CM3_DTCM_W, native_a630_gpu_gmu_tcm_dtcm_old,
+		    native_a630_gpu_gmu_tcm_dtcm_back },
+	};
+	for (uint32_t i = 0; i < sizeof(regions) / sizeof(regions[0]); i++) {
+		uint32_t offset = GMU_WORD(regions[i].word);
+
+		regions[i].old[0] = rd(gmu, offset);
+		regions[i].old[1] = rd(gmu, offset + 4);
+		wr(gmu, offset, pattern[0]);
+		wr(gmu, offset + 4, pattern[1]);
+		regions[i].back[0] = rd(gmu, offset);
+		regions[i].back[1] = rd(gmu, offset + 4);
+		wr(gmu, offset, regions[i].old[0]);
+		wr(gmu, offset + 4, regions[i].old[1]);
+		if (regions[i].back[0] != pattern[0] ||
+		    regions[i].back[1] != pattern[1]) {
+			bad++;
+		}
+		printf("a630gpu: GMU %s old %#010x/%#010x wrote %#010x/%#010x read %#010x/%#010x restored %#010x/%#010x\n",
+		    regions[i].name, regions[i].old[0], regions[i].old[1],
+		    pattern[0], pattern[1], regions[i].back[0],
+		    regions[i].back[1], rd(gmu, offset), rd(gmu, offset + 4));
+	}
+	native_a630_gpu_gmu_tcm_bad = bad;
+	native_a630_gpu_gmu_tcm_reset = rd(gmu, GMU_WORD(GMU_CM3_SYSRESET_W));
+	if (native_a630_gpu_gmu_tcm_reset != 1) {
+		native_a630_gpu_status = 26;
+		printf("a630gpu: CM3 reset changed during TCM test\n");
+		return false;
+	}
+	if (bad) {
+		native_a630_gpu_status = 27;
+		printf("a630gpu: GMU TCM test failed: %u regions did not read back\n",
+		    bad);
+		return false;
+	}
+	printf("a630gpu: GMU ITCM/DTCM write, readback and restore passed; CM3 still held\n");
+	return true;
+}
+
 void
 native_a630_gpu_probe(void)
 {
@@ -1032,8 +1103,16 @@ native_a630_gpu_probe(void)
 		if (!a630_gmu_smmu_stage6(smmu)) {
 			return;
 		}
+		if (enabled < 7) {
+			native_a630_gpu_status = 0;
+			printf("a630gpu: stage 6 complete: GMU stream 5 translates through CB1 and the mapping was restored\n");
+			return;
+		}
+		if (!a630_gmu_tcm_stage7(gmu)) {
+			return;
+		}
 	}
 
 	native_a630_gpu_status = 0;
-	printf("a630gpu: stage 6 complete: GMU stream 5 translates through CB1 and the mapping was restored\n");
+	printf("a630gpu: stage 7 complete: GMU TCM is writable while CM3 remains in reset\n");
 }
