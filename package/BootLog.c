@@ -163,6 +163,11 @@ extern volatile uint32_t native_a630_gpu_pdc_tcs3_wait __attribute__((weak_impor
 extern volatile uint32_t native_a630_gpu_pdc_enable __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_pdc_seq_start __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_pdc_seq_mem[5] __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_rsc_write_bad __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_rsc_restore_bad __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_rsc_written __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_rsc_old_enable __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_rsc_final_enable __attribute__((weak_import));
 extern volatile int native_staged_apps_dirs __attribute__((weak_import));
 extern volatile int native_staged_apps_files __attribute__((weak_import));
 extern volatile int native_staged_apps_mib __attribute__((weak_import));
@@ -512,6 +517,14 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
              native_a630_gpu_pdc_seq_mem[0], native_a630_gpu_pdc_seq_mem[1],
              native_a630_gpu_pdc_seq_mem[2], native_a630_gpu_pdc_seq_mem[3],
              native_a630_gpu_pdc_seq_mem[4]);
+    at = put(out, at, cap, row, sizeof row);
+  }
+  if (&native_a630_gpu_rsc_written && native_a630_gpu_stage >= 17) {
+    char row[180];
+    snprintf(row, sizeof row, "[a630z] wrote=%u bad=%u restore=%u enable=%08x/%08x",
+             native_a630_gpu_rsc_written, native_a630_gpu_rsc_write_bad,
+             native_a630_gpu_rsc_restore_bad, native_a630_gpu_rsc_old_enable,
+             native_a630_gpu_rsc_final_enable);
     at = put(out, at, cap, row, sizeof row);
   }
   // SDM845 Adreno 630 qualification. Keep a dedicated row so early printf

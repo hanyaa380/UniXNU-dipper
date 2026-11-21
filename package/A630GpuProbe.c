@@ -70,6 +70,67 @@ extern int printf(const char *, ...);
 #define PDC_SIZE                 0x10000UL
 #define RSCC_OFFSET              0x23000u
 
+enum a630_rs_region { A630_RS_RSCC, A630_RS_PDC, A630_RS_SEQ };
+struct a630_rs_write {
+	uint8_t region;
+	uint16_t word;
+	const char *name;
+	uint32_t value;
+};
+
+static const struct a630_rs_write a630_rs_writes[] = {
+	{ A630_RS_RSCC, 0x0004, "RSC_STATUS0_DRV0", 1u << 24 },
+	{ A630_RS_RSCC, 0x000b, "RSCC_PDC_SLAVE_ID_DRV0", 1 },
+	{ A630_RS_RSCC, 0x000e, "RSCC_HIDDEN_TCS_CMD0_DATA", 0 },
+	{ A630_RS_RSCC, 0x000d, "RSCC_HIDDEN_TCS_CMD0_ADDR", 0 },
+	{ A630_RS_RSCC, 0x0010, "RSCC_HIDDEN_TCS_CMD0_DATA+2", 0 },
+	{ A630_RS_RSCC, 0x000f, "RSCC_HIDDEN_TCS_CMD0_ADDR+2", 0 },
+	{ A630_RS_RSCC, 0x0012, "RSCC_HIDDEN_TCS_CMD0_DATA+4", 0x80000000u },
+	{ A630_RS_RSCC, 0x0011, "RSCC_HIDDEN_TCS_CMD0_ADDR+4", 0 },
+	{ A630_RS_RSCC, 0x0100, "RSCC_OVERRIDE_START_ADDR", 0 },
+	{ A630_RS_RSCC, 0x0008, "RSCC_PDC_SEQ_START_ADDR", 0x4520 },
+	{ A630_RS_RSCC, 0x0009, "RSCC_PDC_MATCH_VALUE_LO", 0x4510 },
+	{ A630_RS_RSCC, 0x000a, "RSCC_PDC_MATCH_VALUE_HI", 0x4514 },
+	{ A630_RS_RSCC, 0x0180, "RSCC_SEQ_MEM_0_DRV0", 0xa7a506a0u },
+	{ A630_RS_RSCC, 0x0181, "RSCC_SEQ_MEM_0_DRV0+1", 0xa1e6a6e7u },
+	{ A630_RS_RSCC, 0x0182, "RSCC_SEQ_MEM_0_DRV0+2", 0xa2e081e1u },
+	{ A630_RS_RSCC, 0x0183, "RSCC_SEQ_MEM_0_DRV0+3", 0xe9a982e2u },
+	{ A630_RS_RSCC, 0x0184, "RSCC_SEQ_MEM_0_DRV0+4", 0x0020e8a8u },
+	{ A630_RS_SEQ, 0x0000, "PDC_GPU_SEQ_MEM_0", 0xfebea1e1u },
+	{ A630_RS_SEQ, 0x0001, "PDC_GPU_SEQ_MEM_0+1", 0xa5a4a3a2u },
+	{ A630_RS_SEQ, 0x0002, "PDC_GPU_SEQ_MEM_0+2", 0x8382a6e0u },
+	{ A630_RS_SEQ, 0x0003, "PDC_GPU_SEQ_MEM_0+3", 0xbce3e284u },
+	{ A630_RS_SEQ, 0x0004, "PDC_GPU_SEQ_MEM_0+4", 0x002081fcu },
+	{ A630_RS_PDC, 0x1573, "PDC_GPU_TCS1_CMD_ENABLE_BANK", 7 },
+	{ A630_RS_PDC, 0x1574, "PDC_GPU_TCS1_CMD_WAIT_FOR_CMPL_BANK", 0 },
+	{ A630_RS_PDC, 0x1572, "PDC_GPU_TCS1_CONTROL", 0 },
+	{ A630_RS_PDC, 0x1575, "PDC_GPU_TCS1_CMD0_MSGID", 0x10108 },
+	{ A630_RS_PDC, 0x1576, "PDC_GPU_TCS1_CMD0_ADDR", 0x30010 },
+	{ A630_RS_PDC, 0x1577, "PDC_GPU_TCS1_CMD0_DATA", 1 },
+	{ A630_RS_PDC, 0x1579, "PDC_GPU_TCS1_CMD0_MSGID+4", 0x10108 },
+	{ A630_RS_PDC, 0x157a, "PDC_GPU_TCS1_CMD0_ADDR+4", 0x30000 },
+	{ A630_RS_PDC, 0x157b, "PDC_GPU_TCS1_CMD0_DATA+4", 0 },
+	{ A630_RS_PDC, 0x157d, "PDC_GPU_TCS1_CMD0_MSGID+8", 0x10108 },
+	{ A630_RS_PDC, 0x157e, "PDC_GPU_TCS1_CMD0_ADDR+8", 0x30080 },
+	{ A630_RS_PDC, 0x157f, "PDC_GPU_TCS1_CMD0_DATA+8", 0 },
+	{ A630_RS_PDC, 0x15d7, "PDC_GPU_TCS3_CMD_ENABLE_BANK", 7 },
+	{ A630_RS_PDC, 0x15d8, "PDC_GPU_TCS3_CMD_WAIT_FOR_CMPL_BANK", 0 },
+	{ A630_RS_PDC, 0x15d6, "PDC_GPU_TCS3_CONTROL", 0 },
+	{ A630_RS_PDC, 0x15d9, "PDC_GPU_TCS3_CMD0_MSGID", 0x10108 },
+	{ A630_RS_PDC, 0x15da, "PDC_GPU_TCS3_CMD0_ADDR", 0x30010 },
+	{ A630_RS_PDC, 0x15db, "PDC_GPU_TCS3_CMD0_DATA", 2 },
+	{ A630_RS_PDC, 0x15dd, "PDC_GPU_TCS3_CMD0_MSGID+4", 0x10108 },
+	{ A630_RS_PDC, 0x15de, "PDC_GPU_TCS3_CMD0_ADDR+4", 0x30000 },
+	{ A630_RS_PDC, 0x15df, "PDC_GPU_TCS3_CMD0_DATA+4", 3 },
+	{ A630_RS_PDC, 0x15e1, "PDC_GPU_TCS3_CMD0_MSGID+8", 0x10108 },
+	{ A630_RS_PDC, 0x15e2, "PDC_GPU_TCS3_CMD0_ADDR+8", 0x30080 },
+	{ A630_RS_PDC, 0x15e3, "PDC_GPU_TCS3_CMD0_DATA+8", 3 },
+	{ A630_RS_PDC, 0x1148, "PDC_GPU_SEQ_START_ADDR", 0 },
+	{ A630_RS_PDC, 0x1140, "PDC_GPU_ENABLE_PDC", 0x80000001u },
+};
+
+#define A630_RS_COUNT (sizeof(a630_rs_writes) / sizeof(a630_rs_writes[0]))
+
 #define SMMU_PHYS                0x05040000UL
 #define SMMU_SIZE                0x10000UL
 #define SMMU_SCR0                0x000u
@@ -215,6 +276,13 @@ volatile uint32_t native_a630_gpu_pdc_tcs3_wait;
 volatile uint32_t native_a630_gpu_pdc_enable;
 volatile uint32_t native_a630_gpu_pdc_seq_start;
 volatile uint32_t native_a630_gpu_pdc_seq_mem[5];
+volatile uint32_t native_a630_gpu_rsc_write_bad;
+volatile uint32_t native_a630_gpu_rsc_restore_bad;
+volatile uint32_t native_a630_gpu_rsc_written;
+volatile uint32_t native_a630_gpu_rsc_old_enable;
+volatile uint32_t native_a630_gpu_rsc_final_enable;
+static volatile uint8_t *a630_pdc_base;
+static volatile uint8_t *a630_pdc_seq_base;
 
 static const struct a630_gmu_boot_reg {
 	const char *name;
@@ -733,6 +801,8 @@ a630_gmu_rsc_pdc_stage8(volatile uint8_t *gmu)
 		printf("a630gpu: RSC/PDC mapping failed\n");
 		return false;
 	}
+	a630_pdc_base = pdc;
+	a630_pdc_seq_base = seq;
 
 	volatile uint8_t *rscc = gmu + RSCC_OFFSET;
 	native_a630_gpu_rscc_status0 = rd(rscc, 4u * 0x0004);
@@ -763,6 +833,124 @@ a630_gmu_rsc_pdc_stage8(volatile uint8_t *gmu)
 	    native_a630_gpu_pdc_seq_mem[0], native_a630_gpu_pdc_seq_mem[1],
 	    native_a630_gpu_pdc_seq_mem[2], native_a630_gpu_pdc_seq_mem[3],
 	    native_a630_gpu_pdc_seq_mem[4]);
+	return true;
+}
+
+static volatile uint8_t *
+a630_rs_address(const struct a630_rs_write *write, volatile uint8_t *rscc)
+{
+	if (write->region == A630_RS_RSCC) {
+		return rscc;
+	}
+	if (write->region == A630_RS_PDC) {
+		return a630_pdc_base;
+	}
+	return a630_pdc_seq_base;
+}
+
+static uint32_t
+a630_rs_mask(const struct a630_rs_write *write)
+{
+	if (write->region == A630_RS_RSCC &&
+	    (write->word == 0x000d || write->word == 0x000f ||
+	    write->word == 0x0011)) {
+		return 0;
+	}
+	if (write->region == A630_RS_PDC &&
+	    (write->word == 0x1575 || write->word == 0x1579 ||
+	    write->word == 0x157d || write->word == 0x15d9 ||
+	    write->word == 0x15dd || write->word == 0x15e1)) {
+		return ~0x8u;
+	}
+	return ~0u;
+}
+
+static bool
+a630_rsc_pdc_write_stage9(volatile uint8_t *gmu)
+{
+	uint32_t old[A630_RS_COUNT];
+	uint32_t written = 0, bad = 0, restore_bad = 0;
+	volatile uint8_t *rscc = gmu + RSCC_OFFSET;
+
+	native_a630_gpu_stage = 17;
+	if (a630_pdc_base == NULL || a630_pdc_seq_base == NULL ||
+	    rd(gmu, GMU_WORD(GMU_CM3_SYSRESET_W)) != 1 ||
+	    (native_a630_gpu_gx_gdscr & (GDSC_PWR_ON | GDSCR_SW_COLLAPSE)) !=
+	    GDSCR_SW_COLLAPSE || rd(rscc, 4u * 0x0101) != 0) {
+		native_a630_gpu_status = 30;
+		printf("a630gpu: RSC/PDC write refused: mapping, reset, GX or idle precondition failed\n");
+		return false;
+	}
+
+	native_a630_gpu_rsc_old_enable = rd(a630_pdc_base, 4u * 0x1140);
+	wr(a630_pdc_base, 4u * 0x1140,
+	    native_a630_gpu_rsc_old_enable & ~1u);
+	__asm__ volatile("dsb sy" ::: "memory");
+	if (rd(a630_pdc_base, 4u * 0x1140) & 1u) {
+		native_a630_gpu_status = 30;
+		printf("a630gpu: PDC did not disable for programming\n");
+		return false;
+	}
+
+	for (uint32_t i = 0; i < A630_RS_COUNT; i++) {
+		const struct a630_rs_write *entry = &a630_rs_writes[i];
+		volatile uint8_t *base = a630_rs_address(entry, rscc);
+		uint32_t offset = 4u * entry->word;
+		uint32_t got;
+
+		old[i] = rd(base, offset);
+		wr(base, offset, entry->value);
+		got = rd(base, offset);
+		written = i + 1;
+		if (((got ^ entry->value) & a630_rs_mask(entry)) != 0) {
+			bad++;
+			printf("a630gpu: RSC[%u] %s old %#010x want %#010x got %#010x\n",
+			    i, entry->name, old[i], entry->value, got);
+			break;
+		}
+	}
+	native_a630_gpu_rsc_written = written;
+	native_a630_gpu_rsc_write_bad = bad;
+
+	wr(a630_pdc_base, 4u * 0x1140,
+	    rd(a630_pdc_base, 4u * 0x1140) & ~1u);
+	__asm__ volatile("dsb sy" ::: "memory");
+	for (uint32_t i = written; i > 0; i--) {
+		uint32_t index = i - 1;
+		const struct a630_rs_write *entry = &a630_rs_writes[index];
+		volatile uint8_t *base = a630_rs_address(entry, rscc);
+		wr(base, 4u * entry->word, old[index]);
+	}
+	wr(a630_pdc_base, 4u * 0x1140, native_a630_gpu_rsc_old_enable);
+	__asm__ volatile("dsb sy" ::: "memory");
+	for (uint32_t i = 0; i < written; i++) {
+		const struct a630_rs_write *entry = &a630_rs_writes[i];
+		volatile uint8_t *base = a630_rs_address(entry, rscc);
+		uint32_t got = rd(base, 4u * entry->word);
+		if (((got ^ old[i]) & a630_rs_mask(entry)) != 0) {
+			restore_bad++;
+		}
+	}
+	native_a630_gpu_rsc_final_enable = rd(a630_pdc_base, 4u * 0x1140);
+	if (native_a630_gpu_rsc_final_enable !=
+	    native_a630_gpu_rsc_old_enable) {
+		restore_bad++;
+	}
+	native_a630_gpu_rsc_restore_bad = restore_bad;
+	if (restore_bad) {
+		native_a630_gpu_status = 33;
+		printf("a630gpu: RSC/PDC restore failed: %u mismatches\n",
+		    restore_bad);
+		return false;
+	}
+	native_a630_gpu_stage = 18;
+	if (bad) {
+		native_a630_gpu_status = 32;
+		printf("a630gpu: RSC/PDC programming failed at entry %u\n",
+		    written - 1);
+		return false;
+	}
+	printf("a630gpu: RSC/PDC 48-entry table written, read back and restored\n");
 	return true;
 }
 
@@ -1184,8 +1372,16 @@ native_a630_gpu_probe(void)
 		if (!a630_gmu_rsc_pdc_stage8(gmu)) {
 			return;
 		}
+		if (enabled < 9) {
+			native_a630_gpu_status = 0;
+			printf("a630gpu: stage 8 complete: A630 RSC/PDC state is readable while CM3 remains in reset\n");
+			return;
+		}
+		if (!a630_rsc_pdc_write_stage9(gmu)) {
+			return;
+		}
 	}
 
 	native_a630_gpu_status = 0;
-	printf("a630gpu: stage 8 complete: A630 RSC/PDC state is readable while CM3 remains in reset\n");
+	printf("a630gpu: stage 9 complete: A630 RSC/PDC table is writable and restorable\n");
 }
