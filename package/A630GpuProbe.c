@@ -59,14 +59,28 @@ extern int printf(const char *, ...);
 #define GMU_PWR_COL_KEEPALIVE_W  0x50c3u
 #define GMU_RPMH_CTRL_W          0x50e8u
 #define GMU_HFI_CTRL_STATUS_W    0x5180u
+#define GMU_G2H_INTR_CLR_W       0x5191u
+#define GMU_G2H_INTR_INFO_W      0x5192u
+#define GMU_GMU2HOST_MASK_W      0x5193u
+#define GMU_H2G_INTR_SET_W       0x5194u
 #define GMU_GENERAL_0_W          0x51c5u
+#define GMU_GENERAL_7_W          0x51ccu
 #define GMU_AO_COUNTER_LO_W      0x5088u
 #define GMU_AO_COUNTER_HI_W      0x5089u
+#define GMU_PWR_COL_CP_RESP_W    0x5101u
+#define GMU_AO_HOST_STATUS_W     0x9305u
+#define GMU_AO_HOST_MASK_W       0x9306u
+#define GMU_AO_FENCE_CTRL_W      0x9310u
+#define GMU_FENCE_STATUS_W       0x9313u
+#define GMU_FENCE_CLR_W          0x9314u
 #define GMU_CM3_ITCM_W           0x0c00u
 #define GMU_CM3_DTCM_W           0x1c00u
 #define A630_GMU_FW_BYTES        0x8000u
 #define A630_GMU_FW_WORDS        (A630_GMU_FW_BYTES / 4u)
 #define A630_GMU_FW_FNV1A        0xc7fe81d5u
+#define A630_GMU_LOG_IOVA        0x60005000ull
+#define A630_GMU_HFI_IOVA        0x60009000ull
+#define A630_GMU_HFI_BYTES       0x4000u
 
 #define PDC_PHYS                 0x0b280000UL
 #define PDC_SEQ_PHYS             0x0b480000UL
@@ -292,8 +306,34 @@ volatile uint32_t native_a630_gpu_gmu_fw_bad;
 volatile uint32_t native_a630_gpu_gmu_fw_first_bad;
 volatile uint32_t native_a630_gpu_gmu_fw_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_fw_reset;
+volatile uint32_t native_a630_gpu_gmu_init_mask;
+volatile uint32_t native_a630_gpu_gmu_init_want;
+volatile uint32_t native_a630_gpu_gmu_cp_resp;
+volatile uint32_t native_a630_gpu_gmu_general7;
+volatile uint32_t native_a630_gpu_gmu_started;
+volatile uint32_t native_a630_gpu_gmu_boot_restore_bad;
+volatile uint32_t native_a630_gpu_gmu_rsc_boot_restore_bad;
+volatile uint32_t native_a630_gpu_gmu_tcm_boot_restore_bad;
+volatile uint32_t native_a630_gpu_gmu_smmu_boot_restore_bad;
+volatile uint32_t native_a630_gpu_gmu_log[4];
 static volatile uint8_t *a630_pdc_base;
 static volatile uint8_t *a630_pdc_seq_base;
+
+struct a630_hfi_table {
+	uint32_t version, size, qhdr0_offset, qhdr_size, num_queues,
+	    active_queues;
+};
+
+struct a630_hfi_queue {
+	uint32_t status, iova, type, size, msg_size, dropped;
+	uint32_t rx_watermark, tx_watermark, rx_request, tx_request;
+	uint32_t read_index, write_index;
+};
+
+_Static_assert(sizeof(struct a630_hfi_table) == 24,
+    "A630 HFI table layout");
+_Static_assert(sizeof(struct a630_hfi_queue) == 48,
+    "A630 HFI queue layout");
 
 /*
  * Cloud builds intentionally carry only this marker. scripts/patch-a630-firmware.py
@@ -743,6 +783,166 @@ a630_gmu_smmu_stage6(volatile uint8_t *smmu)
 	return true;
 }
 
+/*
+ * Keep the exact 13-page GMU layout alive across a controlled CM3 boot:
+ * 0x60000000 dummy, 0x60001000 debug, 0x60005000 log and 0x60009000 HFI.
+ * The stage-6 run leaves S2CR/CBAR sticky but inert; those values are valid
+ * input only while SMR, SCTLR and TTBR are all inactive.
+ */
+static bool
+a630_gmu_smmu_boot_map(volatile uint8_t *smmu, vm_offset_t *block_out,
+    struct a630_gmu_smmu_old *old)
+{
+	volatile uint8_t *cb = smmu + native_a630_gpu_smmu_cb_base +
+	    native_a630_gpu_smmu_page_size * A630_GMU_CTX;
+	vm_offset_t block = 0;
+	uint64_t *l1, *l2, *l3, root;
+	uint32_t s2cr, cbar, bad = 0;
+
+	if (native_a630_gpu_smmu_num_cb <= A630_GMU_CTX ||
+	    native_a630_gpu_smmu_num_smr <= A630_GMU_SMR_ENTRY) {
+		native_a630_gpu_status = 38;
+		printf("a630gpu: GMU boot SMMU topology is too small\n");
+		return false;
+	}
+	s2cr = rd(smmu, SMMU_S2CR(A630_GMU_SMR_ENTRY));
+	cbar = rd(smmu, SMMU_CBAR(A630_GMU_CTX));
+	if (rd(smmu, SMMU_SMR(A630_GMU_SMR_ENTRY)) != 0 ||
+	    (s2cr != 0x000200ffu && (s2cr & 0x300ffu) != A630_GMU_CTX) ||
+	    (cbar != 0 && cbar != A630_SMMU_CBAR_S1) ||
+	    rd(cb, SMMU_CB_SCTLR) != 0 ||
+	    rd(cb, SMMU_CB_TTBR0_LO) != 0 ||
+	    rd(cb, SMMU_CB_TTBR0_HI) != 0) {
+		native_a630_gpu_status = 38;
+		printf("a630gpu: GMU boot SMMU is not inactive: SMR %#010x S2CR %#010x CBAR %#010x SCTLR %#010x\n",
+		    rd(smmu, SMMU_SMR(A630_GMU_SMR_ENTRY)), s2cr, cbar,
+		    rd(cb, SMMU_CB_SCTLR));
+		return false;
+	}
+	if (kmem_alloc_contig(kernel_map, &block, A630_GMU_DMA_BYTES, PAGE_MASK,
+	    0, 0, KMA_KOBJECT | KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) !=
+	    KERN_SUCCESS) {
+		native_a630_gpu_status = 38;
+		printf("a630gpu: no persistent 64 KiB GMU boot DMA block\n");
+		return false;
+	}
+
+	l1 = (uint64_t *)block;
+	l2 = (uint64_t *)(block + 0x1000);
+	l3 = (uint64_t *)(block + 0x2000);
+	root = kvtophys(block);
+	if ((root & 0xfff) ||
+	    ((A630_GMU_IOVA_BASE >> 30) !=
+	    ((A630_GMU_IOVA_BASE + 0xcfff) >> 30)) ||
+	    ((A630_GMU_IOVA_BASE >> 21) !=
+	    ((A630_GMU_IOVA_BASE + 0xcfff) >> 21))) {
+		kmem_free(kernel_map, block, A630_GMU_DMA_BYTES);
+		native_a630_gpu_status = 38;
+		printf("a630gpu: GMU boot IOVA/root layout is invalid\n");
+		return false;
+	}
+	l1[(A630_GMU_IOVA_BASE >> 30) & 0x1ff] =
+	    kvtophys((vm_offset_t)l2) | A630_PTE_TABLE;
+	l2[(A630_GMU_IOVA_BASE >> 21) & 0x1ff] =
+	    kvtophys((vm_offset_t)l3) | A630_PTE_TABLE;
+	for (uint32_t page = 0; page < 13; page++) {
+		uint64_t iova = A630_GMU_IOVA_BASE + page * 0x1000ull;
+		uint64_t phys = kvtophys(block + 0x3000 + page * 0x1000);
+
+		l3[(iova >> 12) & 0x1ff] =
+		    phys | A630_PTE_STAGE1 | A630_PTE_PAGE;
+	}
+	a630_to_memory(block, A630_GMU_DMA_BYTES);
+
+	old->smr = rd(smmu, SMMU_SMR(A630_GMU_SMR_ENTRY));
+	old->s2cr = rd(smmu, SMMU_S2CR(A630_GMU_SMR_ENTRY));
+	old->cbar = rd(smmu, SMMU_CBAR(A630_GMU_CTX));
+	old->cba2r = rd(smmu, SMMU_CBA2R(A630_GMU_CTX));
+	old->sctlr = rd(cb, SMMU_CB_SCTLR);
+	old->tcr = rd(cb, SMMU_CB_TCR);
+	old->tcr2 = rd(cb, SMMU_CB_TCR2);
+	old->ttbr0_lo = rd(cb, SMMU_CB_TTBR0_LO);
+	old->ttbr0_hi = rd(cb, SMMU_CB_TTBR0_HI);
+	old->ttbr1_lo = rd(cb, SMMU_CB_TTBR1_LO);
+	old->ttbr1_hi = rd(cb, SMMU_CB_TTBR1_HI);
+	old->mair0 = rd(cb, SMMU_CB_MAIR0);
+	old->mair1 = rd(cb, SMMU_CB_MAIR1);
+
+	native_a630_gpu_smmu_gmu_block = kvtophys(block);
+	native_a630_gpu_smmu_gmu_root = root;
+	native_a630_gpu_smmu_gmu_pages = 13;
+	native_a630_gpu_smmu_gmu_bad = 0;
+	native_a630_gpu_smmu_gmu_hole_bad = 0;
+	native_a630_gpu_smmu_gmu_restore_mask = 0;
+	native_a630_gpu_smmu_gmu_s2cr_sticky = 0;
+	native_a630_gpu_smmu_gmu_cbar_sticky = 0;
+
+	root |= (uint64_t)A630_GMU_CTX << 48;
+	wr(cb, SMMU_CB_SCTLR, 0);
+	wr(smmu, SMMU_CBA2R(A630_GMU_CTX), A630_SMMU_CBA2R_VA64);
+	wr(smmu, SMMU_CBAR(A630_GMU_CTX), A630_SMMU_CBAR_S1);
+	wr(cb, SMMU_CB_TCR2, A630_SMMU_TCR2_36_BITS);
+	wr(cb, SMMU_CB_TCR, A630_SMMU_TCR_39_BITS);
+	wr(cb, SMMU_CB_TTBR0_LO, (uint32_t)root);
+	wr(cb, SMMU_CB_TTBR0_HI, (uint32_t)(root >> 32));
+	wr(cb, SMMU_CB_TTBR1_LO, 0);
+	wr(cb, SMMU_CB_TTBR1_HI, 0);
+	wr(cb, SMMU_CB_MAIR0, A630_SMMU_MAIR0);
+	wr(cb, SMMU_CB_MAIR1, 0);
+	wr(cb, SMMU_CB_FSR, A630_SMMU_FSR_ALL);
+	wr(cb, SMMU_CB_TLBIASID, A630_GMU_CTX);
+	wr(cb, SMMU_CB_TLBSYNC, 1);
+	for (uint32_t waited = 0; waited < 1000 &&
+	    (rd(cb, SMMU_CB_TLBSTATUS) & 1); waited += 10) {
+		sleep_us(10);
+	}
+	if (rd(cb, SMMU_CB_TLBSTATUS) & 1) {
+		native_a630_gpu_status = 38;
+		printf("a630gpu: GMU boot SMMU TLB did not quiesce\n");
+		goto fail;
+	}
+	wr(cb, SMMU_CB_SCTLR, A630_SMMU_SCTLR_ON);
+	wr(smmu, SMMU_S2CR(A630_GMU_SMR_ENTRY), A630_GMU_CTX);
+	wr(smmu, SMMU_SMR(A630_GMU_SMR_ENTRY),
+	    A630_SMMU_SMR_VALID | A630_GMU_STREAM);
+	if (rd(smmu, SMMU_SMR(A630_GMU_SMR_ENTRY)) !=
+	    (A630_SMMU_SMR_VALID | A630_GMU_STREAM) ||
+	    !(rd(cb, SMMU_CB_SCTLR) & 1) ||
+	    rd(cb, SMMU_CB_TTBR0_LO) != (uint32_t)root) {
+		native_a630_gpu_status = 38;
+		printf("a630gpu: GMU boot SMMU did not activate CB%u\n",
+		    A630_GMU_CTX);
+		goto fail;
+	}
+	for (uint32_t page = 0; page < 13; page++) {
+		uint64_t iova = A630_GMU_IOVA_BASE + page * 0x1000ull;
+		uint64_t expected = kvtophys(block + 0x3000 + page * 0x1000);
+		uint64_t phys = 0;
+
+		if (a630_gmu_smmu_translate(smmu, iova, &phys) != 1 ||
+		    phys != expected) {
+			bad++;
+		}
+	}
+	native_a630_gpu_smmu_gmu_bad = bad;
+	if (bad) {
+		native_a630_gpu_status = 38;
+		printf("a630gpu: GMU boot SMMU translation failed: %u pages\n",
+		    bad);
+		goto fail;
+	}
+	*block_out = block;
+	printf("a630gpu: GMU boot SMMU live: 13 pages at %#llx root %#llx CB%u\n",
+	    (unsigned long long)A630_GMU_IOVA_BASE,
+	    (unsigned long long)root, A630_GMU_CTX);
+	return true;
+
+fail:
+	native_a630_gpu_smmu_gmu_restore_bad =
+	    a630_gmu_smmu_restore(smmu, block, old);
+	return false;
+}
+
 static bool
 a630_gmu_tcm_stage7(volatile uint8_t *gmu)
 {
@@ -1103,6 +1303,443 @@ a630_gmu_firmware_stage10(volatile uint8_t *gmu)
 	native_a630_gpu_status = 0;
 	printf("a630gpu: A630 GMU firmware loaded, all %u words read back and ITCM restored; CM3 still held\n",
 	    A630_GMU_FW_WORDS);
+	return true;
+}
+
+static void
+a630_gmu_hfi_prepare(vm_offset_t block)
+{
+	static const uint32_t ids[] = { 0, 4, 5 };
+	uint8_t *hfi = (uint8_t *)(block + 0x3000 + 9 * 0x1000);
+	struct a630_hfi_table *table = (struct a630_hfi_table *)hfi;
+	struct a630_hfi_queue *queue =
+	    (struct a630_hfi_queue *)(hfi + sizeof(*table));
+
+	for (uint32_t i = 0; i < A630_GMU_HFI_BYTES / 4; i++) {
+		((uint32_t *)hfi)[i] = 0;
+	}
+	table->version = 0;
+	table->size = sizeof(*table) + 3 * sizeof(*queue);
+	table->qhdr0_offset = sizeof(*table) / 4;
+	table->qhdr_size = sizeof(*queue) / 4;
+	table->num_queues = 3;
+	table->active_queues = 3;
+	for (uint32_t i = 0; i < 3; i++) {
+		queue[i].status = 1;
+		queue[i].iova = (uint32_t)A630_GMU_HFI_IOVA +
+		    0x1000 * (i + 1);
+		queue[i].type = (10u << 8) | ids[i];
+		queue[i].size = 0x1000 / 4;
+		queue[i].rx_watermark = 1;
+		queue[i].tx_watermark = 1;
+		queue[i].rx_request = 1;
+	}
+	a630_to_memory((vm_offset_t)hfi, A630_GMU_HFI_BYTES);
+	printf("a630gpu: GMU HFI table ready at %#llx: size %u, %u queues\n",
+	    (unsigned long long)A630_GMU_HFI_IOVA, table->size,
+	    table->active_queues);
+}
+
+static uint32_t
+a630_gmu_boot_restore(volatile uint8_t *gmu, const uint32_t *old,
+    uint32_t written)
+{
+	uint32_t bad = 0;
+
+	for (uint32_t i = written; i > 0; i--) {
+		uint32_t index = i - 1;
+		uint32_t got;
+
+		wr(gmu, GMU_WORD(a630_gmu_boot_regs[index].word), old[index]);
+		got = rd(gmu, GMU_WORD(a630_gmu_boot_regs[index].word));
+		if (got != old[index]) {
+			bad++;
+			printf("a630gpu: boot cleanup[%u] %s want %#010x got %#010x\n",
+			    index, a630_gmu_boot_regs[index].name, old[index],
+			    got);
+		}
+	}
+	return bad;
+}
+
+static uint32_t
+a630_gmu_boot_rsc_restore(volatile uint8_t *gmu, const uint32_t *old,
+    uint32_t written, uint32_t old_enable)
+{
+	volatile uint8_t *rscc = gmu + RSCC_OFFSET;
+	uint32_t bad = 0;
+
+	wr(a630_pdc_base, 4u * 0x1140,
+	    rd(a630_pdc_base, 4u * 0x1140) & ~1u);
+	__asm__ volatile("dsb sy" ::: "memory");
+	if (rd(a630_pdc_base, 4u * 0x1140) & 1u) {
+		printf("a630gpu: PDC did not disable for Stage 11 cleanup\n");
+		return written + 1;
+	}
+	for (uint32_t i = written; i > 0; i--) {
+		uint32_t index = i - 1;
+		const struct a630_rs_write *entry = &a630_rs_writes[index];
+		volatile uint8_t *base = a630_rs_address(entry, rscc);
+		uint32_t got;
+
+		wr(base, 4u * entry->word, old[index]);
+		got = rd(base, 4u * entry->word);
+		if (((got ^ old[index]) & a630_rs_mask(entry)) != 0) {
+			bad++;
+		}
+	}
+	wr(a630_pdc_base, 4u * 0x1140, old_enable);
+	__asm__ volatile("dsb sy" ::: "memory");
+	if (rd(a630_pdc_base, 4u * 0x1140) != old_enable) {
+		bad++;
+	}
+	return bad;
+}
+
+static uint32_t
+a630_gmu_boot_tcm_restore(volatile uint8_t *gmu)
+{
+	volatile uint8_t *itcm = gmu + GMU_WORD(GMU_CM3_ITCM_W);
+	uint32_t bad = 0;
+
+	for (uint32_t i = A630_GMU_FW_WORDS; i > 0; i--) {
+		uint32_t index = i - 1;
+
+		wr(itcm, 4u * index, a630_gmu_itcm_backup[index]);
+	}
+	for (uint32_t i = 0; i < A630_GMU_FW_WORDS; i++) {
+		if (rd(itcm, 4u * i) != a630_gmu_itcm_backup[i]) {
+			bad++;
+		}
+	}
+	return bad;
+}
+
+static bool
+a630_gmu_boot_rsc_program(volatile uint8_t *gmu, uint32_t *old,
+    uint32_t *old_enable, uint32_t *written_out, uint32_t *bad_out)
+{
+	volatile uint8_t *rscc = gmu + RSCC_OFFSET;
+	uint32_t written = 0, bad = 0;
+
+	if (a630_pdc_base == NULL || a630_pdc_seq_base == NULL ||
+	    rd(gmu, GMU_WORD(GMU_CM3_SYSRESET_W)) != 1 ||
+	    rd(rscc, 4u * 0x0101) != 0) {
+		printf("a630gpu: Stage 11 RSC/PDC prerequisites failed\n");
+		return false;
+	}
+	*old_enable = rd(a630_pdc_base, 4u * 0x1140);
+	wr(a630_pdc_base, 4u * 0x1140, *old_enable & ~1u);
+	__asm__ volatile("dsb sy" ::: "memory");
+	if (rd(a630_pdc_base, 4u * 0x1140) & 1u) {
+		printf("a630gpu: PDC did not disable for Stage 11 boot\n");
+		return false;
+	}
+	for (uint32_t i = 0; i < A630_RS_COUNT; i++) {
+		const struct a630_rs_write *entry = &a630_rs_writes[i];
+		volatile uint8_t *base = a630_rs_address(entry, rscc);
+		uint32_t got;
+
+		old[i] = rd(base, 4u * entry->word);
+		wr(base, 4u * entry->word, entry->value);
+		got = rd(base, 4u * entry->word);
+		written = i + 1;
+		if (((got ^ entry->value) & a630_rs_mask(entry)) != 0) {
+			bad++;
+			printf("a630gpu: Stage 11 RSC[%u] %s want %#010x got %#010x\n",
+			    i, entry->name, entry->value, got);
+			break;
+		}
+	}
+	*written_out = written;
+	*bad_out = bad;
+	native_a630_gpu_rsc_written = written;
+	native_a630_gpu_rsc_write_bad = bad;
+	native_a630_gpu_rsc_old_enable = *old_enable;
+	native_a630_gpu_rsc_final_enable =
+	    rd(a630_pdc_base, 4u * 0x1140);
+	if (bad || rd(rscc, 4u * 0x0101) != 0) {
+		return false;
+	}
+	return true;
+}
+
+/*
+ * Stage 11 performs one controlled legacy-GMU cold start with GX off.
+ * Every resource needed by the firmware is live until CM3 is held again:
+ * SMMU pages, HFI tables, ITCM, boot registers and RSC/PDC tables.
+ */
+static bool
+a630_gmu_boot_stage11(volatile uint8_t *gmu, volatile uint8_t *smmu)
+{
+	struct a630_gmu_smmu_old smmu_old = { 0 };
+	uint32_t boot_old[A630_GMU_BOOT_REGS] = { 0 };
+	uint32_t rsc_old[A630_RS_COUNT] = { 0 };
+	uint32_t boot_written = 0, rsc_written = 0;
+	uint32_t rsc_old_enable = 0, rsc_bad = 0;
+	volatile uint8_t *log = NULL;
+	vm_offset_t block = 0;
+	uint32_t bytes = sizeof(native_a630_gmu_firmware_blob);
+	uint32_t fw_bad = 0, fw_first = 0, fw_sum = 0;
+	uint32_t old_ao_mask = 0, old_gmu_mask = 0;
+	uint32_t selector, result = 0, restore_bad = 0;
+	uint32_t failure = 0;
+	bool mapped = false, tcm_backed = false, rsc_touched = false;
+	bool masks_changed = false, released = false, halted = true;
+	bool started = false;
+
+	native_a630_gpu_stage = 20;
+	native_a630_gpu_gmu_fw_bytes = bytes;
+	native_a630_gpu_gmu_boot_bad = 0;
+	native_a630_gpu_gmu_fw_hash =
+	    a630_fw_fnv1a(native_a630_gmu_firmware_blob, bytes);
+	native_a630_gpu_gmu_fw_head[0] =
+	    a630_fw_word(native_a630_gmu_firmware_blob, 0);
+	native_a630_gpu_gmu_fw_head[1] =
+	    a630_fw_word(native_a630_gmu_firmware_blob, 1);
+	if (bytes != A630_GMU_FW_BYTES ||
+	    native_a630_gpu_gmu_fw_hash != A630_GMU_FW_FNV1A) {
+		native_a630_gpu_status = 34;
+		printf("a630gpu: Stage 11 has no matching private GMU firmware\n");
+		return false;
+	}
+	if (rd(gmu, GMU_WORD(GMU_CM3_SYSRESET_W)) != 1 ||
+	    (native_a630_gpu_gx_gdscr & (GDSC_PWR_ON | GDSCR_SW_COLLAPSE)) !=
+	    GDSCR_SW_COLLAPSE) {
+		native_a630_gpu_status = 38;
+		printf("a630gpu: Stage 11 refused: CM3 reset or GX-off precondition failed\n");
+		return false;
+	}
+	if (!a630_gmu_smmu_boot_map(smmu, &block, &smmu_old)) {
+		return false;
+	}
+	mapped = true;
+	a630_gmu_hfi_prepare(block);
+
+	for (uint32_t i = 0; i < A630_GMU_FW_WORDS; i++) {
+		a630_gmu_itcm_backup[i] =
+		    rd(gmu, GMU_WORD(GMU_CM3_ITCM_W) + 4u * i);
+	}
+	tcm_backed = true;
+	for (uint32_t i = 0; i < A630_GMU_FW_WORDS; i++) {
+		uint32_t word = a630_fw_word(native_a630_gmu_firmware_blob, i);
+
+		wr(gmu, GMU_WORD(GMU_CM3_ITCM_W) + 4u * i, word);
+		fw_sum += word;
+	}
+	for (uint32_t i = 0; i < A630_GMU_FW_WORDS; i++) {
+		uint32_t want = a630_fw_word(native_a630_gmu_firmware_blob, i);
+		uint32_t got = rd(gmu, GMU_WORD(GMU_CM3_ITCM_W) + 4u * i);
+
+		if (got != want) {
+			if (!fw_bad) {
+				fw_first = i;
+				printf("a630gpu: Stage 11 firmware word %u got %#010x want %#010x\n",
+				    i, got, want);
+			}
+			fw_bad++;
+		}
+	}
+	native_a630_gpu_gmu_fw_sum = fw_sum;
+	native_a630_gpu_gmu_fw_bad = fw_bad;
+	native_a630_gpu_gmu_fw_first_bad = fw_first;
+	if (fw_bad) {
+		failure = 39;
+		goto restore;
+	}
+	printf("a630gpu: Stage 11 firmware remains loaded: %u words, hash %#010x\n",
+	    A630_GMU_FW_WORDS, native_a630_gpu_gmu_fw_hash);
+
+	for (uint32_t i = 0; i < A630_GMU_BOOT_REGS; i++) {
+		uint32_t value = a630_gmu_boot_regs[i].value;
+		uint32_t old = rd(gmu, GMU_WORD(a630_gmu_boot_regs[i].word));
+
+		boot_old[i] = old;
+		if (a630_gmu_boot_regs[i].word == GMU_RPMH_CTRL_W) {
+			value |= old;
+		}
+		wr(gmu, GMU_WORD(a630_gmu_boot_regs[i].word), value);
+		boot_written = i + 1;
+		if (rd(gmu, GMU_WORD(a630_gmu_boot_regs[i].word)) != value) {
+			native_a630_gpu_gmu_boot_index = i;
+			native_a630_gpu_gmu_boot_old = old;
+			native_a630_gpu_gmu_boot_want = value;
+			native_a630_gpu_gmu_boot_got =
+			    rd(gmu, GMU_WORD(a630_gmu_boot_regs[i].word));
+			native_a630_gpu_gmu_boot_bad = 1;
+			failure = 40;
+			goto restore;
+		}
+	}
+	native_a630_gpu_gmu_boot_count = boot_written;
+
+	rsc_touched = true;
+	if (!a630_gmu_boot_rsc_program(gmu, rsc_old, &rsc_old_enable,
+	    &rsc_written, &rsc_bad)) {
+		failure = 40;
+		goto restore;
+	}
+	native_a630_gpu_gmu_init_result = 0;
+	native_a630_gpu_gmu_cp_resp = 0;
+	native_a630_gpu_gmu_hfi_status =
+	    rd(gmu, GMU_WORD(GMU_HFI_CTRL_STATUS_W));
+
+	old_ao_mask = rd(gmu, GMU_WORD(GMU_AO_HOST_MASK_W));
+	old_gmu_mask = rd(gmu, GMU_WORD(GMU_GMU2HOST_MASK_W));
+	wr(gmu, GMU_WORD(GMU_AO_HOST_MASK_W), ~0u);
+	wr(gmu, GMU_WORD(GMU_GMU2HOST_MASK_W), ~0u);
+	masks_changed = true;
+
+	log = (uint8_t *)(block + 0x3000 + 5 * 0x1000);
+	for (uint32_t i = 0; i < A630_GMU_HFI_BYTES / 4; i++) {
+		((uint32_t *)log)[i] = 0;
+	}
+	a630_to_memory((vm_offset_t)log, A630_GMU_HFI_BYTES);
+	wr(gmu, GMU_WORD(GMU_PWR_COL_CP_RESP_W), 0);
+	wr(gmu, GMU_WORD(GMU_CM3_FW_INIT_RESULT_W), 0);
+	wr(smmu, SMMU_CB_FSR, A630_SMMU_FSR_ALL);
+	wr(smmu, SMMU_SGFSR, rd(smmu, SMMU_SGFSR));
+
+	selector =
+	    rd(gmu, GMU_WORD(GMU_CM3_DTCM_W) + 4u * 0xff8);
+	if (selector <= 0x20010004u) {
+		native_a630_gpu_gmu_init_mask = ~0u;
+		native_a630_gpu_gmu_init_want = 0xbabefaceu;
+	} else {
+		native_a630_gpu_gmu_init_mask = 0x1ffu;
+		native_a630_gpu_gmu_init_want = 0x100u;
+	}
+	printf("a630gpu: DTCM selector %#010x: waiting for FW_INIT_RESULT & %#x == %#x\n",
+	    selector, native_a630_gpu_gmu_init_mask,
+	    native_a630_gpu_gmu_init_want);
+
+	printf("a630gpu: Stage 11 releasing CM3 reset with GX off\n");
+	released = true;
+	wr(gmu, GMU_WORD(GMU_CM3_SYSRESET_W), 0);
+	for (uint32_t i = 0; i < 1000; i++) {
+		result = rd(gmu, GMU_WORD(GMU_CM3_FW_INIT_RESULT_W));
+		if ((result & native_a630_gpu_gmu_init_mask) ==
+		    native_a630_gpu_gmu_init_want) {
+			started = true;
+			break;
+		}
+		sleep_us(100);
+	}
+	native_a630_gpu_gmu_init_result = result;
+	native_a630_gpu_gmu_started = started;
+	native_a630_gpu_gmu_cp_resp =
+	    rd(gmu, GMU_WORD(GMU_PWR_COL_CP_RESP_W));
+	native_a630_gpu_gmu_general7 =
+	    rd(gmu, GMU_WORD(GMU_GENERAL_7_W));
+	native_a630_gpu_gmu_sysreset =
+	    rd(gmu, GMU_WORD(GMU_CM3_SYSRESET_W));
+	native_a630_gpu_gmu_cm3_cfg = rd(gmu, GMU_WORD(GMU_CM3_CFG_W));
+	native_a630_gpu_gmu_hfi_status =
+	    rd(gmu, GMU_WORD(GMU_HFI_CTRL_STATUS_W));
+	printf("a630gpu: GMU cold start %s: init %#010x want %#x/%#x CP_RESP %#010x GENERAL_7 %#x HFI %#010x\n",
+	    started ? "DONE" : "TIMED OUT (100 ms)", result,
+	    native_a630_gpu_gmu_init_want,
+	    native_a630_gpu_gmu_init_mask,
+	    native_a630_gpu_gmu_cp_resp, native_a630_gpu_gmu_general7,
+	    native_a630_gpu_gmu_hfi_status);
+
+restore:
+	if (released) {
+		wr(gmu, GMU_WORD(GMU_FENCE_CLR_W), 7);
+		wr(gmu, GMU_WORD(GMU_AO_FENCE_CTRL_W), 0);
+		__asm__ volatile("dsb sy" ::: "memory");
+		wr(gmu, GMU_WORD(GMU_CM3_SYSRESET_W), 1);
+		__asm__ volatile("dsb sy" ::: "memory");
+		halted = false;
+		for (uint32_t i = 0; i < 100; i++) {
+			if (rd(gmu, GMU_WORD(GMU_CM3_SYSRESET_W)) == 1) {
+				halted = true;
+				break;
+			}
+			sleep_us(10);
+		}
+	}
+	native_a630_gpu_gmu_sysreset =
+	    rd(gmu, GMU_WORD(GMU_CM3_SYSRESET_W));
+	if (!halted) {
+		native_a630_gpu_status = 42;
+		printf("a630gpu: CM3 did NOT return to reset; retaining all live resources\n");
+		return false;
+	}
+
+	if (released && log != NULL) {
+		a630_to_memory((vm_offset_t)log, A630_GMU_HFI_BYTES);
+		for (uint32_t i = 0; i < 4; i++) {
+			native_a630_gpu_gmu_log[i] = ((uint32_t *)log)[i];
+		}
+	}
+	native_a630_gpu_smmu_sgfsr = rd(smmu, SMMU_SGFSR);
+	native_a630_gpu_smmu_cb_fsr[A630_GMU_CTX] =
+	    rd(smmu, native_a630_gpu_smmu_cb_base +
+	    native_a630_gpu_smmu_page_size * A630_GMU_CTX + SMMU_CB_FSR);
+
+	if (tcm_backed) {
+		native_a630_gpu_gmu_tcm_boot_restore_bad =
+		    a630_gmu_boot_tcm_restore(gmu);
+		restore_bad += native_a630_gpu_gmu_tcm_boot_restore_bad;
+		tcm_backed = false;
+	}
+	if (rsc_touched) {
+		native_a630_gpu_gmu_rsc_boot_restore_bad =
+		    a630_gmu_boot_rsc_restore(gmu, rsc_old, rsc_written,
+		    rsc_old_enable);
+		restore_bad += native_a630_gpu_gmu_rsc_boot_restore_bad;
+		native_a630_gpu_rsc_restore_bad =
+		    native_a630_gpu_gmu_rsc_boot_restore_bad;
+		native_a630_gpu_rsc_final_enable =
+		    rd(a630_pdc_base, 4u * 0x1140);
+		rsc_touched = false;
+	}
+	if (boot_written) {
+		native_a630_gpu_gmu_boot_restore_bad =
+		    a630_gmu_boot_restore(gmu, boot_old, boot_written);
+		restore_bad += native_a630_gpu_gmu_boot_restore_bad;
+		native_a630_gpu_gmu_restore_bad =
+		    native_a630_gpu_gmu_boot_restore_bad;
+		boot_written = 0;
+	}
+	if (masks_changed) {
+		wr(gmu, GMU_WORD(GMU_AO_HOST_MASK_W), old_ao_mask);
+		wr(gmu, GMU_WORD(GMU_GMU2HOST_MASK_W), old_gmu_mask);
+		masks_changed = false;
+	}
+	if (mapped) {
+		native_a630_gpu_gmu_smmu_boot_restore_bad =
+		    a630_gmu_smmu_restore(smmu, block, &smmu_old);
+		if (native_a630_gpu_gmu_smmu_boot_restore_bad == 0xffffffffu) {
+			restore_bad++;
+		} else {
+			restore_bad +=
+			    native_a630_gpu_gmu_smmu_boot_restore_bad;
+			if (native_a630_gpu_gmu_smmu_boot_restore_bad == 0) {
+				native_a630_gpu_smmu_gmu_block = 0;
+				native_a630_gpu_smmu_gmu_root = 0;
+				native_a630_gpu_smmu_gmu_pages = 0;
+			}
+		}
+		mapped = false;
+	}
+	if (restore_bad) {
+		native_a630_gpu_status = 43;
+		printf("a630gpu: Stage 11 cleanup failed: %u mismatches\n",
+		    restore_bad);
+		return false;
+	}
+	if (failure) {
+		native_a630_gpu_status = failure;
+		return false;
+	}
+	if (!started) {
+		native_a630_gpu_status = 41;
+		return false;
+	}
+	native_a630_gpu_status = 0;
+	printf("a630gpu: Stage 11 complete: firmware init acknowledged, CM3 held and all resources restored\n");
 	return true;
 }
 
@@ -1540,8 +2177,16 @@ native_a630_gpu_probe(void)
 		if (!a630_gmu_firmware_stage10(gmu)) {
 			return;
 		}
+		if (enabled < 11) {
+			native_a630_gpu_status = 0;
+			printf("a630gpu: stage 10 complete: the current A630 GMU firmware loads and restores without releasing CM3\n");
+			return;
+		}
+		if (!a630_gmu_boot_stage11(gmu, smmu)) {
+			return;
+		}
 	}
 
 	native_a630_gpu_status = 0;
-	printf("a630gpu: stage 10 complete: the current A630 GMU firmware loads and restores without releasing CM3\n");
+	printf("a630gpu: stage 11 complete: the A630 GMU cold-starts, reports firmware init, and is held again\n");
 }
