@@ -1427,7 +1427,7 @@ a630_rpmh_levels(const struct a630_cmd_db_header *db, const char *name,
 		    &db->slave[slave_index];
 		const struct a630_cmd_db_entry *entries;
 
-		if (slave->id == 0 || slave->header_offset >=
+		if (slave->id == 0 || (uint32_t)slave->header_offset >=
 		    CMD_DB_SIZE - 0x1000 || slave->count > 512 ||
 		    (uint32_t)slave->header_offset +
 		    (uint32_t)slave->count *
