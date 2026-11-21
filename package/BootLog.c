@@ -140,6 +140,10 @@ extern volatile uint32_t native_a630_gpu_smmu_gmu_mair0 __attribute__((weak_impo
 extern volatile uint64_t native_a630_gpu_smmu_gmu_par __attribute__((weak_import));
 extern volatile uint64_t native_a630_gpu_smmu_gmu_hole_par __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_smmu_gmu_restore_bad __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_smmu_gmu_restore_mask __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_smmu_gmu_restore_index __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_smmu_gmu_restore_old __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_smmu_gmu_restore_got __attribute__((weak_import));
 extern volatile int native_staged_apps_dirs __attribute__((weak_import));
 extern volatile int native_staged_apps_files __attribute__((weak_import));
 extern volatile int native_staged_apps_mib __attribute__((weak_import));
@@ -436,10 +440,11 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
     }
   }
   if (&native_a630_gpu_smmu_gmu_root && native_a630_gpu_stage >= 13) {
-    char row[360];
+    char row[460];
     snprintf(row, sizeof row, "[a630u] root=%llx block=%llx pages=%u bad=%u holes=%u "
              "smr=%08x s2cr=%08x cbar=%08x sctlr=%08x tcr=%08x tcr2=%08x "
-             "mair=%08x par=%llx holepar=%llx restore=%u",
+             "mair=%08x par=%llx holepar=%llx restore=%u mask=%04x "
+             "idx=%u old=%08x got=%08x",
              (unsigned long long)native_a630_gpu_smmu_gmu_root,
              (unsigned long long)native_a630_gpu_smmu_gmu_block,
              native_a630_gpu_smmu_gmu_pages, native_a630_gpu_smmu_gmu_bad,
@@ -449,7 +454,11 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
              native_a630_gpu_smmu_gmu_tcr2, native_a630_gpu_smmu_gmu_mair0,
              (unsigned long long)native_a630_gpu_smmu_gmu_par,
              (unsigned long long)native_a630_gpu_smmu_gmu_hole_par,
-             native_a630_gpu_smmu_gmu_restore_bad);
+             native_a630_gpu_smmu_gmu_restore_bad,
+             native_a630_gpu_smmu_gmu_restore_mask,
+             native_a630_gpu_smmu_gmu_restore_index,
+             native_a630_gpu_smmu_gmu_restore_old,
+             native_a630_gpu_smmu_gmu_restore_got);
     at = put(out, at, cap, row, sizeof row);
   }
   // SDM845 Adreno 630 qualification. Keep a dedicated row so early printf
