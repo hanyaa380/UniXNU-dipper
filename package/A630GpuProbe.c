@@ -88,6 +88,16 @@ extern int printf(const char *, ...);
 #define PDC_SIZE                 0x10000UL
 #define RSCC_OFFSET              0x23000u
 
+#define CMD_DB_PHYS              0x85fe0000UL
+#define CMD_DB_SIZE              0x20000UL
+#define HFI_H2F_MSG_INIT         0u
+#define HFI_H2F_MSG_FW_VERSION   1u
+#define HFI_H2F_MSG_BW_TABLE     3u
+#define HFI_H2F_MSG_PERF_TABLE   4u
+#define HFI_H2F_MSG_TEST         5u
+#define HFI_F2H_MSG_ERROR        100u
+#define HFI_QUEUE_WORDS          1024u
+
 enum a630_rs_region { A630_RS_RSCC, A630_RS_PDC, A630_RS_SEQ };
 struct a630_rs_write {
 	uint8_t region;
@@ -314,6 +324,12 @@ volatile uint32_t native_a630_gpu_gmu_general7;
 volatile uint32_t native_a630_gpu_gmu_started;
 volatile uint32_t native_a630_gpu_gmu_hfi_started;
 volatile uint32_t native_a630_gpu_gmu_hfi_restore_bad;
+volatile uint32_t native_a630_gpu_hfi_stage;
+volatile uint32_t native_a630_gpu_hfi_version;
+volatile uint32_t native_a630_gpu_hfi_last_msg;
+volatile uint32_t native_a630_gpu_hfi_last_seq;
+volatile uint32_t native_a630_gpu_hfi_last_error;
+volatile uint32_t native_a630_gpu_hfi_cmd_db_magic;
 volatile uint32_t native_a630_gpu_gmu_boot_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_rsc_boot_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_tcm_boot_restore_bad;
@@ -337,6 +353,25 @@ _Static_assert(sizeof(struct a630_hfi_table) == 24,
     "A630 HFI table layout");
 _Static_assert(sizeof(struct a630_hfi_queue) == 48,
     "A630 HFI queue layout");
+
+struct a630_cmd_db_slave {
+	uint16_t id, header_offset, data_offset, count, version, reserved[3];
+};
+
+struct a630_cmd_db_header {
+	uint32_t version;
+	uint8_t magic[4];
+	struct a630_cmd_db_slave slave[8];
+	uint32_t checksum, reserved;
+	uint8_t data[];
+};
+
+struct a630_cmd_db_entry {
+	char id[8];
+	uint32_t priority[2];
+	uint32_t address;
+	uint16_t length, offset;
+};
 
 /*
  * Cloud builds intentionally carry only this marker. scripts/patch-a630-firmware.py
@@ -1343,6 +1378,356 @@ a630_gmu_hfi_prepare(vm_offset_t block)
 	    table->active_queues);
 }
 
+static vm_offset_t a630_cmd_db_va;
+
+static const struct a630_cmd_db_header *
+a630_cmd_db(void)
+{
+	const struct a630_cmd_db_header *db;
+
+	if (a630_cmd_db_va == 0) {
+		a630_cmd_db_va = ml_io_map(CMD_DB_PHYS, CMD_DB_SIZE);
+	}
+	if (a630_cmd_db_va == 0) {
+		return NULL;
+	}
+	db = (const struct a630_cmd_db_header *)a630_cmd_db_va;
+	native_a630_gpu_hfi_cmd_db_magic =
+	    (uint32_t)db->magic[0] | (uint32_t)db->magic[1] << 8 |
+	    (uint32_t)db->magic[2] << 16 | (uint32_t)db->magic[3] << 24;
+	if (db->magic[0] != 0xdb || db->magic[1] != 0x30 ||
+	    db->magic[2] != 0x03 || db->magic[3] != 0x0c) {
+		printf("a630gpu: RPMh command DB magic is %08x\n",
+		    native_a630_gpu_hfi_cmd_db_magic);
+		return NULL;
+	}
+	return db;
+}
+
+static bool
+a630_cmd_id_equal(const char *id, const char *name)
+{
+	for (uint32_t i = 0; i < 8; i++) {
+		if (id[i] != name[i]) {
+			return false;
+		}
+		if (name[i] == 0) {
+			return true;
+		}
+	}
+	return true;
+}
+
+static const uint16_t *
+a630_rpmh_levels(const struct a630_cmd_db_header *db, const char *name,
+    uint32_t *count)
+{
+	for (uint32_t slave_index = 0; slave_index < 8; slave_index++) {
+		const struct a630_cmd_db_slave *slave =
+		    &db->slave[slave_index];
+		const struct a630_cmd_db_entry *entries;
+
+		if (slave->id == 0 || slave->header_offset >=
+		    CMD_DB_SIZE - 0x1000 || slave->count > 512 ||
+		    (uint32_t)slave->header_offset +
+		    (uint32_t)slave->count *
+		    sizeof(struct a630_cmd_db_entry) >
+		    CMD_DB_SIZE - 0x1000) {
+			continue;
+		}
+		entries = (const struct a630_cmd_db_entry *)
+		    (db->data + slave->header_offset);
+		for (uint32_t i = 0; i < slave->count; i++) {
+			uint32_t offset;
+
+			if (!a630_cmd_id_equal(entries[i].id, name)) {
+				continue;
+			}
+			if (entries[i].length < 2 ||
+			    entries[i].length > 64 ||
+			    (entries[i].length & 1) != 0) {
+				return NULL;
+			}
+			offset = (uint32_t)slave->data_offset +
+			    entries[i].offset;
+			if (offset + entries[i].length >
+			    CMD_DB_SIZE - 0x1000) {
+				return NULL;
+			}
+			*count = entries[i].length / 2;
+			return (const uint16_t *)(db->data + offset);
+		}
+	}
+	return NULL;
+}
+
+static bool
+a630_arc_vote(const struct a630_cmd_db_header *db, const char *primary_name,
+    const char *secondary_name, uint32_t level, uint32_t *vote)
+{
+	const uint16_t *primary, *secondary;
+	uint32_t primary_count = 0, secondary_count = 0;
+	uint32_t primary_index = 0, secondary_index = 0, i;
+
+	primary = a630_rpmh_levels(db, primary_name, &primary_count);
+	secondary = a630_rpmh_levels(db, secondary_name, &secondary_count);
+	if (primary == NULL || secondary == NULL) {
+		return false;
+	}
+	for (i = 0; i < primary_count; i++) {
+		if (primary[i] >= level) {
+			primary_index = i;
+			break;
+		}
+	}
+	if (i == primary_count) {
+		return false;
+	}
+	for (i = 0; i < secondary_count; i++) {
+		if (secondary[i] >= level) {
+			secondary_index = i;
+			break;
+		}
+		if (secondary[i] != 0) {
+			secondary_index = i;
+		}
+	}
+	*vote = ((uint32_t)primary[primary_index] << 16) |
+	    (secondary_index << 8) | primary_index;
+	return true;
+}
+
+static struct a630_hfi_queue *
+a630_hfi_header(vm_offset_t block, uint32_t queue)
+{
+	uint8_t *hfi = (uint8_t *)(block + 0x3000 + 9 * 0x1000);
+
+	return (struct a630_hfi_queue *)(hfi +
+	    sizeof(struct a630_hfi_table)) + queue;
+}
+
+static uint32_t *
+a630_hfi_data(vm_offset_t block, uint32_t queue)
+{
+	uint8_t *hfi = (uint8_t *)(block + 0x3000 + 9 * 0x1000);
+
+	return (uint32_t *)(hfi + 0x1000 * (queue + 1));
+}
+
+static uint32_t a630_hfi_seqnum;
+
+static bool
+a630_hfi_send(volatile uint8_t *gmu, vm_offset_t block, uint32_t id,
+    uint32_t *message, uint32_t dwords, uint32_t *payload,
+    uint32_t payload_words)
+{
+	uint8_t *hfi = (uint8_t *)(block + 0x3000 + 9 * 0x1000);
+	struct a630_hfi_queue *command = a630_hfi_header(block, 0);
+	struct a630_hfi_queue *response = a630_hfi_header(block, 1);
+	uint32_t *command_data = a630_hfi_data(block, 0);
+	uint32_t *response_data = a630_hfi_data(block, 1);
+	uint32_t sequence = ++a630_hfi_seqnum % 0xfff;
+	uint32_t index, space;
+
+	a630_to_memory((vm_offset_t)hfi, 0x1000);
+	index = command->write_index;
+	space = (command->read_index - index - 1) & (HFI_QUEUE_WORDS - 1);
+	if (space < dwords) {
+		printf("a630gpu: HFI command queue full for message %u\n", id);
+		return false;
+	}
+	message[0] = (sequence << 20) | (dwords << 8) | id;
+	for (uint32_t i = 0; i < dwords; i++) {
+		command_data[index] = message[i];
+		index = (index + 1) & (HFI_QUEUE_WORDS - 1);
+	}
+	a630_to_memory((vm_offset_t)command_data, 0x1000);
+	command->write_index = index;
+	a630_to_memory((vm_offset_t)hfi, 0x1000);
+	wr(gmu, GMU_WORD(GMU_H2G_INTR_SET_W), 1);
+	__asm__ volatile("dsb sy" ::: "memory");
+
+	native_a630_gpu_hfi_last_msg = id;
+	native_a630_gpu_hfi_last_seq = sequence;
+	native_a630_gpu_hfi_last_error = 0;
+	for (uint32_t round = 0; round < 3; round++) {
+		bool interrupted = false;
+
+		for (uint32_t i = 0; i < 5000; i++) {
+			if (rd(gmu, GMU_WORD(GMU_G2H_INTR_INFO_W)) & 1u) {
+				interrupted = true;
+				break;
+			}
+			sleep_us(100);
+		}
+		if (!interrupted) {
+			printf("a630gpu: HFI message %u seq %u timed out; INTR %#x\n",
+			    id, sequence,
+			    rd(gmu, GMU_WORD(GMU_G2H_INTR_INFO_W)));
+			return false;
+		}
+		wr(gmu, GMU_WORD(GMU_G2H_INTR_CLR_W), 1);
+		for (;;) {
+			uint32_t reply[19], header, count, read;
+
+			a630_to_memory((vm_offset_t)hfi, 0x1000);
+			a630_to_memory((vm_offset_t)response_data, 0x1000);
+			if (response->read_index == response->write_index) {
+				break;
+			}
+			read = response->read_index;
+			header = response_data[read];
+			count = (header >> 8) & 0xff;
+			if (count == 0 || count > 19) {
+				printf("a630gpu: HFI response header %#x has count %u\n",
+				    header, count);
+				return false;
+			}
+			for (uint32_t i = 0; i < count; i++) {
+				reply[i] = response_data[read];
+				read = (read + 1) & (HFI_QUEUE_WORDS - 1);
+			}
+			response->read_index = read;
+			a630_to_memory((vm_offset_t)hfi, 0x1000);
+			if ((header & 0xff) == HFI_F2H_MSG_ERROR) {
+				native_a630_gpu_hfi_last_error =
+				    count > 1 ? reply[1] : 0xffffffffu;
+				printf("a630gpu: HFI firmware error %u\n",
+				    native_a630_gpu_hfi_last_error);
+				continue;
+			}
+			if (count < 3 ||
+			    ((reply[1] >> 20) & 0xfff) != sequence) {
+				continue;
+			}
+			native_a630_gpu_hfi_last_error = reply[2];
+			if (reply[2] != 0) {
+				printf("a630gpu: HFI message %u returned error %u\n",
+				    id, reply[2]);
+				return false;
+			}
+			if (payload != NULL) {
+				for (uint32_t i = 0;
+				    i < payload_words && 3 + i < count; i++) {
+					payload[i] = reply[3 + i];
+				}
+			}
+			printf("a630gpu: HFI message %u seq %u acknowledged\n",
+			    id, sequence);
+			return true;
+		}
+	}
+	printf("a630gpu: HFI message %u got no response\n", id);
+	return false;
+}
+
+static const struct {
+	uint32_t khz, level;
+} a630_gpu_perf[] = {
+	{ 0, 0 }, { 257000, 64 }, { 342000, 128 }, { 414000, 192 },
+	{ 520000, 256 }, { 596000, 320 }, { 675000, 384 },
+	{ 710000, 416 },
+};
+
+static const struct {
+	uint32_t khz, level;
+} a630_gmu_perf[] = { { 0, 0 }, { 200000, 48 }, { 400000, 128 } };
+
+static bool
+a630_hfi_handshake(volatile uint8_t *gmu, vm_offset_t block)
+{
+	const struct a630_cmd_db_header *db = a630_cmd_db();
+	uint32_t init[5] = { 0 }, version_request[2] = { 0 };
+	uint32_t test[1] = { 0 }, version = 0;
+	uint32_t perf[43] = { 0 }, bandwidth[160] = { 0 };
+
+	if (db == NULL) {
+		return false;
+	}
+	a630_hfi_seqnum = 0;
+	wr(gmu, GMU_WORD(GMU_G2H_INTR_CLR_W),
+	    rd(gmu, GMU_WORD(GMU_G2H_INTR_INFO_W)));
+	__asm__ volatile("dsb sy" ::: "memory");
+	native_a630_gpu_hfi_stage = 2;
+	init[2] = 0x60001000u;
+	init[3] = 0x4000u;
+	init[4] = 1;
+	if (!a630_hfi_send(gmu, block, HFI_H2F_MSG_INIT, init, 5,
+	    NULL, 0)) {
+		return false;
+	}
+
+	native_a630_gpu_hfi_stage = 3;
+	version_request[1] = (1u << 28) | (1u << 19) | (1u << 17);
+	if (!a630_hfi_send(gmu, block, HFI_H2F_MSG_FW_VERSION,
+	    version_request, 2, &version, 1)) {
+		return false;
+	}
+	native_a630_gpu_hfi_version = version;
+	printf("a630gpu: GMU HFI firmware version %#010x\n", version);
+
+	native_a630_gpu_hfi_stage = 4;
+	perf[1] = sizeof(a630_gpu_perf) / sizeof(a630_gpu_perf[0]);
+	perf[2] = sizeof(a630_gmu_perf) / sizeof(a630_gmu_perf[0]);
+	for (uint32_t i = 0; i < perf[1]; i++) {
+		if (!a630_arc_vote(db, "gfx.lvl", "mx.lvl",
+		    a630_gpu_perf[i].level, &perf[3 + 2 * i])) {
+			printf("a630gpu: no gfx.lvl vote for %u\n",
+			    a630_gpu_perf[i].level);
+			return false;
+		}
+		perf[4 + 2 * i] = a630_gpu_perf[i].khz;
+	}
+	for (uint32_t i = 0; i < perf[2]; i++) {
+		if (!a630_arc_vote(db, "cx.lvl", "mx.lvl",
+		    a630_gmu_perf[i].level, &perf[35 + 2 * i])) {
+			printf("a630gpu: no cx.lvl vote for %u\n",
+			    a630_gmu_perf[i].level);
+			return false;
+		}
+		perf[36 + 2 * i] = a630_gmu_perf[i].khz;
+	}
+	if (!a630_hfi_send(gmu, block, HFI_H2F_MSG_PERF_TABLE, perf, 43,
+	    NULL, 0)) {
+		return false;
+	}
+
+	native_a630_gpu_hfi_stage = 5;
+	bandwidth[1] = 1;
+	bandwidth[2] = 3;
+	bandwidth[3] = 3;
+	bandwidth[4] = 0x05;
+	bandwidth[5] = 0x07;
+	bandwidth[6] = 0x50034;
+	bandwidth[7] = 0x5007c;
+	bandwidth[8] = 0x5004c;
+	bandwidth[12] = 0x40000000;
+	bandwidth[13] = 0;
+	bandwidth[14] = 0x40000000;
+	bandwidth[18] = 0x60000001;
+	bandwidth[19] = 0x20000001;
+	bandwidth[20] = 0x60000001;
+	bandwidth[24] = 0x50000;
+	bandwidth[25] = 0x5005c;
+	bandwidth[26] = 0x5000c;
+	bandwidth[32] = 0x40000000;
+	bandwidth[33] = 0x40000000;
+	bandwidth[34] = 0x40000000;
+	if (!a630_hfi_send(gmu, block, HFI_H2F_MSG_BW_TABLE, bandwidth,
+	    160, NULL, 0)) {
+		return false;
+	}
+
+	native_a630_gpu_hfi_stage = 6;
+	if (!a630_hfi_send(gmu, block, HFI_H2F_MSG_TEST, test, 1,
+	    NULL, 0)) {
+		return false;
+	}
+	native_a630_gpu_hfi_stage = 7;
+	printf("a630gpu: HFI INIT, version, perf, bandwidth and TEST handshake complete\n");
+	return true;
+}
+
 static uint32_t
 a630_gmu_boot_restore(volatile uint8_t *gmu, const uint32_t *old,
     uint32_t written)
@@ -1474,7 +1859,7 @@ a630_gmu_boot_rsc_program(volatile uint8_t *gmu, uint32_t *old,
  */
 static bool
 a630_gmu_boot_stage11(volatile uint8_t *gmu, volatile uint8_t *smmu,
-    bool start_hfi)
+    uint32_t hfi_mode)
 {
 	struct a630_gmu_smmu_old smmu_old = { 0 };
 	uint32_t boot_old[A630_GMU_BOOT_REGS] = { 0 };
@@ -1494,8 +1879,9 @@ a630_gmu_boot_stage11(volatile uint8_t *gmu, volatile uint8_t *smmu,
 	bool released = false, halted = true;
 	bool started = false;
 
-	native_a630_gpu_stage = start_hfi ? 21 : 20;
+	native_a630_gpu_stage = 20 + hfi_mode;
 	native_a630_gpu_gmu_hfi_started = 0;
+	native_a630_gpu_hfi_stage = 0;
 	native_a630_gpu_gmu_fw_bytes = bytes;
 	native_a630_gpu_gmu_boot_bad = 0;
 	native_a630_gpu_gmu_fw_hash =
@@ -1649,8 +2035,9 @@ a630_gmu_boot_stage11(volatile uint8_t *gmu, volatile uint8_t *smmu,
 	    native_a630_gpu_gmu_init_mask,
 	    native_a630_gpu_gmu_cp_resp, native_a630_gpu_gmu_general7,
 	    native_a630_gpu_gmu_hfi_status);
-	if (started && start_hfi) {
+	if (started && hfi_mode) {
 		native_a630_gpu_gmu_hfi_started = 0;
+		native_a630_gpu_hfi_stage = 1;
 		old_hfi_init = rd(gmu, GMU_WORD(GMU_HFI_CTRL_INIT_W));
 		wr(gmu, GMU_WORD(GMU_HFI_CTRL_INIT_W), 1);
 		hfi_control_touched = true;
@@ -1669,6 +2056,11 @@ a630_gmu_boot_stage11(volatile uint8_t *gmu, volatile uint8_t *smmu,
 		    native_a630_gpu_gmu_hfi_status);
 		if (!native_a630_gpu_gmu_hfi_started) {
 			failure = 44;
+		}
+		if (!failure && hfi_mode >= 2) {
+			if (!a630_hfi_handshake(gmu, block)) {
+				failure = 45;
+			}
 		}
 	}
 
@@ -2218,19 +2610,25 @@ native_a630_gpu_probe(void)
 			printf("a630gpu: stage 10 complete: the current A630 GMU firmware loads and restores without releasing CM3\n");
 			return;
 		}
-		if (enabled < 12) {
-			if (!a630_gmu_boot_stage11(gmu, smmu, false)) {
+		if (enabled < 13) {
+			uint32_t hfi_mode = enabled >= 12 ? 1 : 0;
+
+			if (!a630_gmu_boot_stage11(gmu, smmu, hfi_mode)) {
 				return;
 			}
 			native_a630_gpu_status = 0;
-			printf("a630gpu: stage 11 complete: the A630 GMU cold-starts, reports firmware init, and is held again\n");
+			if (hfi_mode) {
+				printf("a630gpu: stage 12 complete: GMU firmware and the HFI control channel start, then are held again\n");
+			} else {
+				printf("a630gpu: stage 11 complete: the A630 GMU cold-starts, reports firmware init, and is held again\n");
+			}
 			return;
 		}
-		if (!a630_gmu_boot_stage11(gmu, smmu, true)) {
+		if (!a630_gmu_boot_stage11(gmu, smmu, 2)) {
 			return;
 		}
 	}
 
 	native_a630_gpu_status = 0;
-	printf("a630gpu: stage 12 complete: GMU firmware and the HFI control channel start, then are held again\n");
+	printf("a630gpu: stage 13 complete: the complete A630 GMU HFI handshake is acknowledged and restored\n");
 }

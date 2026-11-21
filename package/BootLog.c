@@ -183,6 +183,12 @@ extern volatile uint32_t native_a630_gpu_gmu_general7 __attribute__((weak_import
 extern volatile uint32_t native_a630_gpu_gmu_started __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_hfi_started __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_hfi_restore_bad __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_hfi_stage __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_hfi_version __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_hfi_last_msg __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_hfi_last_seq __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_hfi_last_error __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_hfi_cmd_db_magic __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_boot_restore_bad __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_rsc_boot_restore_bad __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_tcm_boot_restore_bad __attribute__((weak_import));
@@ -578,6 +584,16 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
              native_a630_gpu_gmu_hfi_restore_bad,
              native_a630_gpu_gmu_log[0], native_a630_gpu_gmu_log[1],
              native_a630_gpu_gmu_log[2], native_a630_gpu_gmu_log[3]);
+    at = put(out, at, cap, row, sizeof row);
+  }
+  if (&native_a630_gpu_hfi_stage && native_a630_gpu_stage >= 22) {
+    char row[180];
+    snprintf(row, sizeof row, "[a630k] handshake=%u ver=%08x msg=%u seq=%u "
+             "err=%u db=%08x",
+             native_a630_gpu_hfi_stage, native_a630_gpu_hfi_version,
+             native_a630_gpu_hfi_last_msg, native_a630_gpu_hfi_last_seq,
+             native_a630_gpu_hfi_last_error,
+             native_a630_gpu_hfi_cmd_db_magic);
     at = put(out, at, cap, row, sizeof row);
   }
   // SDM845 Adreno 630 qualification. Keep a dedicated row so early printf
