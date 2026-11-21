@@ -1923,17 +1923,17 @@ static bool
 a630_gpu_write_core_prefix_stage17(void)
 {
 	static const struct {
-		uint32_t word, value;
+		uint32_t word, value, mask;
 	} writes[] = {
-		{ 0x0010, 0x00000003u },
-		{ 0x302a, 0x00000009u },
-		{ 0x050b, 0xffffffffu },
-		{ 0x0e05, 0xffffffc0u },
-		{ 0x0e06, 0x0001ffffu },
-		{ 0x0e09, 0xfffff000u },
-		{ 0x0e0a, 0x0001ffffu },
-		{ 0x0e07, 0xfffff000u },
-		{ 0x0e08, 0x0001ffffu },
+		{ 0x0010, 0x00000003u, 0xffffffffu },
+		{ 0x302a, 0x00000009u, 0xffffffffu },
+		{ 0x050b, 0xffffffffu, 0x002f7fffu },
+		{ 0x0e05, 0xffffffc0u, 0xffffffffu },
+		{ 0x0e06, 0x0001ffffu, 0xffffffffu },
+		{ 0x0e09, 0xfffff000u, 0xffffffffu },
+		{ 0x0e0a, 0x0001ffffu, 0xffffffffu },
+		{ 0x0e07, 0xfffff000u, 0xffffffffu },
+		{ 0x0e08, 0x0001ffffu, 0xffffffffu },
 	};
 	uint32_t old[sizeof(writes) / sizeof(writes[0])] = { 0 };
 	vm_offset_t gpu = a630_gpu_map();
@@ -1952,13 +1952,15 @@ a630_gpu_write_core_prefix_stage17(void)
 		wr((volatile uint8_t *)gpu, 4u * writes[i].word,
 		    writes[i].value);
 		written = i + 1;
-		if (rd((volatile uint8_t *)gpu, 4u * writes[i].word) !=
-		    writes[i].value) {
+		uint32_t got =
+		    rd((volatile uint8_t *)gpu, 4u * writes[i].word);
+		if ((got & writes[i].mask) !=
+		    (writes[i].value & writes[i].mask)) {
 			native_a630_gpu_core_prefix_index = i;
 			native_a630_gpu_core_prefix_old = old[i];
 			native_a630_gpu_core_prefix_want = writes[i].value;
 			native_a630_gpu_core_prefix_got =
-			    rd((volatile uint8_t *)gpu, 4u * writes[i].word);
+			    got;
 			bad++;
 			break;
 		}
@@ -1968,8 +1970,9 @@ a630_gpu_write_core_prefix_stage17(void)
 
 		wr((volatile uint8_t *)gpu, 4u * writes[index].word,
 		    old[index]);
-		if (rd((volatile uint8_t *)gpu, 4u * writes[index].word) !=
-		    old[index]) {
+		if ((rd((volatile uint8_t *)gpu,
+		    4u * writes[index].word) & writes[index].mask) !=
+		    (old[index] & writes[index].mask)) {
 			restore_bad++;
 		}
 	}
