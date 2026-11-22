@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: BSD-2-Clause-Patent
-"""Inject the device-local A630 GMU image into a downloaded placeholder kernel.
+"""Inject device-local A630 GMU and SQE images into a placeholder kernel.
 
 Public cloud builds contain only A630-GMU-PLACEHOLDER in
-native_a630_gmu_firmware_blob. Vendor firmware must stay private, so this tool
-creates a new kernel file, finds that symbol in the thin 64-bit Mach-O, and
-replaces the complete zero-filled 32 KiB array. The source kernel is unchanged.
+native_a630_gmu_firmware_blob and A630-SQE-PLACEHOLDER in
+native_a630_sqe_firmware_blob. Vendor firmware must stay private, so this tool
+creates a new kernel file and replaces those zero-filled arrays. The source
+kernel is unchanged.
 """
 
 import argparse
@@ -22,6 +23,10 @@ FIRMWARE_BYTES = 0x8000
 EXPECTED_FNV1A = 0xC7FE81D5
 MARKER = b"A630-GMU-PLACEHOLDER"
 SYMBOL = "_native_a630_gmu_firmware_blob"
+SQE_FILE_BYTES = 29988
+SQE_EXPECTED_FNV1A = 0xA408DA75
+SQE_MARKER = b"A630-SQE-PLACEHOLDER"
+SQE_SYMBOL = "_native_a630_sqe_firmware_blob"
 MH_MAGIC_64 = 0xFEEDFACF
 LC_SEGMENT_64 = 0x19
 
@@ -38,7 +43,7 @@ def fnv1a(data):
     return value
 
 
-def symbol_address(kernel):
+def symbol_address(kernel, symbol):
     nm = os.environ.get("LLVM_NM") or shutil.which("llvm-nm")
     if not nm:
         fail("llvm-nm is not on PATH and LLVM_NM is unset")
@@ -51,13 +56,13 @@ def symbol_address(kernel):
     matches = []
     for line in result.stdout.splitlines():
         fields = line.split()
-        if len(fields) >= 3 and fields[-1] == SYMBOL:
+        if len(fields) >= 3 and fields[-1] == symbol:
             try:
                 matches.append(int(fields[0], 16))
             except ValueError:
                 pass
     if len(matches) != 1:
-        fail(f"expected one {SYMBOL}, found {len(matches)}")
+        fail(f"expected one {symbol}, found {len(matches)}")
     return matches[0]
 
 
@@ -83,15 +88,33 @@ def file_offset(data, address, size):
     fail(f"{address:#x}..{address + size:#x} is not file-backed")
 
 
+def patch_slot(data, kernel, symbol, marker, firmware):
+    address = symbol_address(kernel, symbol)
+    offset = file_offset(data, address, FIRMWARE_BYTES)
+    slot = data[offset : offset + FIRMWARE_BYTES]
+    if not slot.startswith(marker):
+        fail(f"{symbol} does not start with the public placeholder marker")
+    if any(slot[len(marker) :]):
+        fail(f"{symbol} placeholder is not zero-filled or has already been patched")
+    data[offset : offset + FIRMWARE_BYTES] = firmware.ljust(FIRMWARE_BYTES, b"\0")
+    return address, offset
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--kernel", required=True, type=Path)
     parser.add_argument("--firmware", required=True, type=Path)
+    parser.add_argument("--sqe-firmware", type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument(
         "--expect-fnv1a",
         default=f"{EXPECTED_FNV1A:08x}",
         help="required firmware FNV-1a (default: the current Mi 8 vendor image)",
+    )
+    parser.add_argument(
+        "--expect-sqe-fnv1a",
+        default=f"{SQE_EXPECTED_FNV1A:08x}",
+        help="required SQE FNV-1a (default: the current Mi 8 vendor image)",
     )
     args = parser.parse_args()
 
@@ -107,16 +130,31 @@ def main():
             f"firmware FNV-1a is {actual_hash:08x}, expected {wanted_hash:08x}"
         )
 
+    sqe = None
+    if args.sqe_firmware:
+        sqe = args.sqe_firmware.read_bytes()
+        if len(sqe) != SQE_FILE_BYTES:
+            fail(
+                f"SQE firmware is {len(sqe)} bytes; this A630 stage needs "
+                f"{SQE_FILE_BYTES}"
+            )
+        wanted_sqe_hash = int(args.expect_sqe_fnv1a.removeprefix("0x"), 16)
+        actual_sqe_hash = fnv1a(sqe)
+        if actual_sqe_hash != wanted_sqe_hash:
+            fail(
+                f"SQE FNV-1a is {actual_sqe_hash:08x}, expected "
+                f"{wanted_sqe_hash:08x}"
+            )
+
     original = args.kernel.read_bytes()
     data = bytearray(original)
-    address = symbol_address(args.kernel)
-    offset = file_offset(data, address, FIRMWARE_BYTES)
-    slot = data[offset : offset + FIRMWARE_BYTES]
-    if not slot.startswith(MARKER):
-        fail(f"{SYMBOL} does not start with the public placeholder marker")
-    if any(slot[len(MARKER) :]):
-        fail(f"{SYMBOL} placeholder is not zero-filled or has already been patched")
-    data[offset : offset + FIRMWARE_BYTES] = firmware
+    address, offset = patch_slot(data, args.kernel, SYMBOL, MARKER, firmware)
+    sqe_address = None
+    sqe_offset = None
+    if sqe is not None:
+        sqe_address, sqe_offset = patch_slot(
+            data, args.kernel, SQE_SYMBOL, SQE_MARKER, sqe
+        )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_bytes(data)
@@ -125,6 +163,13 @@ def main():
         f"{len(firmware)} bytes, fnv1a {actual_hash:08x}, "
         f"sha256 {hashlib.sha256(firmware).hexdigest()}"
     )
+    if sqe is not None:
+        print(
+            f"patched {args.output}: {SQE_SYMBOL} at VA {sqe_address:#x}, "
+            f"file {sqe_offset:#x}, {len(sqe)} bytes, "
+            f"fnv1a {actual_sqe_hash:08x}, "
+            f"sha256 {hashlib.sha256(sqe).hexdigest()}"
+        )
     return 0
 
 

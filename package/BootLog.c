@@ -240,6 +240,15 @@ extern volatile uint32_t native_a630_gpu_protect_verify_index __attribute__((wea
 extern volatile uint32_t native_a630_gpu_protect_verify_old __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_protect_verify_want __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_protect_verify_got __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_g3d_ok __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_g3d_pages __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_g3d_bad __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_g3d_hole_bad __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_g3d_restore_bad __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_g3d_sqe_size __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_g3d_sqe_hash __attribute__((weak_import));
+extern volatile uint64_t native_a630_gpu_g3d_fb_phys __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_g3d_fb_size __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_boot_restore_bad __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_rsc_boot_restore_bad __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_tcm_boot_restore_bad __attribute__((weak_import));
@@ -777,6 +786,19 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
              native_a630_gpu_protect_verify_old,
              native_a630_gpu_protect_verify_want,
              native_a630_gpu_protect_verify_got);
+    at = put(out, at, cap, row, sizeof row);
+  }
+  if (&native_a630_gpu_g3d_ok && native_a630_gpu_stage >= 30) {
+    char row[200];
+    snprintf(row, sizeof row, "[a630s0] ok=%u pages=%u bad=%u holes=%u "
+             "restore=%u sqe=%u/%08x fb=%llx+%x",
+             native_a630_gpu_g3d_ok, native_a630_gpu_g3d_pages,
+             native_a630_gpu_g3d_bad, native_a630_gpu_g3d_hole_bad,
+             native_a630_gpu_g3d_restore_bad,
+             native_a630_gpu_g3d_sqe_size,
+             native_a630_gpu_g3d_sqe_hash,
+             (unsigned long long)native_a630_gpu_g3d_fb_phys,
+             native_a630_gpu_g3d_fb_size);
     at = put(out, at, cap, row, sizeof row);
   }
   // SDM845 Adreno 630 qualification. Keep a dedicated row so early printf

@@ -101,6 +101,16 @@ extern int printf(const char *, ...);
 #define A630_GMU_LOG_IOVA        0x60005000ull
 #define A630_GMU_HFI_IOVA        0x60009000ull
 #define A630_GMU_HFI_BYTES       0x4000u
+#define A630_SQE_FILE_BYTES      29988u
+#define A630_SQE_FILE_FNV1A      0xa408da75u
+#define A630_G3D_SMR_ENTRY       1u
+#define A630_G3D_CTX             2u
+#define A630_G3D_STREAM          0u
+#define A630_G3D_SQE_IOVA        0x10000000ull
+#define A630_G3D_RING_IOVA       0x10008000ull
+#define A630_G3D_MEMPTRS_IOVA    0x10010000ull
+#define A630_G3D_FB_IOVA         0x20000000ull
+#define A630_G3D_TABLE_BYTES     0x10000u
 
 #define PDC_PHYS                 0x0b280000UL
 #define PDC_SEQ_PHYS             0x0b480000UL
@@ -400,6 +410,15 @@ volatile uint32_t native_a630_gpu_protect_verify_index;
 volatile uint32_t native_a630_gpu_protect_verify_old;
 volatile uint32_t native_a630_gpu_protect_verify_want;
 volatile uint32_t native_a630_gpu_protect_verify_got;
+volatile uint32_t native_a630_gpu_g3d_ok;
+volatile uint32_t native_a630_gpu_g3d_pages;
+volatile uint32_t native_a630_gpu_g3d_bad;
+volatile uint32_t native_a630_gpu_g3d_hole_bad;
+volatile uint32_t native_a630_gpu_g3d_restore_bad;
+volatile uint32_t native_a630_gpu_g3d_sqe_size;
+volatile uint32_t native_a630_gpu_g3d_sqe_hash;
+volatile uint64_t native_a630_gpu_g3d_fb_phys;
+volatile uint32_t native_a630_gpu_g3d_fb_size;
 volatile uint32_t native_a630_gpu_gmu_boot_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_rsc_boot_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_tcm_boot_restore_bad;
@@ -451,6 +470,9 @@ struct a630_cmd_db_entry {
 const volatile uint8_t native_a630_gmu_firmware_blob[A630_GMU_FW_BYTES]
     __attribute__((used, section("__DATA,__const"), aligned(64))) =
     "A630-GMU-PLACEHOLDER";
+const volatile uint8_t native_a630_sqe_firmware_blob[A630_GMU_FW_BYTES]
+    __attribute__((used, section("__DATA,__const"), aligned(64))) =
+    "A630-SQE-PLACEHOLDER";
 static uint32_t a630_gmu_itcm_backup[A630_GMU_FW_WORDS];
 
 static const struct a630_gmu_boot_reg {
@@ -2384,6 +2406,301 @@ a630_gpu_write_protect_stage20(volatile uint8_t *gmu)
 	return native_a630_gpu_protect_ok != 0;
 }
 
+static uint32_t
+a630_stream0_smmu_restore(volatile uint8_t *smmu,
+    const struct a630_gmu_smmu_old *old)
+{
+	volatile uint8_t *cb = smmu + native_a630_gpu_smmu_cb_base +
+	    native_a630_gpu_smmu_page_size * A630_G3D_CTX;
+	uint32_t bad = 0;
+
+	wr(smmu, SMMU_SMR(A630_G3D_SMR_ENTRY), 0);
+	wr(smmu, SMMU_S2CR(A630_G3D_SMR_ENTRY), old->s2cr);
+	wr(cb, SMMU_CB_SCTLR, 0);
+	__asm__ volatile("dsb sy" ::: "memory");
+	wr(cb, SMMU_CB_TLBIASID, A630_G3D_CTX);
+	wr(cb, SMMU_CB_TLBSYNC, 1);
+	for (uint32_t i = 0; i < 1000 &&
+	    (rd(cb, SMMU_CB_TLBSTATUS) & 1); i += 10) {
+		sleep_us(10);
+	}
+	if (rd(smmu, SMMU_SMR(A630_G3D_SMR_ENTRY)) != 0 ||
+	    rd(cb, SMMU_CB_SCTLR) != 0 ||
+	    (rd(cb, SMMU_CB_TLBSTATUS) & 1)) {
+		return 0xffffffffu;
+	}
+	wr(smmu, SMMU_CBAR(A630_G3D_CTX), old->cbar);
+	wr(smmu, SMMU_CBA2R(A630_G3D_CTX), old->cba2r);
+	wr(cb, SMMU_CB_TCR, old->tcr);
+	wr(cb, SMMU_CB_TCR2, old->tcr2);
+	wr(cb, SMMU_CB_TTBR0_LO, old->ttbr0_lo);
+	wr(cb, SMMU_CB_TTBR0_HI, old->ttbr0_hi);
+	wr(cb, SMMU_CB_TTBR1_LO, old->ttbr1_lo);
+	wr(cb, SMMU_CB_TTBR1_HI, old->ttbr1_hi);
+	wr(cb, SMMU_CB_MAIR0, old->mair0);
+	wr(cb, SMMU_CB_MAIR1, old->mair1);
+	wr(cb, SMMU_CB_FSR, A630_SMMU_FSR_ALL);
+	wr(smmu, SMMU_S2CR(A630_G3D_SMR_ENTRY), old->s2cr);
+	wr(smmu, SMMU_SMR(A630_G3D_SMR_ENTRY), old->smr);
+	wr(cb, SMMU_CB_SCTLR, old->sctlr);
+	sleep_us(1000);
+	bool inactive = rd(cb, SMMU_CB_SCTLR) == 0 &&
+	    rd(smmu, SMMU_SMR(A630_G3D_SMR_ENTRY)) == 0 &&
+	    rd(cb, SMMU_CB_TTBR0_LO) == 0 &&
+	    rd(cb, SMMU_CB_TTBR0_HI) == 0 &&
+	    rd(cb, SMMU_CB_TTBR1_LO) == 0 &&
+	    rd(cb, SMMU_CB_TTBR1_HI) == 0 &&
+	    rd(cb, SMMU_CB_TCR) == 0;
+	const struct {
+		volatile uint8_t *base;
+		uint32_t offset;
+		uint32_t value;
+	} restored[] = {
+		{ smmu, SMMU_SMR(A630_G3D_SMR_ENTRY), old->smr },
+		{ smmu, SMMU_S2CR(A630_G3D_SMR_ENTRY), old->s2cr },
+		{ smmu, SMMU_CBAR(A630_G3D_CTX), old->cbar },
+		{ smmu, SMMU_CBA2R(A630_G3D_CTX), old->cba2r },
+		{ cb, SMMU_CB_SCTLR, old->sctlr },
+		{ cb, SMMU_CB_TCR, old->tcr },
+		{ cb, SMMU_CB_TCR2, old->tcr2 },
+		{ cb, SMMU_CB_TTBR0_LO, old->ttbr0_lo },
+		{ cb, SMMU_CB_TTBR0_HI, old->ttbr0_hi },
+		{ cb, SMMU_CB_TTBR1_LO, old->ttbr1_lo },
+		{ cb, SMMU_CB_TTBR1_HI, old->ttbr1_hi },
+		{ cb, SMMU_CB_MAIR0, old->mair0 },
+		{ cb, SMMU_CB_MAIR1, old->mair1 },
+	};
+	for (uint32_t i = 0; i < sizeof(restored) / sizeof(restored[0]); i++) {
+		uint32_t got = rd(restored[i].base, restored[i].offset);
+
+		if (got != restored[i].value &&
+		    !(inactive && (i == 1 || i == 2))) {
+			bad++;
+		}
+	}
+	return bad;
+}
+
+static bool
+a630_gpu_g3d_smmu_stage21(volatile uint8_t *smmu)
+{
+	struct a630_gmu_smmu_old old = { 0 };
+	PE_Video video = { 0 };
+	vm_offset_t tables = 0, sqe = 0, ring = 0, memptrs = 0;
+	volatile uint8_t *cb = NULL;
+	uint64_t *l1, *l2, root, fb_phys;
+	uint32_t fb_size, pages = 0, bad = 0, hole_bad = 0;
+	uint32_t sqe_size = A630_SQE_FILE_BYTES;
+	uint32_t sqe_hash = a630_fw_fnv1a(native_a630_sqe_firmware_blob,
+	    sqe_size);
+	bool old_saved = false, retain = false, setup_complete = false;
+
+	cb = smmu + native_a630_gpu_smmu_cb_base +
+	    native_a630_gpu_smmu_page_size * A630_G3D_CTX;
+	native_a630_gpu_g3d_sqe_size = sqe_size;
+	native_a630_gpu_g3d_sqe_hash = sqe_hash;
+	if (native_a630_gpu_smmu_num_cb <= A630_G3D_CTX ||
+	    native_a630_gpu_smmu_num_smr <= A630_G3D_SMR_ENTRY ||
+	    sqe_hash != A630_SQE_FILE_FNV1A ||
+	    rd(smmu, SMMU_SMR(A630_G3D_SMR_ENTRY)) != 0 ||
+	    rd(smmu, SMMU_S2CR(A630_G3D_SMR_ENTRY)) != 0x000200ffu ||
+	    rd(smmu, SMMU_CBAR(A630_G3D_CTX)) != 0 ||
+	    rd(smmu, SMMU_CBA2R(A630_G3D_CTX)) != 0 ||
+	    rd(cb, SMMU_CB_SCTLR) != 0 ||
+	    rd(cb, SMMU_CB_TTBR0_LO) != 0 ||
+	    PE_current_console(&video) || !video.v_baseAddr ||
+	    !video.v_rowBytes || !video.v_height ||
+	    video.v_rowBytes > UINT32_MAX / video.v_height) {
+		printf("a630gpu: Stream 0 setup preconditions failed: cb=%u smr=%u hash=%#x fb=%ux%u\n",
+		    native_a630_gpu_smmu_num_cb,
+		    native_a630_gpu_smmu_num_smr, sqe_hash,
+		    video.v_rowBytes, video.v_height);
+		return false;
+	}
+	fb_phys = (uint64_t)video.v_baseAddr;
+	fb_size = video.v_rowBytes * video.v_height;
+	native_a630_gpu_g3d_fb_phys = fb_phys;
+	native_a630_gpu_g3d_fb_size = fb_size;
+	if ((fb_phys & 0xfffull) || round_page(fb_size) >
+	    0x3fffffffull - A630_G3D_FB_IOVA) {
+		printf("a630gpu: framebuffer layout is not mappable: phys=%#llx size=%u\n",
+		    (unsigned long long)fb_phys, fb_size);
+		return false;
+	}
+	if (kmem_alloc(kernel_map, &tables, A630_G3D_TABLE_BYTES,
+	    KMA_KOBJECT | KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) !=
+	    KERN_SUCCESS ||
+	    kmem_alloc_contig(kernel_map, &sqe, 0x8000, PAGE_MASK, 0, 0,
+	    KMA_KOBJECT | KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) !=
+	    KERN_SUCCESS ||
+	    kmem_alloc_contig(kernel_map, &ring, 0x8000, PAGE_MASK, 0, 0,
+	    KMA_KOBJECT | KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) !=
+	    KERN_SUCCESS ||
+	    kmem_alloc_contig(kernel_map, &memptrs, 0x1000, PAGE_MASK, 0, 0,
+	    KMA_KOBJECT | KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) !=
+	    KERN_SUCCESS) {
+		goto free;
+	}
+	for (uint32_t i = 0; i < A630_SQE_FILE_BYTES - 4; i++) {
+		*(uint8_t *)(sqe + i) =
+		    native_a630_sqe_firmware_blob[i + 4];
+	}
+	a630_to_memory(sqe, 0x8000);
+
+	struct {
+		uint64_t iova;
+		uint32_t size;
+		uint64_t phys;
+		bool fb;
+	} regions[] = {
+		{ A630_G3D_SQE_IOVA, 0x8000, kvtophys(sqe), false },
+		{ A630_G3D_RING_IOVA, 0x8000, kvtophys(ring), false },
+		{ A630_G3D_MEMPTRS_IOVA, 0x1000, kvtophys(memptrs), false },
+		{ A630_G3D_FB_IOVA, fb_size, fb_phys, true },
+	};
+	l1 = (uint64_t *)tables;
+	l2 = (uint64_t *)(tables + 0x1000);
+	root = kvtophys(tables);
+	l1[(A630_G3D_SQE_IOVA >> 30) & 0x1ff] =
+	    kvtophys((vm_offset_t)l2) | A630_PTE_TABLE;
+	uint32_t next_l3 = 2;
+	for (uint32_t r = 0; r < sizeof(regions) / sizeof(regions[0]); r++) {
+		for (uint32_t off = 0; off < round_page(regions[r].size);
+		    off += 0x1000) {
+			uint64_t va = regions[r].iova + off;
+			uint64_t *entry = &l2[(va >> 21) & 0x1ff];
+			uint64_t *l3 = NULL;
+
+			if (*entry == 0) {
+				if (next_l3 >= A630_G3D_TABLE_BYTES / 0x1000) {
+					goto restore;
+				}
+				*entry = kvtophys(tables + 0x1000 * next_l3++) |
+				    A630_PTE_TABLE;
+			}
+			for (uint32_t t = 2; t < next_l3; t++) {
+				if (kvtophys(tables + 0x1000 * t) ==
+				    (*entry & A630_PTE_ADDRESS)) {
+					l3 = (uint64_t *)(tables + 0x1000 * t);
+					break;
+				}
+			}
+			if (l3 == NULL) {
+				goto restore;
+			}
+			l3[(va >> 12) & 0x1ff] = regions[r].phys + off |
+			    A630_PTE_GMU | (1ull << 6) | A630_PTE_PAGE;
+			pages++;
+		}
+	}
+	a630_to_memory(tables, A630_G3D_TABLE_BYTES);
+	old.smr = rd(smmu, SMMU_SMR(A630_G3D_SMR_ENTRY));
+	old.s2cr = rd(smmu, SMMU_S2CR(A630_G3D_SMR_ENTRY));
+	old.cbar = rd(smmu, SMMU_CBAR(A630_G3D_CTX));
+	old.cba2r = rd(smmu, SMMU_CBA2R(A630_G3D_CTX));
+	old.sctlr = rd(cb, SMMU_CB_SCTLR);
+	old.tcr = rd(cb, SMMU_CB_TCR);
+	old.tcr2 = rd(cb, SMMU_CB_TCR2);
+	old.ttbr0_lo = rd(cb, SMMU_CB_TTBR0_LO);
+	old.ttbr0_hi = rd(cb, SMMU_CB_TTBR0_HI);
+	old.ttbr1_lo = rd(cb, SMMU_CB_TTBR1_LO);
+	old.ttbr1_hi = rd(cb, SMMU_CB_TTBR1_HI);
+	old.mair0 = rd(cb, SMMU_CB_MAIR0);
+	old.mair1 = rd(cb, SMMU_CB_MAIR1);
+	old_saved = true;
+
+	root |= (uint64_t)A630_G3D_CTX << 48;
+	wr(cb, SMMU_CB_SCTLR, 0);
+	wr(smmu, SMMU_CBA2R(A630_G3D_CTX), A630_SMMU_CBA2R_VA64);
+	wr(smmu, SMMU_CBAR(A630_G3D_CTX), A630_SMMU_CBAR_S1);
+	wr(cb, SMMU_CB_TCR2, A630_SMMU_TCR2_36_BITS);
+	wr(cb, SMMU_CB_TCR, A630_SMMU_TCR_39_BITS);
+	wr(cb, SMMU_CB_TTBR0_LO, (uint32_t)root);
+	wr(cb, SMMU_CB_TTBR0_HI, (uint32_t)(root >> 32));
+	wr(cb, SMMU_CB_TTBR1_LO, 0);
+	wr(cb, SMMU_CB_TTBR1_HI, 0);
+	wr(cb, SMMU_CB_MAIR0, A630_SMMU_MAIR0);
+	wr(cb, SMMU_CB_MAIR1, 0);
+	wr(cb, SMMU_CB_FSR, A630_SMMU_FSR_ALL);
+	wr(cb, SMMU_CB_TLBIASID, A630_G3D_CTX);
+	wr(cb, SMMU_CB_TLBSYNC, 1);
+	for (uint32_t i = 0; i < 1000 &&
+	    (rd(cb, SMMU_CB_TLBSTATUS) & 1); i += 10) {
+		sleep_us(10);
+	}
+	if (rd(cb, SMMU_CB_TLBSTATUS) & 1) {
+		goto restore;
+	}
+	wr(cb, SMMU_CB_SCTLR, A630_SMMU_SCTLR_ON);
+	wr(smmu, SMMU_S2CR(A630_G3D_SMR_ENTRY), A630_G3D_CTX);
+	wr(smmu, SMMU_SMR(A630_G3D_SMR_ENTRY),
+	    A630_SMMU_SMR_VALID | A630_G3D_STREAM);
+	if ((rd(smmu, SMMU_S2CR(A630_G3D_SMR_ENTRY)) & 0x300ff) !=
+	    A630_G3D_CTX ||
+	    rd(smmu, SMMU_SMR(A630_G3D_SMR_ENTRY)) !=
+	    (A630_SMMU_SMR_VALID | A630_G3D_STREAM) ||
+	    !(rd(cb, SMMU_CB_SCTLR) & 1)) {
+		goto restore;
+	}
+	setup_complete = true;
+	for (uint32_t r = 0; r < sizeof(regions) / sizeof(regions[0]); r++) {
+		uint32_t stride = regions[r].fb ? 97u * 0x1000 : 0x1000;
+		for (uint32_t off = 0; off < round_page(regions[r].size);
+		    off += stride) {
+			uint64_t phys = 0;
+
+			if (a630_gmu_smmu_translate(smmu,
+			    regions[r].iova + off, &phys) != 1 ||
+			    phys != regions[r].phys + off) {
+				bad++;
+			}
+		}
+	}
+	const uint64_t holes[] = { 0x10100000ull, 0x00001000ull };
+	for (uint32_t i = 0; i < 2; i++) {
+		uint64_t phys = 0;
+
+		if (a630_gmu_smmu_translate(smmu, holes[i], &phys) != 0) {
+			hole_bad++;
+		}
+	}
+	native_a630_gpu_g3d_pages = pages;
+	native_a630_gpu_g3d_bad = bad;
+	native_a630_gpu_g3d_hole_bad = hole_bad;
+
+restore:
+	if (old_saved) {
+		native_a630_gpu_g3d_restore_bad =
+		    a630_stream0_smmu_restore(smmu, &old);
+		if (native_a630_gpu_g3d_restore_bad != 0) {
+			retain = true;
+		}
+	} else {
+		native_a630_gpu_g3d_restore_bad = 0;
+	}
+	native_a630_gpu_g3d_ok =
+	    native_a630_gpu_g3d_restore_bad == 0 && bad == 0 &&
+	    hole_bad == 0 && pages != 0 && setup_complete;
+	printf("a630gpu: Stream0 pages=%u bad=%u holes=%u restore=%u sqe=%u/%08x fb=%#llx+%#x ok=%u\n",
+	    pages, bad, hole_bad, native_a630_gpu_g3d_restore_bad,
+	    sqe_size, sqe_hash, (unsigned long long)fb_phys, fb_size,
+	    native_a630_gpu_g3d_ok);
+free:
+	if (!retain && memptrs) {
+		kmem_free(kernel_map, memptrs, 0x1000);
+	}
+	if (!retain && ring) {
+		kmem_free(kernel_map, ring, 0x8000);
+	}
+	if (!retain && sqe) {
+		kmem_free(kernel_map, sqe, 0x8000);
+	}
+	if (!retain && tables) {
+		kmem_free(kernel_map, tables, A630_G3D_TABLE_BYTES);
+	}
+	return native_a630_gpu_g3d_ok != 0;
+}
+
 static bool
 a630_gmu_gfx_rail_stage14(volatile uint8_t *gmu, volatile uint8_t *gpucc,
     uint32_t gpu_action)
@@ -2455,6 +2772,9 @@ a630_gmu_gfx_rail_stage14(volatile uint8_t *gmu, volatile uint8_t *gpucc,
 	}
 	if (rail_ack && sptprac_on && gpu_action >= 6) {
 		(void)a630_gpu_write_protect_stage20(gmu);
+	}
+	if (rail_ack && sptprac_on && gpu_action >= 7) {
+		(void)a630_gpu_g3d_smmu_stage21(smmu);
 	}
 
 	wr(gmu, GMU_WORD(GMU_GX_GDSCR_ALIAS_W),
@@ -2827,9 +3147,10 @@ a630_gmu_boot_stage11(volatile uint8_t *gmu, volatile uint8_t *smmu,
 		}
 		if (!failure && hfi_mode >= 3) {
 			if (!a630_gmu_gfx_rail_stage14(gmu, gpucc,
-			    hfi_mode >= 9 ? 6 : (hfi_mode >= 8 ? 5 :
-			    (hfi_mode >= 7 ? 4 : (hfi_mode >= 6 ? 3 :
-			    (hfi_mode >= 5 ? 2 : (hfi_mode >= 4 ? 1 : 0))))))) {
+			    hfi_mode >= 10 ? 7 : (hfi_mode >= 9 ? 6 :
+			    (hfi_mode >= 8 ? 5 : (hfi_mode >= 7 ? 4 :
+			    (hfi_mode >= 6 ? 3 : (hfi_mode >= 5 ? 2 :
+			    (hfi_mode >= 4 ? 1 : 0)))))))) {
 				failure = 46;
 			} else if (hfi_mode >= 4 &&
 			    !native_a630_gpu_core_read_ok) {
@@ -2849,6 +3170,9 @@ a630_gmu_boot_stage11(volatile uint8_t *gmu, volatile uint8_t *smmu,
 			} else if (hfi_mode >= 9 &&
 			    !native_a630_gpu_protect_ok) {
 				failure = 52;
+			} else if (hfi_mode >= 10 &&
+			    !native_a630_gpu_g3d_ok) {
+				failure = 53;
 			}
 		}
 	}
@@ -3405,19 +3729,21 @@ native_a630_gpu_probe(void)
 			printf("a630gpu: stage 10 complete: the current A630 GMU firmware loads and restores without releasing CM3\n");
 			return;
 		}
-		if (enabled < 20) {
-			uint32_t hfi_mode = enabled >= 19 ? 8 :
-			    (enabled >= 18 ? 7 : (enabled >= 17 ? 6 :
-			    (enabled >= 16 ? 5 : (enabled >= 15 ? 4 :
-			    (enabled >= 14 ? 3 : (enabled >= 13 ? 2 :
-			    (enabled >= 12 ? 1 : 0)))))));
+		if (enabled < 21) {
+			uint32_t hfi_mode = enabled >= 20 ? 9 :
+			    (enabled >= 19 ? 8 : (enabled >= 18 ? 7 :
+			    (enabled >= 17 ? 6 : (enabled >= 16 ? 5 :
+			    (enabled >= 15 ? 4 : (enabled >= 14 ? 3 :
+			    (enabled >= 13 ? 2 : (enabled >= 12 ? 1 : 0))))))));
 
 			if (!a630_gmu_boot_stage11(gmu, smmu, gpucc,
 			    hfi_mode)) {
 				return;
 			}
 			native_a630_gpu_status = 0;
-			if (hfi_mode == 8) {
+			if (hfi_mode == 9) {
+				printf("a630gpu: stage 20 complete: GMU counters and all 33 CP Protect entries are writable\n");
+			} else if (hfi_mode == 8) {
 				printf("a630gpu: stage 19 complete: all 105 HWCG entries and commit are writable\n");
 			} else if (hfi_mode == 7) {
 				printf("a630gpu: stage 18 complete: the full A630 CORE table writes and restores\n");
@@ -3438,11 +3764,11 @@ native_a630_gpu_probe(void)
 			}
 			return;
 		}
-		if (!a630_gmu_boot_stage11(gmu, smmu, gpucc, 9)) {
+		if (!a630_gmu_boot_stage11(gmu, smmu, gpucc, 10)) {
 			return;
 		}
 	}
 
 	native_a630_gpu_status = 0;
-	printf("a630gpu: stage 20 complete: GMU counters and all 33 CP Protect entries are writable\n");
+	printf("a630gpu: stage 21 complete: GPU Stream 0 maps SQE, ring, memptrs and framebuffer\n");
 }
