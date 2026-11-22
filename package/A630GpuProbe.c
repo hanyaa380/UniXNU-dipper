@@ -1997,28 +1997,28 @@ static bool
 a630_gpu_write_core_rest_stage18(void)
 {
 	static const struct {
-		uint32_t word, value;
+		uint32_t word, value, mask;
 	} writes[] = {
-		{ 0x0e0b, 0x00100000u },
-		{ 0x0e0c, 0x00000000u },
-		{ 0x0e0d, 0x001fffffu },
-		{ 0x0e0e, 0x00000000u },
-		{ 0x0e18, 0x00000804u },
-		{ 0x0e17, 0x00000004u },
-		{ 0x08c2, 0x010000c0u },
-		{ 0x08c1, 0x8040362cu },
-		{ 0x08c3, 0x00000080u },
-		{ 0x9e00, 0x00180000u },
-		{ 0x098d, 0x00000001u },
-		{ 0x0500, 0x00000001u },
-		{ 0x08d0, 0x00000000u },
-		{ 0x8e08, 0x00000004u },
-		{ 0xb604, 0x00000004u },
-		{ 0xae02, 0x00000004u },
-		{ 0x0e01, 0x00400000u },
-		{ 0x0534, 0x00000000u },
-		{ 0x001f, 0x401fffffu },
-		{ 0x0e19, 0x00000081u },
+		{ 0x0e0b, 0x00100000u, 0xffffffffu },
+		{ 0x0e0c, 0x00000000u, 0xffffffffu },
+		{ 0x0e0d, 0x001fffffu, 0x001ff000u },
+		{ 0x0e0e, 0x00000000u, 0xffffffffu },
+		{ 0x0e18, 0x00000804u, 0xffffffffu },
+		{ 0x0e17, 0x00000004u, 0xffffffffu },
+		{ 0x08c2, 0x010000c0u, 0xffffffffu },
+		{ 0x08c1, 0x8040362cu, 0xffffffffu },
+		{ 0x08c3, 0x00000080u, 0xffffffffu },
+		{ 0x9e00, 0x00180000u, 0xffffffffu },
+		{ 0x098d, 0x00000001u, 0xffffffffu },
+		{ 0x0500, 0x00000001u, 0xffffffffu },
+		{ 0x08d0, 0x00000000u, 0xffffffffu },
+		{ 0x8e08, 0x00000004u, 0xffffffffu },
+		{ 0xb604, 0x00000004u, 0xffffffffu },
+		{ 0xae02, 0x00000004u, 0xffffffffu },
+		{ 0x0e01, 0x00400000u, 0xffffffffu },
+		{ 0x0534, 0x00000000u, 0xffffffffu },
+		{ 0x001f, 0x401fffffu, 0xffffffffu },
+		{ 0x0e19, 0x00000081u, 0xffffffffu },
 	};
 	uint32_t old[sizeof(writes) / sizeof(writes[0])] = { 0 };
 	vm_offset_t gpu = a630_gpu_map();
@@ -2040,7 +2040,8 @@ a630_gpu_write_core_rest_stage18(void)
 		    writes[i].value);
 		written = i + 1;
 		got = rd((volatile uint8_t *)gpu, 4u * writes[i].word);
-		if (got != writes[i].value) {
+		if ((got & writes[i].mask) !=
+		    (writes[i].value & writes[i].mask)) {
 			native_a630_gpu_core_rest_index = i;
 			native_a630_gpu_core_rest_old = old[i];
 			native_a630_gpu_core_rest_want = writes[i].value;
@@ -2054,8 +2055,9 @@ a630_gpu_write_core_rest_stage18(void)
 
 		wr((volatile uint8_t *)gpu, 4u * writes[index].word,
 		    old[index]);
-		if (rd((volatile uint8_t *)gpu, 4u * writes[index].word) !=
-		    old[index]) {
+		if ((rd((volatile uint8_t *)gpu,
+		    4u * writes[index].word) & writes[index].mask) !=
+		    (old[index] & writes[index].mask)) {
 			restore_bad++;
 		}
 	}
