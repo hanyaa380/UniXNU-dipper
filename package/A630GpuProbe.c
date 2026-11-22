@@ -2511,14 +2511,14 @@ a630_gpu_g3d_smmu_stage21(volatile uint8_t *smmu)
 	    PE_current_console(&video) || !video.v_baseAddr ||
 	    !video.v_rowBytes || !video.v_height ||
 	    video.v_rowBytes > UINT32_MAX / video.v_height) {
-		printf("a630gpu: Stream 0 setup preconditions failed: cb=%u smr=%u hash=%#x fb=%ux%u\n",
+		printf("a630gpu: Stream 0 setup preconditions failed: cb=%u smr=%u hash=%#x fb=%lux%lu\n",
 		    native_a630_gpu_smmu_num_cb,
 		    native_a630_gpu_smmu_num_smr, sqe_hash,
 		    video.v_rowBytes, video.v_height);
 		return false;
 	}
 	fb_phys = (uint64_t)video.v_baseAddr;
-	fb_size = video.v_rowBytes * video.v_height;
+	fb_size = (uint32_t)(video.v_rowBytes * video.v_height);
 	native_a630_gpu_g3d_fb_phys = fb_phys;
 	native_a630_gpu_g3d_fb_size = fb_size;
 	if ((fb_phys & 0xfffull) || round_page(fb_size) >
@@ -2589,7 +2589,7 @@ a630_gpu_g3d_smmu_stage21(volatile uint8_t *smmu)
 				goto restore;
 			}
 			l3[(va >> 12) & 0x1ff] = regions[r].phys + off |
-			    A630_PTE_GMU | (1ull << 6) | A630_PTE_PAGE;
+			    A630_PTE_STAGE1 | (1ull << 6) | A630_PTE_PAGE;
 			pages++;
 		}
 	}
@@ -2703,7 +2703,7 @@ free:
 
 static bool
 a630_gmu_gfx_rail_stage14(volatile uint8_t *gmu, volatile uint8_t *gpucc,
-    uint32_t gpu_action)
+    volatile uint8_t *smmu, uint32_t gpu_action)
 {
 	const struct a630_cmd_db_header *db = a630_cmd_db();
 	uint32_t old_option, old_gx, old_mx, old_control;
@@ -3146,7 +3146,7 @@ a630_gmu_boot_stage11(volatile uint8_t *gmu, volatile uint8_t *smmu,
 			}
 		}
 		if (!failure && hfi_mode >= 3) {
-			if (!a630_gmu_gfx_rail_stage14(gmu, gpucc,
+			if (!a630_gmu_gfx_rail_stage14(gmu, gpucc, smmu,
 			    hfi_mode >= 10 ? 7 : (hfi_mode >= 9 ? 6 :
 			    (hfi_mode >= 8 ? 5 : (hfi_mode >= 7 ? 4 :
 			    (hfi_mode >= 6 ? 3 : (hfi_mode >= 5 ? 2 :
