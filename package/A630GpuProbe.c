@@ -82,6 +82,7 @@ extern int printf(const char *, ...);
 #define GMU_RPMH_POWER_STATE_W   0x50ecu
 #define GMU_SPTPRAC_STATUS_W     0x50d0u
 #define GMU_SPTPRAC_CTRL_W       0x0081u
+#define GMU_GX_SPTPRAC_CLK_W     0x0080u
 #define GMU_GX_GDSCR_ALIAS_W     0x9c03u
 #define GMU_BUSY_STATUS_W        0x930cu
 #define OOB_BOOT_SLUMBER_SET     22u
@@ -374,6 +375,15 @@ volatile uint32_t native_a630_gpu_core_rest_want;
 volatile uint32_t native_a630_gpu_core_rest_got;
 volatile uint32_t native_a630_gpu_core_rest_mismatch_mask;
 volatile uint32_t native_a630_gpu_core_rest_got_words[20];
+volatile uint32_t native_a630_gpu_hwcg_ok;
+volatile uint32_t native_a630_gpu_hwcg_written;
+volatile uint32_t native_a630_gpu_hwcg_mismatches;
+volatile uint32_t native_a630_gpu_hwcg_mismatch_mask[4];
+volatile uint32_t native_a630_gpu_hwcg_verify_bad;
+volatile uint32_t native_a630_gpu_hwcg_restore_bad;
+volatile uint32_t native_a630_gpu_hwcg_commit_mask;
+volatile uint32_t native_a630_gpu_hwcg_commit_got;
+volatile uint32_t native_a630_gpu_hwcg_sptprac;
 volatile uint32_t native_a630_gpu_gmu_boot_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_rsc_boot_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_tcm_boot_restore_bad;
@@ -2084,6 +2094,158 @@ a630_gpu_write_core_rest_stage18(void)
 }
 
 static bool
+a630_gpu_write_hwcg_stage19(volatile uint8_t *gmu)
+{
+	static const struct {
+		uint16_t first, count;
+		uint32_t value;
+	} groups[] = {
+		{ 0x00b0, 4, 0x22222222u }, { 0x00b4, 4, 0x02022220u },
+		{ 0x00b8, 4, 0x00000080u }, { 0x00bc, 4, 0x0000f3cfu },
+		{ 0x00c0, 4, 0x02222222u }, { 0x00c4, 4, 0x22222222u },
+		{ 0x00c8, 4, 0x22222222u }, { 0x00cc, 4, 0x00022222u },
+		{ 0x00e0, 4, 0x77777777u }, { 0x00e4, 4, 0x77777777u },
+		{ 0x00e8, 4, 0x77777777u }, { 0x00ec, 4, 0x00077777u },
+		{ 0x00d0, 4, 0x11111111u }, { 0x00d4, 4, 0x11111111u },
+		{ 0x00d8, 4, 0x11111111u }, { 0x00dc, 4, 0x00011111u },
+		{ 0x010b, 3, 0x22222222u }, { 0x010e, 1, 0x00222222u },
+		{ 0x0110, 1, 0x00000004u }, { 0x010f, 1, 0x00000002u },
+		{ 0x00f0, 4, 0x22222222u }, { 0x00f4, 4, 0x00002222u },
+		{ 0x00f8, 4, 0x00002220u }, { 0x0100, 4, 0x00040f00u },
+	};
+	static const struct {
+		uint16_t word;
+		uint32_t value;
+	} extras[] = {
+		{ 0x0104, 0x05022022u }, { 0x0105, 0x00005555u },
+		{ 0x0106, 0x00000011u }, { 0x0107, 0x00445044u },
+		{ 0x0108, 0x04222222u }, { 0x0114, 0x00222222u },
+		{ 0x0111, 0x00002222u }, { 0x010a, 0x00000000u },
+		{ 0x0116, 0x04104004u }, { 0x0113, 0x00000000u },
+		{ 0x011c, 0x00000000u }, { 0x0109, 0x00004000u },
+		{ 0x0115, 0x00000200u }, { 0x0112, 0x00002222u },
+		{ 0x0117, 0x00000002u }, { 0x011b, 0x00002222u },
+		{ 0x0118, 0x00000222u }, { 0x0119, 0x00000111u },
+		{ 0x011a, 0x00000555u },
+	};
+	uint16_t words[105] = { 0 };
+	uint32_t values[105] = { 0 };
+	uint32_t old[105] = { 0 };
+	uint32_t masks[105] = { 0 };
+	uint32_t count = 0, mismatches = 0, restore_bad = 0;
+	uint32_t verify_bad = 0, old_clock, old_sptprac;
+	uint32_t commit_mask = 0, commit_got;
+	vm_offset_t gpu = a630_gpu_map();
+
+	if (gpu == 0) {
+		native_a630_gpu_hwcg_ok = 0;
+		return false;
+	}
+	for (uint32_t g = 0; g < sizeof(groups) / sizeof(groups[0]); g++) {
+		for (uint32_t i = 0; i < groups[g].count; i++) {
+			if (count >= 105) {
+				return false;
+			}
+			words[count] = groups[g].first + i;
+			values[count] = groups[g].value;
+			count++;
+		}
+	}
+	for (uint32_t i = 0; i < sizeof(extras) / sizeof(extras[0]); i++) {
+		if (count >= 105) {
+			return false;
+		}
+		words[count] = extras[i].word;
+		values[count] = extras[i].value;
+		count++;
+	}
+	if (count != 105) {
+		printf("a630gpu: HWCG table assembled %u entries, expected 105\n",
+		    count);
+		native_a630_gpu_hwcg_ok = 0;
+		return false;
+	}
+	for (uint32_t i = 0; i < 4; i++) {
+		native_a630_gpu_hwcg_mismatch_mask[i] = 0;
+	}
+	old_sptprac = rd(gmu, GMU_WORD(GMU_GX_SPTPRAC_CLK_W));
+	old_clock = rd((volatile uint8_t *)gpu, 4u * 0xae);
+
+	wr(gmu, GMU_WORD(GMU_GX_SPTPRAC_CLK_W), old_sptprac & ~1u);
+	for (uint32_t i = 0; i < count; i++) {
+		uint32_t got;
+
+		old[i] = rd((volatile uint8_t *)gpu, 4u * words[i]);
+		wr((volatile uint8_t *)gpu, 4u * words[i], values[i]);
+		got = rd((volatile uint8_t *)gpu, 4u * words[i]);
+		masks[i] = ~(got ^ values[i]);
+		if (got != values[i]) {
+			native_a630_gpu_hwcg_mismatch_mask[i >> 5] |=
+			    1u << (i & 31);
+			mismatches++;
+		}
+	}
+	wr(gmu, GMU_WORD(GMU_GX_SPTPRAC_CLK_W), old_sptprac | 1u);
+	wr((volatile uint8_t *)gpu, 4u * 0xae, 0x8aa8aa02u);
+	commit_got = rd((volatile uint8_t *)gpu, 4u * 0xae);
+	commit_mask = ~(commit_got ^ 0x8aa8aa02u);
+	native_a630_gpu_hwcg_commit_got = commit_got;
+	native_a630_gpu_hwcg_commit_mask = commit_mask;
+
+	for (uint32_t i = count; i > 0; i--) {
+		uint32_t index = i - 1;
+
+		wr((volatile uint8_t *)gpu, 4u * words[index], old[index]);
+		if ((rd((volatile uint8_t *)gpu, 4u * words[index]) &
+		    masks[index]) != (old[index] & masks[index])) {
+			restore_bad++;
+		}
+	}
+	wr((volatile uint8_t *)gpu, 4u * 0xae, old_clock);
+
+	wr(gmu, GMU_WORD(GMU_GX_SPTPRAC_CLK_W), old_sptprac & ~1u);
+	for (uint32_t i = 0; i < count; i++) {
+		wr((volatile uint8_t *)gpu, 4u * words[i], values[i]);
+		if ((rd((volatile uint8_t *)gpu, 4u * words[i]) &
+		    masks[i]) != (values[i] & masks[i])) {
+			verify_bad++;
+		}
+	}
+	wr(gmu, GMU_WORD(GMU_GX_SPTPRAC_CLK_W), old_sptprac | 1u);
+	wr((volatile uint8_t *)gpu, 4u * 0xae, 0x8aa8aa02u);
+	if ((rd((volatile uint8_t *)gpu, 4u * 0xae) & commit_mask) !=
+	    (0x8aa8aa02u & commit_mask)) {
+		verify_bad++;
+	}
+	for (uint32_t i = count; i > 0; i--) {
+		uint32_t index = i - 1;
+
+		wr((volatile uint8_t *)gpu, 4u * words[index], old[index]);
+		if ((rd((volatile uint8_t *)gpu, 4u * words[index]) &
+		    masks[index]) != (old[index] & masks[index])) {
+			restore_bad++;
+		}
+	}
+	wr((volatile uint8_t *)gpu, 4u * 0xae, old_clock);
+	if ((rd((volatile uint8_t *)gpu, 4u * 0xae) & commit_mask) !=
+	    (old_clock & commit_mask)) {
+		restore_bad++;
+	}
+	wr(gmu, GMU_WORD(GMU_GX_SPTPRAC_CLK_W), old_sptprac);
+	native_a630_gpu_hwcg_sptprac =
+	    rd(gmu, GMU_WORD(GMU_SPTPRAC_STATUS_W));
+	native_a630_gpu_hwcg_written = count;
+	native_a630_gpu_hwcg_mismatches = mismatches;
+	native_a630_gpu_hwcg_verify_bad = verify_bad;
+	native_a630_gpu_hwcg_restore_bad = restore_bad;
+	native_a630_gpu_hwcg_ok = verify_bad == 0 && restore_bad == 0;
+	printf("a630gpu: HWCG writes=%u first-mismatch=%u verify=%u restore=%u commit=%#x ok=%u\n",
+	    count, mismatches, verify_bad, restore_bad, commit_got,
+	    native_a630_gpu_hwcg_ok);
+	return native_a630_gpu_hwcg_ok != 0;
+}
+
+static bool
 a630_gmu_gfx_rail_stage14(volatile uint8_t *gmu, volatile uint8_t *gpucc,
     uint32_t gpu_action)
 {
@@ -2148,6 +2310,9 @@ a630_gmu_gfx_rail_stage14(volatile uint8_t *gmu, volatile uint8_t *gpucc,
 	}
 	if (rail_ack && sptprac_on && gpu_action >= 4) {
 		(void)a630_gpu_write_core_rest_stage18();
+	}
+	if (rail_ack && sptprac_on && gpu_action >= 5) {
+		(void)a630_gpu_write_hwcg_stage19(gmu);
 	}
 
 	wr(gmu, GMU_WORD(GMU_GX_GDSCR_ALIAS_W),
@@ -2520,8 +2685,9 @@ a630_gmu_boot_stage11(volatile uint8_t *gmu, volatile uint8_t *smmu,
 		}
 		if (!failure && hfi_mode >= 3) {
 			if (!a630_gmu_gfx_rail_stage14(gmu, gpucc,
-			    hfi_mode >= 7 ? 4 : (hfi_mode >= 6 ? 3 :
-			    (hfi_mode >= 5 ? 2 : (hfi_mode >= 4 ? 1 : 0))))) {
+			    hfi_mode >= 8 ? 5 : (hfi_mode >= 7 ? 4 :
+			    (hfi_mode >= 6 ? 3 : (hfi_mode >= 5 ? 2 :
+			    (hfi_mode >= 4 ? 1 : 0)))))) {
 				failure = 46;
 			} else if (hfi_mode >= 4 &&
 			    !native_a630_gpu_core_read_ok) {
@@ -2535,6 +2701,9 @@ a630_gmu_boot_stage11(volatile uint8_t *gmu, volatile uint8_t *smmu,
 			} else if (hfi_mode >= 7 &&
 			    !native_a630_gpu_core_rest_ok) {
 				failure = 50;
+			} else if (hfi_mode >= 8 &&
+			    !native_a630_gpu_hwcg_ok) {
+				failure = 51;
 			}
 		}
 	}
@@ -3091,18 +3260,20 @@ native_a630_gpu_probe(void)
 			printf("a630gpu: stage 10 complete: the current A630 GMU firmware loads and restores without releasing CM3\n");
 			return;
 		}
-		if (enabled < 18) {
-			uint32_t hfi_mode = enabled >= 17 ? 6 :
-			    (enabled >= 16 ? 5 : (enabled >= 15 ? 4 :
-			    (enabled >= 14 ? 3 : (enabled >= 13 ? 2 :
-			    (enabled >= 12 ? 1 : 0)))));
+		if (enabled < 19) {
+			uint32_t hfi_mode = enabled >= 18 ? 7 :
+			    (enabled >= 17 ? 6 : (enabled >= 16 ? 5 :
+			    (enabled >= 15 ? 4 : (enabled >= 14 ? 3 :
+			    (enabled >= 13 ? 2 : (enabled >= 12 ? 1 : 0))))));
 
 			if (!a630_gmu_boot_stage11(gmu, smmu, gpucc,
 			    hfi_mode)) {
 				return;
 			}
 			native_a630_gpu_status = 0;
-			if (hfi_mode == 6) {
+			if (hfi_mode == 7) {
+				printf("a630gpu: stage 18 complete: the full A630 CORE table writes and restores\n");
+			} else if (hfi_mode == 6) {
 				printf("a630gpu: stage 17 complete: A630 RBBM/QoS/UCHE prefix writes and restores\n");
 			} else if (hfi_mode == 5) {
 				printf("a630gpu: stage 16 complete: A630 address-mode registers write, read back and restore\n");
@@ -3119,11 +3290,11 @@ native_a630_gpu_probe(void)
 			}
 			return;
 		}
-		if (!a630_gmu_boot_stage11(gmu, smmu, gpucc, 7)) {
+		if (!a630_gmu_boot_stage11(gmu, smmu, gpucc, 8)) {
 			return;
 		}
 	}
 
 	native_a630_gpu_status = 0;
-	printf("a630gpu: stage 18 complete: the full A630 CORE table writes and restores\n");
+	printf("a630gpu: stage 19 complete: all 105 HWCG entries and commit are writable\n");
 }

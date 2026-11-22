@@ -221,6 +221,15 @@ extern volatile uint32_t native_a630_gpu_core_rest_want __attribute__((weak_impo
 extern volatile uint32_t native_a630_gpu_core_rest_got __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_core_rest_mismatch_mask __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_core_rest_got_words[20] __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_hwcg_ok __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_hwcg_written __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_hwcg_mismatches __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_hwcg_mismatch_mask[4] __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_hwcg_verify_bad __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_hwcg_restore_bad __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_hwcg_commit_mask __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_hwcg_commit_got __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_hwcg_sptprac __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_boot_restore_bad __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_rsc_boot_restore_bad __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_tcm_boot_restore_bad __attribute__((weak_import));
@@ -724,6 +733,24 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
              native_a630_gpu_core_rest_got_words[17],
              native_a630_gpu_core_rest_got_words[18],
              native_a630_gpu_core_rest_got_words[19]);
+    at = put(out, at, cap, row, sizeof row);
+  }
+  if (&native_a630_gpu_hwcg_ok && native_a630_gpu_stage >= 28) {
+    char row[240];
+    snprintf(row, sizeof row, "[a630hh] ok=%u wrote=%u first=%u "
+             "mask=%08x/%08x/%08x/%08x verify=%u restore=%u "
+             "commit=%08x/%08x sptp=%08x",
+             native_a630_gpu_hwcg_ok, native_a630_gpu_hwcg_written,
+             native_a630_gpu_hwcg_mismatches,
+             native_a630_gpu_hwcg_mismatch_mask[0],
+             native_a630_gpu_hwcg_mismatch_mask[1],
+             native_a630_gpu_hwcg_mismatch_mask[2],
+             native_a630_gpu_hwcg_mismatch_mask[3],
+             native_a630_gpu_hwcg_verify_bad,
+             native_a630_gpu_hwcg_restore_bad,
+             native_a630_gpu_hwcg_commit_got,
+             native_a630_gpu_hwcg_commit_mask,
+             native_a630_gpu_hwcg_sptprac);
     at = put(out, at, cap, row, sizeof row);
   }
   // SDM845 Adreno 630 qualification. Keep a dedicated row so early printf
