@@ -211,6 +211,14 @@ extern volatile uint32_t native_a630_gpu_core_prefix_index __attribute__((weak_i
 extern volatile uint32_t native_a630_gpu_core_prefix_old __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_core_prefix_want __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_core_prefix_got __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_core_rest_ok __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_core_rest_written __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_core_rest_bad __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_core_rest_restore_bad __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_core_rest_index __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_core_rest_old __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_core_rest_want __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_core_rest_got __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_boot_restore_bad __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_rsc_boot_restore_bad __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_tcm_boot_restore_bad __attribute__((weak_import));
@@ -673,6 +681,20 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
              native_a630_gpu_core_prefix_old,
              native_a630_gpu_core_prefix_want,
              native_a630_gpu_core_prefix_got);
+    at = put(out, at, cap, row, sizeof row);
+  }
+  if (&native_a630_gpu_core_rest_ok && native_a630_gpu_stage >= 27) {
+    char row[220];
+    snprintf(row, sizeof row, "[a630y2] ok=%u wrote=%u bad=%u restore=%u "
+             "idx=%u old=%08x want=%08x got=%08x",
+             native_a630_gpu_core_rest_ok,
+             native_a630_gpu_core_rest_written,
+             native_a630_gpu_core_rest_bad,
+             native_a630_gpu_core_rest_restore_bad,
+             native_a630_gpu_core_rest_index,
+             native_a630_gpu_core_rest_old,
+             native_a630_gpu_core_rest_want,
+             native_a630_gpu_core_rest_got);
     at = put(out, at, cap, row, sizeof row);
   }
   // SDM845 Adreno 630 qualification. Keep a dedicated row so early printf

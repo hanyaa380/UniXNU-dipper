@@ -364,6 +364,14 @@ volatile uint32_t native_a630_gpu_core_prefix_index;
 volatile uint32_t native_a630_gpu_core_prefix_old;
 volatile uint32_t native_a630_gpu_core_prefix_want;
 volatile uint32_t native_a630_gpu_core_prefix_got;
+volatile uint32_t native_a630_gpu_core_rest_ok;
+volatile uint32_t native_a630_gpu_core_rest_written;
+volatile uint32_t native_a630_gpu_core_rest_bad;
+volatile uint32_t native_a630_gpu_core_rest_restore_bad;
+volatile uint32_t native_a630_gpu_core_rest_index;
+volatile uint32_t native_a630_gpu_core_rest_old;
+volatile uint32_t native_a630_gpu_core_rest_want;
+volatile uint32_t native_a630_gpu_core_rest_got;
 volatile uint32_t native_a630_gpu_gmu_boot_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_rsc_boot_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_tcm_boot_restore_bad;
@@ -1986,6 +1994,81 @@ a630_gpu_write_core_prefix_stage17(void)
 }
 
 static bool
+a630_gpu_write_core_rest_stage18(void)
+{
+	static const struct {
+		uint32_t word, value;
+	} writes[] = {
+		{ 0x0e0b, 0x00100000u },
+		{ 0x0e0c, 0x00000000u },
+		{ 0x0e0d, 0x001fffffu },
+		{ 0x0e0e, 0x00000000u },
+		{ 0x0e18, 0x00000804u },
+		{ 0x0e17, 0x00000004u },
+		{ 0x08c2, 0x010000c0u },
+		{ 0x08c1, 0x8040362cu },
+		{ 0x08c3, 0x00000080u },
+		{ 0x9e00, 0x00180000u },
+		{ 0x098d, 0x00000001u },
+		{ 0x0500, 0x00000001u },
+		{ 0x08d0, 0x00000000u },
+		{ 0x8e08, 0x00000004u },
+		{ 0xb604, 0x00000004u },
+		{ 0xae02, 0x00000004u },
+		{ 0x0e01, 0x00400000u },
+		{ 0x0534, 0x00000000u },
+		{ 0x001f, 0x401fffffu },
+		{ 0x0e19, 0x00000081u },
+	};
+	uint32_t old[sizeof(writes) / sizeof(writes[0])] = { 0 };
+	vm_offset_t gpu = a630_gpu_map();
+	uint32_t written = 0, bad = 0, restore_bad = 0;
+
+	if (gpu == 0) {
+		native_a630_gpu_core_rest_ok = 0;
+		return false;
+	}
+	native_a630_gpu_core_rest_index = 0xffffffffu;
+	native_a630_gpu_core_rest_old = 0;
+	native_a630_gpu_core_rest_want = 0;
+	native_a630_gpu_core_rest_got = 0;
+	for (uint32_t i = 0; i < sizeof(writes) / sizeof(writes[0]); i++) {
+		uint32_t got;
+
+		old[i] = rd((volatile uint8_t *)gpu, 4u * writes[i].word);
+		wr((volatile uint8_t *)gpu, 4u * writes[i].word,
+		    writes[i].value);
+		written = i + 1;
+		got = rd((volatile uint8_t *)gpu, 4u * writes[i].word);
+		if (got != writes[i].value) {
+			native_a630_gpu_core_rest_index = i;
+			native_a630_gpu_core_rest_old = old[i];
+			native_a630_gpu_core_rest_want = writes[i].value;
+			native_a630_gpu_core_rest_got = got;
+			bad++;
+			break;
+		}
+	}
+	for (uint32_t i = written; i > 0; i--) {
+		uint32_t index = i - 1;
+
+		wr((volatile uint8_t *)gpu, 4u * writes[index].word,
+		    old[index]);
+		if (rd((volatile uint8_t *)gpu, 4u * writes[index].word) !=
+		    old[index]) {
+			restore_bad++;
+		}
+	}
+	native_a630_gpu_core_rest_written = written;
+	native_a630_gpu_core_rest_bad = bad;
+	native_a630_gpu_core_rest_restore_bad = restore_bad;
+	native_a630_gpu_core_rest_ok = bad == 0 && restore_bad == 0;
+	printf("a630gpu: 3D core rest writes=%u bad=%u restore=%u ok=%u\n",
+	    written, bad, restore_bad, native_a630_gpu_core_rest_ok);
+	return native_a630_gpu_core_rest_ok != 0;
+}
+
+static bool
 a630_gmu_gfx_rail_stage14(volatile uint8_t *gmu, volatile uint8_t *gpucc,
     uint32_t gpu_action)
 {
@@ -2047,6 +2130,9 @@ a630_gmu_gfx_rail_stage14(volatile uint8_t *gmu, volatile uint8_t *gpucc,
 	}
 	if (rail_ack && sptprac_on && gpu_action >= 3) {
 		(void)a630_gpu_write_core_prefix_stage17();
+	}
+	if (rail_ack && sptprac_on && gpu_action >= 4) {
+		(void)a630_gpu_write_core_rest_stage18();
 	}
 
 	wr(gmu, GMU_WORD(GMU_GX_GDSCR_ALIAS_W),
@@ -2419,8 +2505,8 @@ a630_gmu_boot_stage11(volatile uint8_t *gmu, volatile uint8_t *smmu,
 		}
 		if (!failure && hfi_mode >= 3) {
 			if (!a630_gmu_gfx_rail_stage14(gmu, gpucc,
-			    hfi_mode >= 6 ? 3 : (hfi_mode >= 5 ? 2 :
-			    (hfi_mode >= 4 ? 1 : 0)))) {
+			    hfi_mode >= 7 ? 4 : (hfi_mode >= 6 ? 3 :
+			    (hfi_mode >= 5 ? 2 : (hfi_mode >= 4 ? 1 : 0))))) {
 				failure = 46;
 			} else if (hfi_mode >= 4 &&
 			    !native_a630_gpu_core_read_ok) {
@@ -2431,6 +2517,9 @@ a630_gmu_boot_stage11(volatile uint8_t *gmu, volatile uint8_t *smmu,
 			} else if (hfi_mode >= 6 &&
 			    !native_a630_gpu_core_prefix_ok) {
 				failure = 49;
+			} else if (hfi_mode >= 7 &&
+			    !native_a630_gpu_core_rest_ok) {
+				failure = 50;
 			}
 		}
 	}
@@ -2987,17 +3076,20 @@ native_a630_gpu_probe(void)
 			printf("a630gpu: stage 10 complete: the current A630 GMU firmware loads and restores without releasing CM3\n");
 			return;
 		}
-		if (enabled < 17) {
-			uint32_t hfi_mode = enabled >= 16 ? 5 :
-			    (enabled >= 15 ? 4 : (enabled >= 14 ? 3 :
-			    (enabled >= 13 ? 2 : (enabled >= 12 ? 1 : 0))));
+		if (enabled < 18) {
+			uint32_t hfi_mode = enabled >= 17 ? 6 :
+			    (enabled >= 16 ? 5 : (enabled >= 15 ? 4 :
+			    (enabled >= 14 ? 3 : (enabled >= 13 ? 2 :
+			    (enabled >= 12 ? 1 : 0)))));
 
 			if (!a630_gmu_boot_stage11(gmu, smmu, gpucc,
 			    hfi_mode)) {
 				return;
 			}
 			native_a630_gpu_status = 0;
-			if (hfi_mode == 5) {
+			if (hfi_mode == 6) {
+				printf("a630gpu: stage 17 complete: A630 RBBM/QoS/UCHE prefix writes and restores\n");
+			} else if (hfi_mode == 5) {
 				printf("a630gpu: stage 16 complete: A630 address-mode registers write, read back and restore\n");
 			} else if (hfi_mode == 4) {
 				printf("a630gpu: stage 15 complete: the A630 3D core is readable while GX is on\n");
@@ -3012,11 +3104,11 @@ native_a630_gpu_probe(void)
 			}
 			return;
 		}
-		if (!a630_gmu_boot_stage11(gmu, smmu, gpucc, 6)) {
+		if (!a630_gmu_boot_stage11(gmu, smmu, gpucc, 7)) {
 			return;
 		}
 	}
 
 	native_a630_gpu_status = 0;
-	printf("a630gpu: stage 17 complete: A630 RBBM/QoS/UCHE prefix writes and restores\n");
+	printf("a630gpu: stage 18 complete: the full A630 CORE table writes and restores\n");
 }
