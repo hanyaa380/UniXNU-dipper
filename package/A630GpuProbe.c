@@ -372,6 +372,8 @@ volatile uint32_t native_a630_gpu_core_rest_index;
 volatile uint32_t native_a630_gpu_core_rest_old;
 volatile uint32_t native_a630_gpu_core_rest_want;
 volatile uint32_t native_a630_gpu_core_rest_got;
+volatile uint32_t native_a630_gpu_core_rest_mismatch_mask;
+volatile uint32_t native_a630_gpu_core_rest_got_words[20];
 volatile uint32_t native_a630_gpu_gmu_boot_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_rsc_boot_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_tcm_boot_restore_bad;
@@ -2032,6 +2034,12 @@ a630_gpu_write_core_rest_stage18(void)
 	native_a630_gpu_core_rest_old = 0;
 	native_a630_gpu_core_rest_want = 0;
 	native_a630_gpu_core_rest_got = 0;
+	native_a630_gpu_core_rest_mismatch_mask = 0;
+	for (uint32_t i = 0;
+	    i < sizeof(native_a630_gpu_core_rest_got_words) /
+	    sizeof(native_a630_gpu_core_rest_got_words[0]); i++) {
+		native_a630_gpu_core_rest_got_words[i] = 0;
+	}
 	for (uint32_t i = 0; i < sizeof(writes) / sizeof(writes[0]); i++) {
 		uint32_t got;
 
@@ -2040,14 +2048,18 @@ a630_gpu_write_core_rest_stage18(void)
 		    writes[i].value);
 		written = i + 1;
 		got = rd((volatile uint8_t *)gpu, 4u * writes[i].word);
+		native_a630_gpu_core_rest_got_words[i] = got;
 		if ((got & writes[i].mask) !=
 		    (writes[i].value & writes[i].mask)) {
-			native_a630_gpu_core_rest_index = i;
-			native_a630_gpu_core_rest_old = old[i];
-			native_a630_gpu_core_rest_want = writes[i].value;
-			native_a630_gpu_core_rest_got = got;
+			if (bad == 0) {
+				native_a630_gpu_core_rest_index = i;
+				native_a630_gpu_core_rest_old = old[i];
+				native_a630_gpu_core_rest_want =
+				    writes[i].value;
+				native_a630_gpu_core_rest_got = got;
+			}
+			native_a630_gpu_core_rest_mismatch_mask |= 1u << i;
 			bad++;
-			break;
 		}
 	}
 	for (uint32_t i = written; i > 0; i--) {
@@ -2065,8 +2077,9 @@ a630_gpu_write_core_rest_stage18(void)
 	native_a630_gpu_core_rest_bad = bad;
 	native_a630_gpu_core_rest_restore_bad = restore_bad;
 	native_a630_gpu_core_rest_ok = bad == 0 && restore_bad == 0;
-	printf("a630gpu: 3D core rest writes=%u bad=%u restore=%u ok=%u\n",
-	    written, bad, restore_bad, native_a630_gpu_core_rest_ok);
+	printf("a630gpu: 3D core rest writes=%u bad=%u mask=%#x restore=%u ok=%u\n",
+	    written, bad, native_a630_gpu_core_rest_mismatch_mask,
+	    restore_bad, native_a630_gpu_core_rest_ok);
 	return native_a630_gpu_core_rest_ok != 0;
 }
 
