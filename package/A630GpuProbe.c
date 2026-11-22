@@ -583,10 +583,11 @@ a630_to_memory(vm_offset_t start, vm_size_t size)
 }
 
 static int
-a630_gmu_smmu_translate(volatile uint8_t *smmu, uint64_t iova, uint64_t *phys)
+a630_gmu_smmu_translate(volatile uint8_t *smmu, uint32_t ctx, uint64_t iova,
+    uint64_t *phys)
 {
 	volatile uint8_t *cb = smmu + native_a630_gpu_smmu_cb_base +
-	    native_a630_gpu_smmu_page_size * A630_GMU_CTX;
+	    native_a630_gpu_smmu_page_size * ctx;
 	uint64_t par;
 
 	*phys = 0;
@@ -856,7 +857,7 @@ a630_gmu_smmu_stage6(volatile uint8_t *smmu)
 		uint64_t expected = kvtophys(block + 0x3000 + page * 0x1000);
 		uint64_t phys = 0;
 
-		if (a630_gmu_smmu_translate(smmu, iova, &phys) != 1 ||
+		if (a630_gmu_smmu_translate(smmu, A630_GMU_CTX, iova, &phys) != 1 ||
 		    phys != expected) {
 			bad++;
 			printf("a630gpu: GMU ATS %#llx wanted %#llx got %#llx\n",
@@ -870,7 +871,8 @@ a630_gmu_smmu_stage6(volatile uint8_t *smmu)
 	for (uint32_t i = 0; i < 2; i++) {
 		uint64_t phys = 0;
 
-		if (a630_gmu_smmu_translate(smmu, holes[i], &phys) != 0) {
+		if (a630_gmu_smmu_translate(smmu, A630_GMU_CTX, holes[i],
+		    &phys) != 0) {
 			hole_bad++;
 			printf("a630gpu: GMU hole %#llx did not fault: %#llx\n",
 			    holes[i], phys);
@@ -1049,7 +1051,7 @@ a630_gmu_smmu_boot_map(volatile uint8_t *smmu, vm_offset_t *block_out,
 		uint64_t expected = kvtophys(block + 0x3000 + page * 0x1000);
 		uint64_t phys = 0;
 
-		if (a630_gmu_smmu_translate(smmu, iova, &phys) != 1 ||
+		if (a630_gmu_smmu_translate(smmu, A630_GMU_CTX, iova, &phys) != 1 ||
 		    phys != expected) {
 			bad++;
 		}
@@ -2649,7 +2651,7 @@ a630_gpu_g3d_smmu_stage21(volatile uint8_t *smmu)
 		    off += stride) {
 			uint64_t phys = 0;
 
-			if (a630_gmu_smmu_translate(smmu,
+			if (a630_gmu_smmu_translate(smmu, A630_G3D_CTX,
 			    regions[r].iova + off, &phys) != 1 ||
 			    phys != regions[r].phys + off) {
 				bad++;
@@ -2660,7 +2662,8 @@ a630_gpu_g3d_smmu_stage21(volatile uint8_t *smmu)
 	for (uint32_t i = 0; i < 2; i++) {
 		uint64_t phys = 0;
 
-		if (a630_gmu_smmu_translate(smmu, holes[i], &phys) != 0) {
+		if (a630_gmu_smmu_translate(smmu, A630_G3D_CTX, holes[i],
+		    &phys) != 0) {
 			hole_bad++;
 		}
 	}
