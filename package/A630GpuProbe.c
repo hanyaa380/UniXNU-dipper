@@ -2066,10 +2066,10 @@ a630_zap_auth_stage23(volatile uint8_t *gpu, vm_offset_t ring_mem)
 	native_a630_gpu_zap_shutdown_rc = 0;
 	native_a630_gpu_zap_result = 0;
 	native_a630_gpu_zap_seg_bad = 0;
-	native_a630_gpu_zap_wptr = wptr;
-	native_a630_gpu_zap_rptr = 0;
+	native_a630_gpu_zap_wptr = 9;
+	native_a630_gpu_zap_rptr = 9;
 	native_a630_gpu_zap_trust_before =
-	    rd(gpu, 4u * A630_RBBM_SECVID_TRUST);
+	    gpu ? rd(gpu, 4u * A630_RBBM_SECVID_TRUST) : 0;
 	native_a630_gpu_zap_trust_after =
 	    native_a630_gpu_zap_trust_before;
 	if (gpu == 0 || ring_mem == 0 ||
@@ -2106,14 +2106,15 @@ a630_zap_auth_stage23(volatile uint8_t *gpu, vm_offset_t ring_mem)
 		}
 	}
 	if (a630_scm_query(how | A630_SCM_SUPPORTED,
-	    A630_ZAP_PAS_ID, &answer) || answer != 1) {
-		printf("a630gpu: Stage 23 PAS %u unsupported: answer %#llx\n",
-		    A630_ZAP_PAS_ID, (unsigned long long)answer);
+	    A630_ZAP_PAS_ID, &answer)) {
+		printf("a630gpu: Stage 23 PAS support query failed: answer %#llx\n",
+		    (unsigned long long)answer);
 		return false;
 	}
-	native_a630_gpu_zap_supported = 1;
-	printf("a630gpu: Stage 23 SMC%u, PAS %u supported\n",
-	    native_a630_gpu_zap_scm64 ? 64u : 32u, A630_ZAP_PAS_ID);
+	native_a630_gpu_zap_supported = answer != 0;
+	printf("a630gpu: Stage 23 SMC%u, PAS %u support query=%#llx (advisory; Linux proceeds without it)\n",
+	    native_a630_gpu_zap_scm64 ? 64u : 32u, A630_ZAP_PAS_ID,
+	    (unsigned long long)answer);
 
 	if (metadata_va == 0 &&
 	    kmem_alloc_contig(kernel_map, &metadata_va,
