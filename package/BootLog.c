@@ -261,6 +261,19 @@ extern volatile uint32_t native_a630_gpu_cp_int_status __attribute__((weak_impor
 extern volatile uint32_t native_a630_gpu_cp_protect __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_cp_status1 __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_cp_hw_fault __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_zap_ok __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_zap_scm64 __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_zap_supported __attribute__((weak_import));
+extern volatile int32_t native_a630_gpu_zap_init_rc __attribute__((weak_import));
+extern volatile int32_t native_a630_gpu_zap_setup_rc __attribute__((weak_import));
+extern volatile int32_t native_a630_gpu_zap_auth_rc __attribute__((weak_import));
+extern volatile int32_t native_a630_gpu_zap_shutdown_rc __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_zap_result __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_zap_seg_bad __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_zap_trust_before __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_zap_trust_after __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_zap_wptr __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_zap_rptr __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_boot_restore_bad __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_rsc_boot_restore_bad __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_tcm_boot_restore_bad __attribute__((weak_import));
@@ -824,6 +837,21 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
              native_a630_gpu_cp_int, native_a630_gpu_cp_smmu_fsr,
              native_a630_gpu_cp_int_status, native_a630_gpu_cp_protect,
              native_a630_gpu_cp_status1, native_a630_gpu_cp_hw_fault);
+    at = put(out, at, cap, row, sizeof row);
+  }
+  if (&native_a630_gpu_zap_ok && native_a630_gpu_stage >= 32) {
+    char row[240];
+    snprintf(row, sizeof row, "[a630z] ok=%u scm=%u sup=%u "
+             "init=%d setup=%d auth=%d shut=%d result=%08x "
+             "trust=%08x/%08x wptr=%u rptr=%u bad=%u",
+             native_a630_gpu_zap_ok, native_a630_gpu_zap_scm64,
+             native_a630_gpu_zap_supported, native_a630_gpu_zap_init_rc,
+             native_a630_gpu_zap_setup_rc, native_a630_gpu_zap_auth_rc,
+             native_a630_gpu_zap_shutdown_rc, native_a630_gpu_zap_result,
+             native_a630_gpu_zap_trust_before,
+             native_a630_gpu_zap_trust_after,
+             native_a630_gpu_zap_wptr, native_a630_gpu_zap_rptr,
+             native_a630_gpu_zap_seg_bad);
     at = put(out, at, cap, row, sizeof row);
   }
   // SDM845 Adreno 630 qualification. Keep a dedicated row so early printf
