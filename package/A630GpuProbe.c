@@ -122,6 +122,10 @@ extern int printf(const char *, ...);
 #define A630_RBBM_STATUS         0x0210u
 #define A630_RBBM_INT_0_STATUS   0x0201u
 #define A630_CP_ME_INIT_OPCODE   0x48u
+#define A630_CP_INTERRUPT_STATUS 0x0823u
+#define A630_CP_PROTECT_STATUS   0x0824u
+#define A630_CP_STATUS_1         0x0825u
+#define A630_CP_HW_FAULT         0x0821u
 
 #define PDC_PHYS                 0x0b280000UL
 #define PDC_SEQ_PHYS             0x0b480000UL
@@ -438,6 +442,10 @@ volatile uint32_t native_a630_gpu_cp_rptr;
 volatile uint32_t native_a630_gpu_cp_status;
 volatile uint32_t native_a630_gpu_cp_int;
 volatile uint32_t native_a630_gpu_cp_smmu_fsr;
+volatile uint32_t native_a630_gpu_cp_int_status;
+volatile uint32_t native_a630_gpu_cp_protect;
+volatile uint32_t native_a630_gpu_cp_status1;
+volatile uint32_t native_a630_gpu_cp_hw_fault;
 volatile uint32_t native_a630_gpu_gmu_boot_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_rsc_boot_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_tcm_boot_restore_bad;
@@ -1937,19 +1945,26 @@ a630_pkt7(uint32_t opcode, uint32_t count)
 }
 
 static bool
-a630_cp_write_checked(volatile uint8_t *gpu, uint32_t word, uint32_t value)
+a630_cp_write_masked(volatile uint8_t *gpu, uint32_t word, uint32_t value,
+    uint32_t mask)
 {
 	uint32_t got;
 
 	wr(gpu, 4u * word, value);
 	got = rd(gpu, 4u * word);
-	if (got == value) {
+	if ((got & mask) == (value & mask)) {
 		return true;
 	}
 	native_a630_gpu_cp_write_bad++;
 	printf("a630gpu: CP register %#x write %#010x read %#010x\n",
 	    word, value, got);
 	return false;
+}
+
+static bool
+a630_cp_write_checked(volatile uint8_t *gpu, uint32_t word, uint32_t value)
+{
+	return a630_cp_write_masked(gpu, word, value, ~0u);
 }
 
 /*
@@ -1976,12 +1991,28 @@ a630_gpu_cp_stage22(volatile uint8_t *smmu, vm_offset_t ring_mem)
 		{ A630_CP_RB_BASE_HI, (uint32_t)(A630_G3D_RING_IOVA >> 32) },
 		{ A630_CP_RB_CNTL, 12u | (2u << 8) | (1u << 27) },
 	};
+	static const struct {
+		uint32_t word;
+		uint32_t value;
+		uint32_t mask;
+	} setup[] = {
+		{ 0x0842u, 0x00000001u, ~0u },
+		{ 0x08c2u, 0x010000c0u, 0 },
+		{ 0x08c1u, 0x8040362cu, ~0u },
+		{ 0x08c3u, 0x00000080u, ~0u },
+		{ 0x098du, 0x00000001u, ~0u },
+		{ 0x0500u, 0x00000001u, ~0u },
+		{ 0x08d0u, 0, ~0u },
+		{ 0x001fu, 0x401fffffu, ~0u },
+		{ 0x0e19u, 0x00000081u, 1u },
+	};
 	volatile uint32_t *ring = (volatile uint32_t *)ring_mem;
 	volatile uint8_t *cb = smmu + native_a630_gpu_smmu_cb_base +
 	    native_a630_gpu_smmu_page_size * A630_G3D_CTX;
 	vm_offset_t gpu = a630_gpu_map();
 	uint32_t old_lo, old_hi, old_cntl, old_rptr, old_wptr;
 	uint32_t old_sqe_cntl, old_sqe_lo, old_sqe_hi;
+	uint32_t setup_old[sizeof(setup) / sizeof(setup[0])];
 	uint32_t rptr = 0, restore_bad = 0;
 	bool consumed = false;
 
@@ -1989,6 +2020,10 @@ a630_gpu_cp_stage22(volatile uint8_t *smmu, vm_offset_t ring_mem)
 	native_a630_gpu_cp_write_bad = 0;
 	native_a630_gpu_cp_restore_bad = 0;
 	native_a630_gpu_cp_smmu_fsr = 0;
+	native_a630_gpu_cp_int_status = 0;
+	native_a630_gpu_cp_protect = 0;
+	native_a630_gpu_cp_status1 = 0;
+	native_a630_gpu_cp_hw_fault = 0;
 	if (gpu == 0 || ring_mem == 0) {
 		printf("a630gpu: Stage 22 has no 3D core mapping or ring memory\n");
 		return false;
@@ -2011,10 +2046,20 @@ a630_gpu_cp_stage22(volatile uint8_t *smmu, vm_offset_t ring_mem)
 		return false;
 	}
 
+	for (uint32_t i = 0;
+	    i < sizeof(setup) / sizeof(setup[0]); i++) {
+		setup_old[i] =
+		    rd((volatile uint8_t *)gpu, 4u * setup[i].word);
+	}
 	(void)a630_cp_write_checked((volatile uint8_t *)gpu,
 	    A630_CP_SQE_CNTL, 0);
 	(void)a630_cp_write_checked((volatile uint8_t *)gpu,
 	    A630_CP_RB_WPTR, 0);
+	for (uint32_t i = 0;
+	    i < sizeof(setup) / sizeof(setup[0]); i++) {
+		(void)a630_cp_write_masked((volatile uint8_t *)gpu,
+		    setup[i].word, setup[i].value, setup[i].mask);
+	}
 	for (uint32_t i = 0;
 	    i < sizeof(program) / sizeof(program[0]); i++) {
 		(void)a630_cp_write_checked((volatile uint8_t *)gpu,
@@ -2056,10 +2101,20 @@ a630_gpu_cp_stage22(volatile uint8_t *smmu, vm_offset_t ring_mem)
 	native_a630_gpu_cp_int =
 	    rd((volatile uint8_t *)gpu, 4u * A630_RBBM_INT_0_STATUS);
 	native_a630_gpu_cp_smmu_fsr = rd(cb, SMMU_CB_FSR);
-	printf("a630gpu: Stage 22 CP %s: RPTR %u WPTR %u status %#010x int %#010x SMMU %#010x\n",
+	native_a630_gpu_cp_int_status =
+	    rd((volatile uint8_t *)gpu, 4u * A630_CP_INTERRUPT_STATUS);
+	native_a630_gpu_cp_protect =
+	    rd((volatile uint8_t *)gpu, 4u * A630_CP_PROTECT_STATUS);
+	native_a630_gpu_cp_status1 =
+	    rd((volatile uint8_t *)gpu, 4u * A630_CP_STATUS_1);
+	native_a630_gpu_cp_hw_fault =
+	    rd((volatile uint8_t *)gpu, 4u * A630_CP_HW_FAULT);
+	printf("a630gpu: Stage 22 CP %s: RPTR %u WPTR %u status %#010x int %#010x SMMU %#010x CPINT %#010x protect %#010x status1 %#010x fault %#010x\n",
 	    consumed ? "CONSUMED CP_ME_INIT" : "TIMED OUT",
 	    rptr, native_a630_gpu_cp_wptr, native_a630_gpu_cp_status,
-	    native_a630_gpu_cp_int, native_a630_gpu_cp_smmu_fsr);
+	    native_a630_gpu_cp_int, native_a630_gpu_cp_smmu_fsr,
+	    native_a630_gpu_cp_int_status, native_a630_gpu_cp_protect,
+	    native_a630_gpu_cp_status1, native_a630_gpu_cp_hw_fault);
 
 restore:
 	wr((volatile uint8_t *)gpu, 4u * A630_CP_SQE_CNTL, 0);
@@ -2069,6 +2124,11 @@ restore:
 	wr((volatile uint8_t *)gpu, 4u * A630_CP_RB_CNTL, old_cntl);
 	wr((volatile uint8_t *)gpu, 4u * A630_CP_SQE_INSTR_LO, old_sqe_lo);
 	wr((volatile uint8_t *)gpu, 4u * A630_CP_SQE_INSTR_HI, old_sqe_hi);
+	for (uint32_t i = 0;
+	    i < sizeof(setup) / sizeof(setup[0]); i++) {
+		wr((volatile uint8_t *)gpu, 4u * setup[i].word,
+		    setup_old[i]);
+	}
 	__asm__ volatile("dsb sy" ::: "memory");
 	sleep_us(1000);
 	if (rd((volatile uint8_t *)gpu, 4u * A630_CP_SQE_CNTL) !=
@@ -2080,6 +2140,16 @@ restore:
 	    rd((volatile uint8_t *)gpu, 4u * A630_CP_SQE_INSTR_LO) != old_sqe_lo ||
 	    rd((volatile uint8_t *)gpu, 4u * A630_CP_SQE_INSTR_HI) != old_sqe_hi) {
 		restore_bad = 1;
+	}
+	for (uint32_t i = 0;
+	    i < sizeof(setup) / sizeof(setup[0]); i++) {
+		uint32_t got =
+		    rd((volatile uint8_t *)gpu, 4u * setup[i].word);
+
+		if ((got & setup[i].mask) !=
+		    (setup_old[i] & setup[i].mask)) {
+			restore_bad = 1;
+		}
 	}
 	native_a630_gpu_cp_restore_bad = restore_bad;
 	for (uint32_t i = 0; i < 0x8000u / 4u; i++) {
