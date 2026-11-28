@@ -131,7 +131,7 @@ extern int printf(const char *, ...);
 #define A630_CP_MEM_WRITE_OPCODE 0x003du
 #define A630_CP_INDIRECT_BUFFER  0x003fu
 #define A630_CP_EVENT_WRITE      0x0046u
-#define A630_CACHE_FLUSH_TS      0x80000004u
+#define A630_CACHE_FLUSH_TS      0x88000031u
 #define A630_RBBM_SECVID_TRUST   0x0f400u
 #define A630_ZAP_PAS_ID          13u
 #define A630_ZAP_REGION_PHYS     0x8c415000ull
