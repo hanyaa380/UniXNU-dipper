@@ -2327,7 +2327,7 @@ a630_zap_auth_stage23(volatile uint8_t *gpu, vm_offset_t ring_mem,
 			ring[16] = a630_pkt7(A630_CP_INDIRECT_BUFFER, 3);
 			ring[17] = (uint32_t)A630_G3D_IB_IOVA;
 			ring[18] = (uint32_t)(A630_G3D_IB_IOVA >> 32);
-			ring[19] = 5;
+			ring[19] = 20;
 			native_a630_gpu_ib_wptr = 20;
 			a630_to_memory(ring_mem, 0x8000);
 			if (a630_cp_write_checked(gpu, A630_CP_RB_WPTR,
