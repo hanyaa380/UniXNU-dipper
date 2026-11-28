@@ -127,6 +127,7 @@ extern int printf(const char *, ...);
 #define A630_CP_STATUS_1         0x0825u
 #define A630_CP_HW_FAULT         0x0821u
 #define A630_CP_SET_SECURE_MODE  0x0066u
+#define A630_CP_MEM_WRITE_OPCODE 0x003du
 #define A630_RBBM_SECVID_TRUST   0x0f400u
 #define A630_ZAP_PAS_ID          13u
 #define A630_ZAP_REGION_PHYS     0x8c415000ull
@@ -476,6 +477,11 @@ volatile uint32_t native_a630_gpu_zap_trust_before;
 volatile uint32_t native_a630_gpu_zap_trust_after;
 volatile uint32_t native_a630_gpu_zap_wptr;
 volatile uint32_t native_a630_gpu_zap_rptr;
+volatile uint32_t native_a630_gpu_cm4_ok;
+volatile uint32_t native_a630_gpu_cm4_wptr;
+volatile uint32_t native_a630_gpu_cm4_rptr;
+volatile uint32_t native_a630_gpu_cm4_mem0;
+volatile uint32_t native_a630_gpu_cm4_mem1;
 volatile uint32_t native_a630_gpu_gmu_boot_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_rsc_boot_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_tcm_boot_restore_bad;
@@ -2045,12 +2051,14 @@ a630_scm_query(uint64_t function, uint64_t argument, uint64_t *answer)
 }
 
 static bool
-a630_zap_auth_stage23(volatile uint8_t *gpu, vm_offset_t ring_mem)
+a630_zap_auth_stage23(volatile uint8_t *gpu, vm_offset_t ring_mem,
+    vm_offset_t memptrs_mem, uint32_t action)
 {
 	static const uint32_t commands[] = { 0x201u, 0x202u, 0x205u, 0x206u };
 	static vm_offset_t metadata_va;
 	volatile uint8_t *region = NULL;
 	volatile uint32_t *ring = (volatile uint32_t *)ring_mem;
+	volatile uint32_t *memptrs = (volatile uint32_t *)memptrs_mem;
 	uint64_t answer = 0, result[3] = { 0, 0, 0 };
 	uint64_t how = A630_SCM_FAST | A630_SCM_64 | A630_SCM_SIP;
 	uint64_t metadata_phys = 0;
@@ -2068,6 +2076,11 @@ a630_zap_auth_stage23(volatile uint8_t *gpu, vm_offset_t ring_mem)
 	native_a630_gpu_zap_seg_bad = 0;
 	native_a630_gpu_zap_wptr = 9;
 	native_a630_gpu_zap_rptr = 9;
+	native_a630_gpu_cm4_ok = 0;
+	native_a630_gpu_cm4_wptr = 0;
+	native_a630_gpu_cm4_rptr = 0;
+	native_a630_gpu_cm4_mem0 = 0;
+	native_a630_gpu_cm4_mem1 = 0;
 	native_a630_gpu_zap_trust_before =
 	    gpu ? rd(gpu, 4u * A630_RBBM_SECVID_TRUST) : 0;
 	native_a630_gpu_zap_trust_after =
@@ -2235,6 +2248,46 @@ a630_zap_auth_stage23(volatile uint8_t *gpu, vm_offset_t ring_mem)
 	    consumed ? "CONSUMED" : "TIMED OUT", rptr, wptr,
 	    native_a630_gpu_zap_trust_before,
 	    native_a630_gpu_zap_trust_after);
+	if (action >= 10 && authenticated && consumed &&
+	    native_a630_gpu_zap_trust_after == 0) {
+		uint32_t cmd_rptr = 0;
+
+		memptrs[2] = 0;
+		memptrs[3] = 0;
+		a630_to_memory(memptrs_mem, 0x1000);
+		ring[11] = a630_pkt7(A630_CP_MEM_WRITE_OPCODE, 4);
+		ring[12] = (uint32_t)(A630_G3D_MEMPTRS_IOVA + 8);
+		ring[13] = (uint32_t)((A630_G3D_MEMPTRS_IOVA + 8) >> 32);
+		ring[14] = 0xc0ffee21u;
+		ring[15] = 0x0badf00du;
+		native_a630_gpu_cm4_wptr = 16;
+		a630_to_memory(ring_mem, 0x8000);
+		if (a630_cp_write_checked(gpu, A630_CP_RB_WPTR,
+		    native_a630_gpu_cm4_wptr)) {
+			__asm__ volatile("dsb sy" ::: "memory");
+			for (uint32_t i = 0; i < 1000; i++) {
+				cmd_rptr =
+				    rd(gpu, 4u * A630_CP_RB_RPTR);
+				if (cmd_rptr ==
+				    native_a630_gpu_cm4_wptr) {
+					break;
+				}
+				sleep_us(100);
+			}
+		}
+		a630_to_memory(memptrs_mem, 0x1000);
+		native_a630_gpu_cm4_rptr = cmd_rptr;
+		native_a630_gpu_cm4_mem0 = memptrs[2];
+		native_a630_gpu_cm4_mem1 = memptrs[3];
+		native_a630_gpu_cm4_ok =
+		    cmd_rptr == native_a630_gpu_cm4_wptr &&
+		    native_a630_gpu_cm4_mem0 == 0xc0ffee21u &&
+		    native_a630_gpu_cm4_mem1 == 0x0badf00du;
+		printf("[a630pm4] ok=%u wptr=%u rptr=%u mem=%08x/%08x\n",
+		    native_a630_gpu_cm4_ok, native_a630_gpu_cm4_wptr,
+		    native_a630_gpu_cm4_rptr, native_a630_gpu_cm4_mem0,
+		    native_a630_gpu_cm4_mem1);
+	}
 
 shutdown:
 	if (init_done) {
@@ -2250,7 +2303,7 @@ shutdown:
 	    native_a630_gpu_zap_trust_after == 0 &&
 	    native_a630_gpu_zap_shutdown_rc == 0 &&
 	    native_a630_gpu_zap_result == 0;
-	printf("[a630z] ok=%u scm=%u sup=%u init=%d setup=%d auth=%d shut=%d result=%08x trust=%08x/%08x wptr=%u rptr=%u bad=%u\n",
+	printf("[a630pas] ok=%u scm=%u sup=%u init=%d setup=%d auth=%d shut=%d result=%08x trust=%08x/%08x wptr=%u rptr=%u bad=%u\n",
 	    native_a630_gpu_zap_ok, native_a630_gpu_zap_scm64,
 	    native_a630_gpu_zap_supported, native_a630_gpu_zap_init_rc,
 	    native_a630_gpu_zap_setup_rc, native_a630_gpu_zap_auth_rc,
@@ -2271,7 +2324,7 @@ shutdown:
  */
 static bool
 a630_gpu_cp_stage22(volatile uint8_t *smmu, vm_offset_t ring_mem,
-    uint32_t action)
+    vm_offset_t memptrs_mem, uint32_t action)
 {
 	static const uint32_t me_init[8] = {
 		0x0000002fu, 0x00000003u, 0x20000000u, 0,
@@ -2393,7 +2446,7 @@ a630_gpu_cp_stage22(volatile uint8_t *smmu, vm_offset_t ring_mem,
 	}
 	if (consumed && action >= 9) {
 		(void)a630_zap_auth_stage23((volatile uint8_t *)gpu,
-		    ring_mem);
+		    ring_mem, memptrs_mem, action);
 		native_a630_gpu_cp_wptr = native_a630_gpu_zap_wptr;
 		native_a630_gpu_cp_rptr = native_a630_gpu_zap_rptr;
 	} else {
@@ -3237,7 +3290,7 @@ a630_gpu_g3d_smmu_stage21(volatile uint8_t *smmu, uint32_t action)
 		}
 	}
 	if (action >= 8) {
-		(void)a630_gpu_cp_stage22(smmu, ring, action);
+		(void)a630_gpu_cp_stage22(smmu, ring, memptrs, action);
 		cp_quiesced =
 		    native_a630_gpu_cp_restore_bad == 0;
 	}
@@ -3728,12 +3781,13 @@ a630_gmu_boot_stage11(volatile uint8_t *gmu, volatile uint8_t *smmu,
 		}
 		if (!failure && hfi_mode >= 3) {
 			if (!a630_gmu_gfx_rail_stage14(gmu, gpucc, smmu,
-			    hfi_mode >= 12 ? 9 : (hfi_mode >= 11 ? 8 :
+			    hfi_mode >= 13 ? 10 : (hfi_mode >= 12 ? 9 :
+			    (hfi_mode >= 11 ? 8 :
 			    (hfi_mode >= 10 ? 7 :
 			    (hfi_mode >= 9 ? 6 :
 			    (hfi_mode >= 8 ? 5 : (hfi_mode >= 7 ? 4 :
 			    (hfi_mode >= 6 ? 3 : (hfi_mode >= 5 ? 2 :
-			    (hfi_mode >= 4 ? 1 : 0)))))))))) {
+			    (hfi_mode >= 4 ? 1 : 0))))))))))) {
 				failure = 46;
 			} else if (hfi_mode >= 4 &&
 			    !native_a630_gpu_core_read_ok) {
@@ -3762,6 +3816,9 @@ a630_gmu_boot_stage11(volatile uint8_t *gmu, volatile uint8_t *smmu,
 			} else if (hfi_mode >= 12 &&
 			    !native_a630_gpu_zap_ok) {
 				failure = 55;
+			} else if (hfi_mode >= 13 &&
+			    !native_a630_gpu_cm4_ok) {
+				failure = 56;
 			}
 		}
 	}
@@ -4369,11 +4426,19 @@ native_a630_gpu_probe(void)
 			printf("a630gpu: stage 22 complete: the A630 CP consumed CP_ME_INIT\n");
 			return;
 		}
-		if (!a630_gmu_boot_stage11(gmu, smmu, gpucc, 12)) {
+		if (enabled < 24) {
+			if (!a630_gmu_boot_stage11(gmu, smmu, gpucc, 12)) {
+				return;
+			}
+			native_a630_gpu_status = 0;
+			printf("a630gpu: stage 23 complete: ZAP authenticated and the 3D core left secure mode\n");
+			return;
+		}
+		if (!a630_gmu_boot_stage11(gmu, smmu, gpucc, 13)) {
 			return;
 		}
 	}
 
 	native_a630_gpu_status = 0;
-	printf("a630gpu: stage 23 complete: ZAP authenticated and the 3D core left secure mode\n");
+	printf("a630gpu: stage 24 complete: the CP executed its first PM4 memory write\n");
 }
