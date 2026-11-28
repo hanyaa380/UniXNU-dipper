@@ -211,13 +211,11 @@ public:
 class A630GPUUserClient : public IOUserClient {
 	OSDeclareDefaultStructors(A630GPUUserClient)
 
-	task_t fTask;
 	struct a630_user_buffer *fBuffers;
 	uint32_t fNextBuffer;
 	uint32_t fBufferCount;
 	uint64_t fBufferBytes;
 	uint32_t fNextQueue;
-	uint32_t fSubmissions;
 
 	struct a630_user_buffer *buffer(uint32_t handle);
 	struct a630_user_buffer *newBuffer(IOMemoryDescriptor *memory,
@@ -305,7 +303,6 @@ A630GPUUserClient::initWithTask(task_t task, void *security, UInt32 type,
 	    !IOUserClient::initWithTask(task, security, type, properties)) {
 		return false;
 	}
-	fTask = task;
 	return true;
 }
 
@@ -324,7 +321,6 @@ A630GPUUserClient::start(IOService *provider)
 	fBufferCount = 0;
 	fBufferBytes = 0;
 	fNextQueue = 0;
-	fSubmissions = 0;
 	return true;
 }
 
@@ -545,6 +541,11 @@ A630GPUUserClient::submit(struct a630_gem_submit *request)
 		}
 		gA630LastFence = request->fence;
 		gA630SubmitCount++;
+		if (gA630SubmitCount <= 4) {
+			IOLog("A630GPU: client submission %u, fence %u, "
+			    "%u command buffers\n", gA630SubmitCount,
+			    request->fence, count);
+		}
 		if (request->flags & A630_MSM_SUBMIT_FENCE_FD_OUT) {
 			request->fence_fd = -1;
 		}
