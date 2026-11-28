@@ -293,6 +293,12 @@ extern volatile uint32_t native_a630_gpu_fence_scratch __attribute__((weak_impor
 extern volatile uint32_t native_a630_gpu_fence_post0 __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_fence_post1 __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_fence_ib1_rem __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_fence_base_cpi __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_fence_depth_cpi __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_fence_color_cpi __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_fence_ib_cpi __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_fence_cpi __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_fence_sqe_stat __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_boot_restore_bad __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_rsc_boot_restore_bad __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_tcm_boot_restore_bad __attribute__((weak_import));
@@ -904,6 +910,17 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
              "ib1=%u", native_a630_gpu_fence_scratch,
              native_a630_gpu_fence_post0, native_a630_gpu_fence_post1,
              native_a630_gpu_fence_ib1_rem);
+    at = put(out, at, cap, row, sizeof row);
+  }
+  if (&native_a630_gpu_fence_base_cpi && native_a630_gpu_stage >= 35) {
+    char row[200];
+    snprintf(row, sizeof row, "[a630fe] cpi=%08x/%08x/%08x/%08x/%08x "
+             "sqe=%08x", native_a630_gpu_fence_base_cpi,
+             native_a630_gpu_fence_depth_cpi,
+             native_a630_gpu_fence_color_cpi,
+             native_a630_gpu_fence_ib_cpi,
+             native_a630_gpu_fence_cpi,
+             native_a630_gpu_fence_sqe_stat);
     at = put(out, at, cap, row, sizeof row);
   }
   // SDM845 Adreno 630 qualification. Keep a dedicated row so early printf

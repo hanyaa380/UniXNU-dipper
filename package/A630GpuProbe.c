@@ -127,6 +127,8 @@ extern int printf(const char *, ...);
 #define A630_CP_PROTECT_STATUS   0x0824u
 #define A630_CP_STATUS_1         0x0825u
 #define A630_CP_HW_FAULT         0x0821u
+#define A630_CP_SQE_STAT_ADDR    0x0908u
+#define A630_CP_SQE_STAT_DATA    0x0909u
 #define A630_CP_SET_SECURE_MODE  0x0066u
 #define A630_CP_MEM_WRITE_OPCODE 0x003du
 #define A630_CP_INDIRECT_BUFFER  0x003fu
@@ -507,6 +509,14 @@ volatile uint32_t native_a630_gpu_fence_scratch;
 volatile uint32_t native_a630_gpu_fence_post0;
 volatile uint32_t native_a630_gpu_fence_post1;
 volatile uint32_t native_a630_gpu_fence_ib1_rem;
+volatile uint32_t native_a630_gpu_fence_base_cpi;
+volatile uint32_t native_a630_gpu_fence_depth_cpi;
+volatile uint32_t native_a630_gpu_fence_depth_rptr;
+volatile uint32_t native_a630_gpu_fence_color_cpi;
+volatile uint32_t native_a630_gpu_fence_color_rptr;
+volatile uint32_t native_a630_gpu_fence_ib_cpi;
+volatile uint32_t native_a630_gpu_fence_cpi;
+volatile uint32_t native_a630_gpu_fence_sqe_stat;
 volatile uint32_t native_a630_gpu_gmu_boot_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_rsc_boot_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_tcm_boot_restore_bad;
@@ -2041,6 +2051,20 @@ a630_cp_write_checked(volatile uint8_t *gpu, uint32_t word, uint32_t value)
 	return a630_cp_write_masked(gpu, word, value, ~0u);
 }
 
+static bool
+a630_cp_wait_for_rptr(volatile uint8_t *gpu, uint32_t wptr, uint32_t *rptr)
+{
+	*rptr = 0;
+	for (uint32_t i = 0; i < 1000; i++) {
+		*rptr = rd(gpu, 4u * A630_CP_RB_RPTR);
+		if (*rptr == wptr) {
+			return true;
+		}
+		sleep_us(100);
+	}
+	return false;
+}
+
 static int32_t
 a630_scm_call(uint64_t function, uint64_t arginfo, uint64_t a0,
     uint64_t a1, uint64_t a2, uint64_t result[3])
@@ -2128,6 +2152,14 @@ a630_zap_auth_stage23(volatile uint8_t *gpu, vm_offset_t ring_mem,
 	native_a630_gpu_fence_post0 = 0;
 	native_a630_gpu_fence_post1 = 0;
 	native_a630_gpu_fence_ib1_rem = 0;
+	native_a630_gpu_fence_base_cpi = 0;
+	native_a630_gpu_fence_depth_cpi = 0;
+	native_a630_gpu_fence_depth_rptr = 0;
+	native_a630_gpu_fence_color_cpi = 0;
+	native_a630_gpu_fence_color_rptr = 0;
+	native_a630_gpu_fence_ib_cpi = 0;
+	native_a630_gpu_fence_cpi = 0;
+	native_a630_gpu_fence_sqe_stat = 0;
 	native_a630_gpu_zap_trust_before =
 	    gpu ? rd(gpu, 4u * A630_RBBM_SECVID_TRUST) : 0;
 	native_a630_gpu_zap_trust_after =
@@ -2337,6 +2369,8 @@ a630_zap_auth_stage23(volatile uint8_t *gpu, vm_offset_t ring_mem,
 		if (action >= 11 && native_a630_gpu_cm4_ok) {
 			uint32_t ib_rptr = 0;
 
+			native_a630_gpu_fence_base_cpi =
+			    rd(gpu, 4u * A630_CP_INTERRUPT_STATUS);
 			memptrs[4] = 0;
 			memptrs[5] = 0;
 			a630_to_memory(memptrs_mem, 0x1000);
@@ -2348,8 +2382,26 @@ a630_zap_auth_stage23(volatile uint8_t *gpu, vm_offset_t ring_mem,
 			a630_to_memory(ib_mem, 0x1000);
 			ring[16] = a630_pkt7(A630_CP_EVENT_WRITE, 1);
 			ring[17] = A630_CCU_INV_DEPTH;
+			a630_to_memory(ring_mem, 0x8000);
+			if (a630_cp_write_checked(gpu, A630_CP_RB_WPTR,
+			    18)) {
+				(void)a630_cp_wait_for_rptr(gpu, 18,
+				    &native_a630_gpu_fence_depth_rptr);
+			}
+			native_a630_gpu_fence_depth_cpi =
+			    rd(gpu, 4u * A630_CP_INTERRUPT_STATUS);
+
 			ring[18] = a630_pkt7(A630_CP_EVENT_WRITE, 1);
 			ring[19] = A630_CCU_INV_COLOR;
+			a630_to_memory(ring_mem, 0x8000);
+			if (a630_cp_write_checked(gpu, A630_CP_RB_WPTR,
+			    20)) {
+				(void)a630_cp_wait_for_rptr(gpu, 20,
+				    &native_a630_gpu_fence_color_rptr);
+			}
+			native_a630_gpu_fence_color_cpi =
+			    rd(gpu, 4u * A630_CP_INTERRUPT_STATUS);
+
 			ring[20] = a630_pkt7(A630_CP_INDIRECT_BUFFER, 3);
 			ring[21] = (uint32_t)A630_G3D_IB_IOVA;
 			ring[22] = (uint32_t)(A630_G3D_IB_IOVA >> 32);
@@ -2358,16 +2410,11 @@ a630_zap_auth_stage23(volatile uint8_t *gpu, vm_offset_t ring_mem,
 			a630_to_memory(ring_mem, 0x8000);
 			if (a630_cp_write_checked(gpu, A630_CP_RB_WPTR,
 			    native_a630_gpu_ib_wptr)) {
-				for (uint32_t i = 0; i < 1000; i++) {
-					ib_rptr = rd(gpu,
-					    4u * A630_CP_RB_RPTR);
-					if (ib_rptr ==
-					    native_a630_gpu_ib_wptr) {
-						break;
-					}
-					sleep_us(100);
-				}
+				(void)a630_cp_wait_for_rptr(gpu,
+				    native_a630_gpu_ib_wptr, &ib_rptr);
 			}
+			native_a630_gpu_fence_ib_cpi =
+			    rd(gpu, 4u * A630_CP_INTERRUPT_STATUS);
 			a630_to_memory(memptrs_mem, 0x1000);
 			native_a630_gpu_ib_rptr = ib_rptr;
 			native_a630_gpu_ib_mem0 = memptrs[4];
@@ -2440,9 +2487,23 @@ a630_zap_auth_stage23(volatile uint8_t *gpu, vm_offset_t ring_mem,
 				native_a630_gpu_fence_post1 = post[1];
 				native_a630_gpu_fence_ib1_rem =
 				    rd(gpu, 4u * A630_CP_IB1_REM_SIZE);
+				native_a630_gpu_fence_cpi =
+				    rd(gpu, 4u * A630_CP_INTERRUPT_STATUS);
+				uint32_t old_stat_addr =
+				    rd(gpu, 4u * A630_CP_SQE_STAT_ADDR);
+				wr(gpu, 4u * A630_CP_SQE_STAT_ADDR, 1);
+				native_a630_gpu_fence_sqe_stat =
+				    rd(gpu, 4u * A630_CP_SQE_STAT_DATA);
+				wr(gpu, 4u * A630_CP_SQE_STAT_ADDR,
+				    old_stat_addr);
 				native_a630_gpu_fence_ok =
 				    fence_rptr == native_a630_gpu_fence_wptr &&
-				    native_a630_gpu_fence_value == 0x12345678u;
+				    native_a630_gpu_fence_value == 0x12345678u &&
+				    native_a630_gpu_fence_base_cpi == 0 &&
+				    native_a630_gpu_fence_depth_cpi == 0 &&
+				    native_a630_gpu_fence_color_cpi == 0 &&
+				    native_a630_gpu_fence_ib_cpi == 0 &&
+				    native_a630_gpu_fence_cpi == 0;
 				printf("[a630fence] ok=%u wptr=%u rptr=%u value=%08x stamp=%08x\n",
 				    native_a630_gpu_fence_ok,
 				    native_a630_gpu_fence_wptr,
@@ -2454,6 +2515,13 @@ a630_zap_auth_stage23(volatile uint8_t *gpu, vm_offset_t ring_mem,
 				    native_a630_gpu_fence_post0,
 				    native_a630_gpu_fence_post1,
 				    native_a630_gpu_fence_ib1_rem);
+				printf("[a630fe] cpi=%08x/%08x/%08x/%08x/%08x sqe=%08x\n",
+				    native_a630_gpu_fence_base_cpi,
+				    native_a630_gpu_fence_depth_cpi,
+				    native_a630_gpu_fence_color_cpi,
+				    native_a630_gpu_fence_ib_cpi,
+				    native_a630_gpu_fence_cpi,
+				    native_a630_gpu_fence_sqe_stat);
 			}
 		}
 	}
