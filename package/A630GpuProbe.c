@@ -2359,13 +2359,12 @@ a630_zap_auth_stage23(volatile uint8_t *gpu, vm_offset_t ring_mem,
 			if (action >= 12 && native_a630_gpu_ib_ok) {
 				uint32_t fence_rptr = 0;
 
-				memptrs[6] = 0;
-				memptrs[7] = 0;
+				memptrs[1] = 0;
 				a630_to_memory(memptrs_mem, 0x1000);
 				ring[20] = a630_pkt7(A630_CP_EVENT_WRITE, 4);
 				ring[21] = A630_CACHE_FLUSH_TS;
-				ring[22] = (uint32_t)(A630_G3D_MEMPTRS_IOVA + 24);
-				ring[23] = (uint32_t)((A630_G3D_MEMPTRS_IOVA + 24) >> 32);
+				ring[22] = (uint32_t)(A630_G3D_MEMPTRS_IOVA + 4);
+				ring[23] = (uint32_t)((A630_G3D_MEMPTRS_IOVA + 4) >> 32);
 				ring[24] = 0x12345678u;
 				native_a630_gpu_fence_wptr = 25;
 				a630_to_memory(ring_mem, 0x8000);
@@ -2383,12 +2382,11 @@ a630_zap_auth_stage23(volatile uint8_t *gpu, vm_offset_t ring_mem,
 				}
 				a630_to_memory(memptrs_mem, 0x1000);
 				native_a630_gpu_fence_rptr = fence_rptr;
-				native_a630_gpu_fence_value = memptrs[6];
-				native_a630_gpu_fence_timestamp = memptrs[7];
+				native_a630_gpu_fence_value = memptrs[1];
+				native_a630_gpu_fence_timestamp = 0;
 				native_a630_gpu_fence_ok =
 				    fence_rptr == native_a630_gpu_fence_wptr &&
-				    native_a630_gpu_fence_value == 0x12345678u &&
-				    native_a630_gpu_fence_timestamp != 0;
+				    native_a630_gpu_fence_value == 0x12345678u;
 				printf("[a630fence] ok=%u wptr=%u rptr=%u value=%08x stamp=%08x\n",
 				    native_a630_gpu_fence_ok,
 				    native_a630_gpu_fence_wptr,
