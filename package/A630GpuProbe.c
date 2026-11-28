@@ -2393,7 +2393,8 @@ native_a630_gpu_kmd_unmap(uint64_t address, uint64_t size)
 	}
 	if (a630_keep_fence != 0 &&
 	    !native_a630_gpu_kmd_done(a630_keep_fence)) {
-		native_a630_gpu_kmd_fault++;
+		__atomic_add_fetch(&native_a630_gpu_kmd_fault, 1,
+		    __ATOMIC_RELAXED);
 		printf("a630gpu: unmap %#llx+%#llx while fence %u is pending\n",
 		    (unsigned long long)address, (unsigned long long)size,
 		    a630_keep_fence);
@@ -2475,7 +2476,8 @@ native_a630_gpu_kmd_submit(const uint64_t *addresses, const uint32_t *words,
 	wr(gpu, 4u * A630_CP_RB_WPTR, a630_keep_ring_at);
 	__asm__ volatile("dsb sy" ::: "memory");
 	native_a630_gpu_kmd_fence = fence;
-	native_a630_gpu_kmd_submit_count++;
+	__atomic_add_fetch(&native_a630_gpu_kmd_submit_count, 1,
+	    __ATOMIC_RELAXED);
 	printf("a630gpu: KMD submission %u fence %u buffer %#llx+%u dwords ring=%u\n",
 	    native_a630_gpu_kmd_submit_count, fence,
 	    (unsigned long long)addresses[0], words[0],

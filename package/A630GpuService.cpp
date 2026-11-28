@@ -373,8 +373,11 @@ A630GPUUserClient::newBuffer(IOMemoryDescriptor *memory, uint64_t size,
 		native_a630_gpu_kmd_address_free(address, size);
 		return NULL;
 	}
+	IOBufferMemoryDescriptor *bufferMemory =
+	    OSDynamicCast(IOBufferMemoryDescriptor, memory);
 	entry->memory = memory;
-	entry->kernel = (uint8_t *)memory->getBytesNoCopy();
+	entry->kernel = bufferMemory == NULL ? NULL :
+	    (uint8_t *)bufferMemory->getBytesNoCopy();
 	entry->address = address;
 	entry->size = size;
 	entry->flags = flags;
@@ -399,7 +402,8 @@ A630GPUUserClient::freeBuffer(struct a630_user_buffer *entry)
 	if (entry->fence != 0 &&
 	    !a630_wait_fence_locked(entry->fence, A630_GPU_PATIENCE_MS)) {
 		gA630FaultCount++;
-		native_a630_gpu_kmd_fault++;
+		__atomic_add_fetch(&native_a630_gpu_kmd_fault, 1,
+		    __ATOMIC_RELAXED);
 		native_a630_gpu_kmd_report("buffer close timed out");
 	}
 	native_a630_gpu_kmd_unmap(entry->address, entry->size);
