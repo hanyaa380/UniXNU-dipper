@@ -596,7 +596,7 @@ static uint32_t a630_keep_free_count;
 static struct {
 	uint64_t phys;
 	vm_offset_t virt;
-} a630_keep_tables[A630_KEEP_TABLE_CAPACITY];
+} a630_keep_table_pages[A630_KEEP_TABLE_CAPACITY];
 static uint32_t a630_keep_table_count;
 static vm_offset_t a630_keep_table_pool;
 static uint32_t a630_keep_table_pool_used;
@@ -2115,8 +2115,8 @@ a630_keep_table_virt(uint64_t phys)
 		}
 	}
 	for (uint32_t i = 0; i < a630_keep_table_count; i++) {
-		if (a630_keep_tables[i].phys == phys) {
-			return (uint64_t *)a630_keep_tables[i].virt;
+		if (a630_keep_table_pages[i].phys == phys) {
+			return (uint64_t *)a630_keep_table_pages[i].virt;
 		}
 	}
 	return NULL;
@@ -2141,8 +2141,8 @@ a630_keep_table_new(uint64_t *phys)
 	}
 	table = a630_keep_table_pool + 0x1000 * a630_keep_table_pool_used++;
 	*phys = kvtophys(table);
-	a630_keep_tables[a630_keep_table_count].phys = *phys;
-	a630_keep_tables[a630_keep_table_count++].virt = table;
+	a630_keep_table_pages[a630_keep_table_count].phys = *phys;
+	a630_keep_table_pages[a630_keep_table_count++].virt = table;
 	a630_to_memory(table, 0x1000);
 	return (uint64_t *)table;
 }
