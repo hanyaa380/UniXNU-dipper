@@ -19,6 +19,9 @@ extern "C" void native_legacy_display_static_init(void) __asm__("__GLOBAL__sub_I
 extern "C" IOService *native_legacy_display_allocate(void);
 extern "C" void native_gop_presenter_static_init(void) __asm__("__GLOBAL__sub_I_NativeGOPPresenter.cpp");
 extern "C" IOService *native_gop_presenter_create(void);
+extern "C" void native_a630_gpu_static_init(void) __asm__("__GLOBAL__sub_I_A630GpuService.cpp");
+extern "C" void native_a630_gpu_service_publish(void);
+extern "C" bool native_a630_gpu_kmd_ready(void);
 static IOService *pendingLegacyDisplay;
 static IOService *activeGOPPresenter,*activeGOPNub;
 // GPU hand-off presenter (sheng-fb-gpu=1, phase 4): lives beside the display driver, which offers it frames instead of copying them.
@@ -458,7 +461,8 @@ void native_legacy_display_probe(void) {
     if(native_legacy_stage)return;
     native_legacy_stage=1;void *handle=OSMetaClass::preModLoad(g_kernel_kmod_info.name);
     if(!handle){native_legacy_display_checkpoint();return;}
-    native_legacy_display_static_init();native_gop_presenter_static_init();native_legacy_meta_status=OSMetaClass::postModLoad(handle);
+    native_legacy_display_static_init();native_gop_presenter_static_init();native_a630_gpu_static_init();
+    native_legacy_meta_status=OSMetaClass::postModLoad(handle);
     if(native_legacy_meta_status){native_legacy_display_checkpoint();return;}
     PE_Video video={};native_legacy_stage=2;
     if(PE_current_console(&video) || !video.v_baseAddr || !video.v_width || !video.v_height || video.v_depth!=32
@@ -488,6 +492,7 @@ extern void native_a630_gpu_probe(void);
 void native_legacy_display_late_probe(void) {
     native_keystore_probe();
     native_a630_gpu_probe();
+    if(native_a630_gpu_kmd_ready())native_a630_gpu_service_publish();
     native_hid_input_probe();
     IOService *display=pendingLegacyDisplay;if(!display)return;pendingLegacyDisplay=nullptr;
     native_legacy_surface_status=OSKextLoadKextWithIdentifier("com.apple.iokit.IOSurface");

@@ -357,7 +357,8 @@ def compile_with(template, record, source, extra=()):
     return obj
 
 
-probes = [KIT / 'LegacyDisplayProbe.cpp', KIT / 'HidInputProbe.cpp', KIT / 'KeyStoreProbe.cpp']
+probes = [KIT / 'LegacyDisplayProbe.cpp', KIT / 'HidInputProbe.cpp',
+          KIT / 'KeyStoreProbe.cpp', KIT / 'A630GpuService.cpp']
 probe_objs = [compile_with(cpp, r, source) for source in probes]
 c_sources = [KIT / 'BootProcessProbe.c', KIT / 'BootUiTraceProbe.c', KIT / 'A630GpuProbe.c']
 probe_objs += [compile_with(c, pr, source) for source in c_sources]
@@ -396,6 +397,7 @@ sources = [ROOT / 'drivers/NativeMobileDisplay/NativeLegacyDisplay.cpp', ROOT / 
            ROOT / 'drivers/NativeMobileDisplay/NativeLegacyScale.h', ROOT / 'drivers/NativeMobileDisplay/FajitaDisplayLogical.h',
            ROOT / 'drivers/NativeMobileDisplay/NativeGOPPresenter.cpp', ROOT / 'drivers/NativeMobileDisplay/NativeGOPWire.h',
            *probes, *c_sources, KIT / 'BootUiTraceCore.h', KIT / 'BootUiTraceDetails.h',
+           KIT / 'A630GpuKernel.h', KIT / 'BoardClasses.h',
            ROOT / 'drivers/NativeHidInput/NativeHidInput.cpp', ROOT / 'scripts/build-native-hid-input.py',
            ROOT / 'drivers/NativeKeyStoreEvents/NativeKeyStoreEvents.cpp', Path(__file__).resolve()]
 report = dict(

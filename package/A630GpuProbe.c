@@ -10,6 +10,8 @@
 #include <vm/vm_kern.h>
 #include <vm/memory_types.h>
 
+#include "A630GpuKernel.h"
+
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern uint64_t kvtophys(vm_offset_t va);
 extern int printf(const char *, ...);
@@ -308,8 +310,16 @@ static const struct a630_rs_write a630_rs_writes[] = {
 #define A630_PTE_NOT_GLOBAL      (1ull << 11)
 #define A630_PTE_ADDRESS         0x0000fffffffff000ull
 #define A630_PTE_STAGE1          (A630_PTE_SHARED | A630_PTE_ACCESSED | A630_PTE_NOT_GLOBAL)
+#define A630_PTE_UNPRIV          (1ull << 6)
 #define A630_GMU_IOVA_BASE       0x60000000ull
 #define A630_GMU_DMA_BYTES       0x10000u
+#define A630_KEEP_IOVA_START     0x40000000ull
+#define A630_KEEP_IOVA_SIZE      0xb0000000ull
+#define A630_KEEP_GRANULE        0x10000ull
+#define A630_KEEP_RING_WORDS     8192u
+#define A630_KEEP_FENCE          0x40u
+#define A630_KEEP_PTE_READ_ONLY  (1ull << 7)
+#define A630_KEEP_TABLE_CAPACITY 512u
 
 volatile uint32_t native_a630_gpu_stage;
 volatile uint32_t native_a630_gpu_status;
@@ -556,8 +566,40 @@ volatile uint32_t native_a630_gpu_gmu_rsc_boot_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_tcm_boot_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_smmu_boot_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_log[4];
+volatile uint32_t native_a630_gpu_kmd_ready;
+volatile uint32_t native_a630_gpu_kmd_mapped;
+volatile uint32_t native_a630_gpu_kmd_buffer_count;
+volatile uint32_t native_a630_gpu_kmd_buffer_bytes;
+volatile uint32_t native_a630_gpu_kmd_submit_count;
+volatile uint32_t native_a630_gpu_kmd_fence;
+volatile uint32_t native_a630_gpu_kmd_fault;
 static volatile uint8_t *a630_pdc_base;
 static volatile uint8_t *a630_pdc_seq_base;
+static volatile uint8_t *a630_keep_gmu;
+static volatile uint8_t *a630_keep_gpucc;
+static volatile uint8_t *a630_keep_smmu;
+static vm_offset_t a630_keep_hfi_block;
+static vm_offset_t a630_keep_tables;
+static vm_offset_t a630_keep_ring;
+static vm_offset_t a630_keep_memptrs;
+static vm_offset_t a630_keep_ib;
+static vm_offset_t a630_keep_target;
+static uint32_t a630_keep_ring_at;
+static uint32_t a630_keep_ring_sent;
+static uint32_t a630_keep_fence;
+static volatile uint32_t *a630_keep_fence_word;
+static struct {
+	uint64_t start;
+	uint64_t size;
+} a630_keep_free[1024];
+static uint32_t a630_keep_free_count;
+static struct {
+	uint64_t phys;
+	vm_offset_t virt;
+} a630_keep_tables[A630_KEEP_TABLE_CAPACITY];
+static uint32_t a630_keep_table_count;
+static vm_offset_t a630_keep_table_pool;
+static uint32_t a630_keep_table_pool_used;
 
 struct a630_hfi_table {
 	uint32_t version, size, qhdr0_offset, qhdr_size, num_queues,
@@ -2062,6 +2104,506 @@ a630_pkt4(uint32_t reg, uint32_t count)
 	    ((reg & 0x3ffffu) << 8) | (a630_pm4_parity(reg) << 27);
 }
 
+static uint64_t *
+a630_keep_table_virt(uint64_t phys)
+{
+	if (a630_keep_tables != 0) {
+		for (uint32_t i = 1; i < A630_G3D_TABLE_BYTES / 0x1000; i++) {
+			if (kvtophys(a630_keep_tables + 0x1000 * i) == phys) {
+				return (uint64_t *)(a630_keep_tables + 0x1000 * i);
+			}
+		}
+	}
+	for (uint32_t i = 0; i < a630_keep_table_count; i++) {
+		if (a630_keep_tables[i].phys == phys) {
+			return (uint64_t *)a630_keep_tables[i].virt;
+		}
+	}
+	return NULL;
+}
+
+static uint64_t *
+a630_keep_table_new(uint64_t *phys)
+{
+	vm_offset_t table;
+
+	if (a630_keep_table_pool == 0 ||
+	    a630_keep_table_pool_used >= PAGE_SIZE / 0x1000) {
+		if (a630_keep_table_count + PAGE_SIZE / 0x1000 >
+		    A630_KEEP_TABLE_CAPACITY ||
+		    kmem_alloc(kernel_map, &a630_keep_table_pool, PAGE_SIZE,
+		    KMA_KOBJECT | KMA_ZERO | KMA_DATA,
+		    VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
+			a630_keep_table_pool = 0;
+			return NULL;
+		}
+		a630_keep_table_pool_used = 0;
+	}
+	table = a630_keep_table_pool + 0x1000 * a630_keep_table_pool_used++;
+	*phys = kvtophys(table);
+	a630_keep_tables[a630_keep_table_count].phys = *phys;
+	a630_keep_tables[a630_keep_table_count++].virt = table;
+	a630_to_memory(table, 0x1000);
+	return (uint64_t *)table;
+}
+
+static bool
+a630_keep_map(uint64_t iova, uint64_t phys, bool read_only)
+{
+	uint64_t *l1, *l2, *l3, table_phys;
+	uint64_t *entry;
+
+	if (a630_keep_tables == 0 || (iova & 0xfffull) ||
+	    (phys & 0xfffull)) {
+		return false;
+	}
+	l1 = (uint64_t *)a630_keep_tables;
+	entry = &l1[(iova >> 30) & 0x1ff];
+	if (*entry == 0) {
+		if (phys == 0) {
+			return true;
+		}
+		l2 = a630_keep_table_new(&table_phys);
+		if (l2 == NULL) {
+			return false;
+		}
+		*entry = table_phys | A630_PTE_TABLE;
+		a630_to_memory((vm_offset_t)entry, sizeof(*entry));
+	} else {
+		l2 = a630_keep_table_virt(*entry & A630_PTE_ADDRESS);
+	}
+	if (l2 == NULL) {
+		return false;
+	}
+	entry = &l2[(iova >> 21) & 0x1ff];
+	if (*entry == 0) {
+		if (phys == 0) {
+			return true;
+		}
+		l3 = a630_keep_table_new(&table_phys);
+		if (l3 == NULL) {
+			return false;
+		}
+		*entry = table_phys | A630_PTE_TABLE;
+		a630_to_memory((vm_offset_t)entry, sizeof(*entry));
+	} else {
+		l3 = a630_keep_table_virt(*entry & A630_PTE_ADDRESS);
+	}
+	if (l3 == NULL) {
+		return false;
+	}
+	entry = &l3[(iova >> 12) & 0x1ff];
+	*entry = phys == 0 ? 0 :
+	    (phys | A630_PTE_STAGE1 | A630_PTE_UNPRIV | A630_PTE_PAGE |
+	    (read_only ? A630_KEEP_PTE_READ_ONLY : 0));
+	a630_to_memory((vm_offset_t)entry, sizeof(*entry));
+	return true;
+}
+
+static void
+a630_keep_tlb(void)
+{
+	volatile uint8_t *cb;
+
+	if (a630_keep_smmu == NULL) {
+		return;
+	}
+	cb = a630_keep_smmu + native_a630_gpu_smmu_cb_base +
+	    native_a630_gpu_smmu_page_size * A630_G3D_CTX;
+	__asm__ volatile("dsb sy" ::: "memory");
+	wr(cb, SMMU_CB_TLBIASID, A630_G3D_CTX);
+	wr(cb, SMMU_CB_TLBSYNC, 1);
+	for (uint32_t i = 0; i < 1000 &&
+	    (rd(cb, SMMU_CB_TLBSTATUS) & 1); i++) {
+		sleep_us(10);
+	}
+}
+
+static void
+a630_keep_ring_write(uint32_t value)
+{
+	((volatile uint32_t *)a630_keep_ring)[a630_keep_ring_at] = value;
+	a630_keep_ring_at =
+	    (a630_keep_ring_at + 1) & (A630_KEEP_RING_WORDS - 1);
+}
+
+static void
+a630_keep_ring_packet(uint32_t opcode, uint32_t words)
+{
+	a630_keep_ring_write(a630_pkt7(opcode, words));
+}
+
+bool
+native_a630_gpu_kmd_ready(void)
+{
+	return __atomic_load_n(&native_a630_gpu_kmd_ready, __ATOMIC_ACQUIRE) != 0;
+}
+
+bool
+native_a630_gpu_kmd_parameter(uint32_t which, uint64_t *value)
+{
+	if (value == NULL) {
+		return false;
+	}
+	switch (which) {
+	case 0x01:
+	case 0x06:
+	case 0x08:
+	case 0x09:
+	case 0x0a:
+	case 0x11:
+		*value = 0;
+		return true;
+	case 0x02:
+		*value = 1024 * 1024;
+		return true;
+	case 0x03:
+		*value = 0x06030001ull;
+		return true;
+	case 0x04:
+		*value = 710000000ull;
+		return true;
+	case 0x05:
+		if (a630_keep_gmu == NULL) {
+			*value = 0;
+		} else {
+			uint32_t hi = rd(a630_keep_gmu,
+			    GMU_WORD(GMU_AO_COUNTER_HI_W));
+			uint32_t lo = rd(a630_keep_gmu,
+			    GMU_WORD(GMU_AO_COUNTER_LO_W));
+
+			*value = ((uint64_t)hi << 32) | lo;
+		}
+		return true;
+	case 0x07:
+		*value = 1;
+		return true;
+	case 0x10:
+		*value = 15;
+		return true;
+	case 0x12:
+		*value = 6;
+		return true;
+	case 0x13:
+		*value = 0;
+		return true;
+	default:
+		return false;
+	}
+}
+
+uint64_t
+native_a630_gpu_kmd_address(uint64_t size)
+{
+	if (size == 0 || size > A630_KEEP_IOVA_SIZE) {
+		return 0;
+	}
+	size = (size + A630_KEEP_GRANULE - 1) & ~(A630_KEEP_GRANULE - 1);
+	for (uint32_t i = 0; i < a630_keep_free_count; i++) {
+		uint64_t address;
+
+		if (a630_keep_free[i].size < size) {
+			continue;
+		}
+		address = a630_keep_free[i].start;
+		a630_keep_free[i].start += size;
+		a630_keep_free[i].size -= size;
+		if (a630_keep_free[i].size == 0) {
+			for (uint32_t j = i + 1;
+			    j < a630_keep_free_count; j++) {
+				a630_keep_free[j - 1] = a630_keep_free[j];
+			}
+			a630_keep_free_count--;
+		}
+		return address;
+	}
+	return 0;
+}
+
+void
+native_a630_gpu_kmd_address_free(uint64_t address, uint64_t size)
+{
+	uint32_t at = 0;
+
+	if (size == 0) {
+		return;
+	}
+	size = (size + A630_KEEP_GRANULE - 1) & ~(A630_KEEP_GRANULE - 1);
+	while (at < a630_keep_free_count &&
+	    a630_keep_free[at].start < address) {
+		at++;
+	}
+	if (at != 0 && a630_keep_free[at - 1].start +
+	    a630_keep_free[at - 1].size == address) {
+		a630_keep_free[at - 1].size += size;
+		if (at < a630_keep_free_count && address + size ==
+		    a630_keep_free[at].start) {
+			a630_keep_free[at - 1].size +=
+			    a630_keep_free[at].size;
+			for (uint32_t j = at + 1;
+			    j < a630_keep_free_count; j++) {
+				a630_keep_free[j - 1] = a630_keep_free[j];
+			}
+			a630_keep_free_count--;
+		}
+		return;
+	}
+	if (at < a630_keep_free_count &&
+	    address + size == a630_keep_free[at].start) {
+		a630_keep_free[at].start = address;
+		a630_keep_free[at].size += size;
+		return;
+	}
+	if (a630_keep_free_count >=
+	    sizeof(a630_keep_free) / sizeof(a630_keep_free[0])) {
+		return;
+	}
+	for (uint32_t j = a630_keep_free_count; j > at; j--) {
+		a630_keep_free[j] = a630_keep_free[j - 1];
+	}
+	a630_keep_free[at].start = address;
+	a630_keep_free[at].size = size;
+	a630_keep_free_count++;
+}
+
+bool
+native_a630_gpu_kmd_map(uint64_t address, uint64_t phys, bool read_only)
+{
+	if (!native_a630_gpu_kmd_ready()) {
+		return false;
+	}
+	return a630_keep_map(address, phys, read_only);
+}
+
+void
+native_a630_gpu_kmd_mapped(void)
+{
+	if (native_a630_gpu_kmd_ready()) {
+		a630_keep_tlb();
+	}
+}
+
+void
+native_a630_gpu_kmd_unmap(uint64_t address, uint64_t size)
+{
+	if (!native_a630_gpu_kmd_ready() || (address & 0xfffull) ||
+	    (size & 0xfffull)) {
+		return;
+	}
+	if (a630_keep_fence != 0 &&
+	    !native_a630_gpu_kmd_done(a630_keep_fence)) {
+		native_a630_gpu_kmd_fault++;
+		printf("a630gpu: unmap %#llx+%#llx while fence %u is pending\n",
+		    (unsigned long long)address, (unsigned long long)size,
+		    a630_keep_fence);
+	}
+	for (uint64_t offset = 0; offset < size; offset += 0x1000) {
+		if (!a630_keep_map(address + offset, 0, false)) {
+			return;
+		}
+	}
+	a630_keep_tlb();
+}
+
+void
+native_a630_gpu_kmd_to_memory(void *start, uint64_t size)
+{
+	a630_to_memory((vm_offset_t)start, (vm_size_t)size);
+}
+
+uint32_t
+native_a630_gpu_kmd_submit(const uint64_t *addresses, const uint32_t *words,
+    uint32_t count)
+{
+	volatile uint8_t *gpu;
+	uint64_t fence_iova;
+	uint32_t wanted, room = 0, fence;
+
+	if (!native_a630_gpu_kmd_ready() || addresses == NULL ||
+	    words == NULL || count == 0 || count > 64) {
+		return 0;
+	}
+	for (uint32_t i = 0; i < count; i++) {
+		if ((addresses[i] & 3) || words[i] == 0 ||
+		    words[i] > A630_KEEP_RING_WORDS / 2) {
+			return 0;
+		}
+	}
+	gpu = (volatile uint8_t *)a630_gpu_map();
+	if (gpu == NULL) {
+		return 0;
+	}
+	wanted = 16 + 4 * count;
+	for (uint32_t i = 0; i < 1000; i++) {
+		uint32_t rptr = rd(gpu, 4u * A630_CP_RB_RPTR);
+
+		room = (rptr + A630_KEEP_RING_WORDS -
+		    a630_keep_ring_at - 1) & (A630_KEEP_RING_WORDS - 1);
+		if (room >= wanted) {
+			break;
+		}
+		sleep_us(100);
+	}
+	if (room < wanted) {
+		return 0;
+	}
+	fence = ++a630_keep_fence;
+	if (fence == 0) {
+		fence = ++a630_keep_fence;
+	}
+	fence_iova = A630_G3D_MEMPTRS_IOVA + A630_KEEP_FENCE;
+	*a630_keep_fence_word = 0;
+	a630_to_memory((vm_offset_t)a630_keep_fence_word, 4);
+	a630_keep_ring_packet(A630_CP_EVENT_WRITE, 1);
+	a630_keep_ring_write(A630_CCU_INV_DEPTH);
+	a630_keep_ring_packet(A630_CP_EVENT_WRITE, 1);
+	a630_keep_ring_write(A630_CCU_INV_COLOR);
+	for (uint32_t i = 0; i < count; i++) {
+		a630_keep_ring_packet(A630_CP_INDIRECT_BUFFER, 3);
+		a630_keep_ring_write((uint32_t)addresses[i]);
+		a630_keep_ring_write((uint32_t)(addresses[i] >> 32));
+		a630_keep_ring_write(words[i]);
+	}
+	a630_keep_ring_packet(A630_CP_EVENT_WRITE, 4);
+	a630_keep_ring_write(A630_CACHE_FLUSH_TS);
+	a630_keep_ring_write((uint32_t)fence_iova);
+	a630_keep_ring_write((uint32_t)(fence_iova >> 32));
+	a630_keep_ring_write(fence);
+	a630_to_memory(a630_keep_ring, 0x8000);
+	a630_keep_ring_sent = a630_keep_ring_at;
+	wr(gpu, 4u * A630_CP_RB_WPTR, a630_keep_ring_at);
+	__asm__ volatile("dsb sy" ::: "memory");
+	native_a630_gpu_kmd_fence = fence;
+	native_a630_gpu_kmd_submit_count++;
+	printf("a630gpu: KMD submission %u fence %u buffer %#llx+%u dwords ring=%u\n",
+	    native_a630_gpu_kmd_submit_count, fence,
+	    (unsigned long long)addresses[0], words[0],
+	    a630_keep_ring_at);
+	return fence;
+}
+
+bool
+native_a630_gpu_kmd_done(uint32_t fence)
+{
+	uint32_t value;
+
+	if (a630_keep_fence_word == NULL || fence == 0) {
+		return fence == 0;
+	}
+	a630_to_memory((vm_offset_t)a630_keep_fence_word, 4);
+	value = *a630_keep_fence_word;
+	return value == fence || (int32_t)(value - fence) >= 0;
+}
+
+uint32_t
+native_a630_gpu_kmd_last(void)
+{
+	return a630_keep_fence;
+}
+
+void
+native_a630_gpu_kmd_report(const char *why)
+{
+	volatile uint8_t *gpu = (volatile uint8_t *)a630_gpu_map();
+	volatile uint8_t *cb = a630_keep_smmu == NULL ? NULL :
+	    a630_keep_smmu + native_a630_gpu_smmu_cb_base +
+	    native_a630_gpu_smmu_page_size * A630_G3D_CTX;
+
+	if (gpu != NULL && cb != NULL) {
+		printf("a630gpu: KMD fault (%s): RPTR=%u WPTR=%u RBBM=%08x "
+		    "INT=%08x CPINT=%08x FSR=%08x FENCE=%u/%u\n",
+		    why ? why : "unknown",
+		    rd(gpu, 4u * A630_CP_RB_RPTR),
+		    rd(gpu, 4u * A630_CP_RB_WPTR),
+		    rd(gpu, 4u * A630_RBBM_STATUS),
+		    rd(gpu, 4u * A630_RBBM_INT_0_STATUS),
+		    rd(gpu, 4u * A630_CP_INTERRUPT_STATUS),
+		    rd(cb, SMMU_CB_FSR), *a630_keep_fence_word,
+		    a630_keep_fence);
+	}
+}
+
+void
+native_a630_gpu_kmd_stop(void)
+{
+	__atomic_store_n(&native_a630_gpu_kmd_ready, 0, __ATOMIC_RELEASE);
+}
+
+static bool
+a630_keep_begin(void)
+{
+	if (a630_keep_tables == 0 || a630_keep_ring == 0 ||
+	    a630_keep_memptrs == 0 || a630_keep_smmu == NULL ||
+	    a630_keep_gmu == NULL) {
+		return false;
+	}
+	a630_keep_free[0].start = A630_KEEP_IOVA_START;
+	a630_keep_free[0].size = A630_KEEP_IOVA_SIZE;
+	a630_keep_free_count = 1;
+	a630_keep_fence = 0;
+	a630_keep_ring_sent = a630_keep_ring_at;
+	*a630_keep_fence_word = 0;
+	a630_to_memory((vm_offset_t)a630_keep_fence_word, 4);
+	__atomic_store_n(&native_a630_gpu_kmd_ready, 1, __ATOMIC_RELEASE);
+	return true;
+}
+
+static bool
+a630_keep_selftest(void)
+{
+	vm_offset_t memory = 0;
+	uint64_t iova = 0;
+	volatile uint32_t *words;
+	uint32_t ib[5];
+	uint32_t fence = 0;
+	bool mapped = false;
+
+	if (kmem_alloc_contig(kernel_map, &memory, 0x1000, PAGE_MASK, 0, 0,
+	    KMA_KOBJECT | KMA_ZERO | KMA_DATA,
+	    VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
+		return false;
+	}
+	words = (volatile uint32_t *)memory;
+	iova = native_a630_gpu_kmd_address(0x1000);
+	if (iova == 0 ||
+	    !native_a630_gpu_kmd_map(iova, kvtophys(memory), false)) {
+		goto out;
+	}
+	mapped = true;
+	native_a630_gpu_kmd_mapped();
+	ib[0] = a630_pkt7(A630_CP_MEM_WRITE_OPCODE, 4);
+	ib[1] = (uint32_t)iova;
+	ib[2] = (uint32_t)(iova >> 32);
+	ib[3] = 0xa6300030u;
+	ib[4] = 0x4b4d4401u;
+	memcpy((void *)memory, ib, sizeof(ib));
+	native_a630_gpu_kmd_to_memory((void *)memory, sizeof(ib));
+	uint32_t word_count = sizeof(ib) / sizeof(ib[0]);
+	fence = native_a630_gpu_kmd_submit(&iova, &word_count, 1);
+	for (uint32_t i = 0; fence != 0 && i < 5000; i++) {
+		if (native_a630_gpu_kmd_done(fence)) {
+			break;
+		}
+		sleep_us(100);
+	}
+	native_a630_gpu_kmd_to_memory((void *)memory, 0x1000);
+	bool ok = fence != 0 && words[0] == 0xa6300030u &&
+	    words[1] == 0x4b4d4401u;
+	native_a630_gpu_kmd_report(ok ? "selftest" : "selftest failed");
+	printf("[a630kmd] ok=%u fence=%u mem=%08x/%08x ring=%u fault=%u\n",
+	    ok, fence, words[0], words[1], a630_keep_ring_at,
+	    native_a630_gpu_kmd_fault);
+	if (mapped) {
+		native_a630_gpu_kmd_unmap(iova, 0x1000);
+	}
+	if (iova != 0) {
+		native_a630_gpu_kmd_address_free(iova, 0x1000);
+	}
+out:
+	kmem_free(kernel_map, memory, 0x1000);
+	return ok;
+}
+
 static bool
 a630_cp_write_masked(volatile uint8_t *gpu, uint32_t word, uint32_t value,
     uint32_t mask)
@@ -2862,6 +3404,22 @@ a630_gpu_cp_stage22(volatile uint8_t *smmu, vm_offset_t ring_mem,
 	    native_a630_gpu_cp_int_status, native_a630_gpu_cp_protect,
 	    native_a630_gpu_cp_status1, native_a630_gpu_cp_hw_fault);
 
+	if (action >= 14 && consumed &&
+	    native_a630_gpu_cp_write_bad == 0 &&
+	    native_a630_gpu_draw_ok) {
+		native_a630_gpu_cp_restore_bad = 0;
+		native_a630_gpu_cp_ok =
+		    native_a630_gpu_cp_int_status == 0 &&
+		    native_a630_gpu_cp_protect == 0 &&
+		    native_a630_gpu_cp_hw_fault == 0;
+		printf("[a630rb] ok=%u write=%u restore=keep wptr=%u rptr=%u status=%08x int=%08x smmu=%08x\n",
+		    native_a630_gpu_cp_ok, native_a630_gpu_cp_write_bad,
+		    native_a630_gpu_draw_wptr, native_a630_gpu_draw_rptr,
+		    native_a630_gpu_cp_status, native_a630_gpu_cp_int,
+		    native_a630_gpu_cp_smmu_fsr);
+		return native_a630_gpu_cp_ok != 0;
+	}
+
 restore:
 	wr((volatile uint8_t *)gpu, 4u * A630_CP_SQE_CNTL, 0);
 	wr((volatile uint8_t *)gpu, 4u * A630_CP_RB_WPTR, 0);
@@ -3562,6 +4120,7 @@ a630_gpu_g3d_smmu_stage21(volatile uint8_t *smmu, uint32_t action)
 	    sqe_size);
 	bool old_saved = false, retain = false, setup_complete = false;
 	bool cp_quiesced = true;
+	bool keep_live = action >= 14;
 
 	cb = smmu + native_a630_gpu_smmu_cb_base +
 	    native_a630_gpu_smmu_page_size * A630_G3D_CTX;
@@ -3753,10 +4312,11 @@ a630_gpu_g3d_smmu_stage21(volatile uint8_t *smmu, uint32_t action)
 	if (action >= 8) {
 		(void)a630_gpu_cp_stage22(smmu, ring, memptrs, ib, target,
 		    action);
-		cp_quiesced =
+		cp_quiesced = keep_live ? native_a630_gpu_cp_ok != 0 :
 		    native_a630_gpu_cp_restore_bad == 0;
 	}
-	if (action >= 13 && cp_quiesced && native_a630_gpu_draw_ok) {
+	if (action >= 13 && !keep_live && cp_quiesced &&
+	    native_a630_gpu_draw_ok) {
 		native_a630_gpu_draw_unmap_ok =
 		    a630_g3d_smmu_update_live(smmu, tables,
 		    A630_G3D_TARGET_IOVA, kvtophys(target), false);
@@ -3767,21 +4327,43 @@ a630_gpu_g3d_smmu_stage21(volatile uint8_t *smmu, uint32_t action)
 
 restore:
 	if (old_saved) {
-		if (!cp_quiesced) {
+		if (keep_live && setup_complete && cp_quiesced &&
+		    native_a630_gpu_draw_ok && bad == 0 && hole_bad == 0) {
+			a630_keep_smmu = smmu;
+			a630_keep_tables = tables;
+			a630_keep_ring = ring;
+			a630_keep_memptrs = memptrs;
+			a630_keep_ib = ib;
+			a630_keep_target = target;
+			a630_keep_fence_word = (volatile uint32_t *)(memptrs +
+			    A630_KEEP_FENCE);
+			a630_keep_ring_at =
+			    rd((volatile uint8_t *)a630_gpu_map(),
+			    4u * A630_CP_RB_WPTR) &
+			    (A630_KEEP_RING_WORDS - 1);
+			a630_keep_ring_sent = a630_keep_ring_at;
+			retain = true;
+			native_a630_gpu_g3d_restore_bad = 0;
+		} else if (!cp_quiesced) {
 			native_a630_gpu_g3d_restore_bad = 0xffffffffu;
 		} else {
 			native_a630_gpu_g3d_restore_bad =
 			    a630_stream0_smmu_restore(smmu, &old);
 		}
-		if (native_a630_gpu_g3d_restore_bad != 0) {
+		if (!retain && native_a630_gpu_g3d_restore_bad != 0) {
 			retain = true;
 		}
 	} else {
 		native_a630_gpu_g3d_restore_bad = 0;
 	}
 	native_a630_gpu_g3d_ok =
-	    cp_quiesced && native_a630_gpu_g3d_restore_bad == 0 && bad == 0 &&
+	    cp_quiesced && bad == 0 &&
 	    hole_bad == 0 && pages != 0 && setup_complete;
+	if (!keep_live) {
+		native_a630_gpu_g3d_ok =
+		    native_a630_gpu_g3d_ok &&
+		    native_a630_gpu_g3d_restore_bad == 0;
+	}
 	printf("a630gpu: Stream0 pages=%u bad=%u holes=%u restore=%u sqe=%u/%08x fb=%#llx+%#x ok=%u\n",
 	    pages, bad, hole_bad, native_a630_gpu_g3d_restore_bad,
 	    sqe_size, sqe_hash, (unsigned long long)fb_phys, fb_size,
@@ -3817,6 +4399,7 @@ a630_gmu_gfx_rail_stage14(volatile uint8_t *gmu, volatile uint8_t *gpucc,
 	uint32_t gx_index = 0, mx_index = 0;
 	bool rail_ack = false, sptprac_on = false, slumber_ack = false;
 	bool gx_on = false, gx_off = false;
+	bool keep_live = false;
 
 	if (db == NULL ||
 	    !a630_gx_vote_indices(db, 64, &gx_index, &mx_index)) {
@@ -3881,7 +4464,23 @@ a630_gmu_gfx_rail_stage14(volatile uint8_t *gmu, volatile uint8_t *gpucc,
 		(void)a630_gpu_write_protect_stage20(gmu);
 	}
 	if (rail_ack && sptprac_on && gpu_action >= 7) {
-		(void)a630_gpu_g3d_smmu_stage21(smmu, gpu_action);
+		keep_live = a630_gpu_g3d_smmu_stage21(smmu, gpu_action) &&
+		    gpu_action >= 14;
+	}
+	if (keep_live) {
+		a630_keep_gmu = gmu;
+		a630_keep_gpucc = gpucc;
+		a630_keep_smmu = smmu;
+		native_a630_gpu_rail_gx_gdscr =
+		    rd(gpucc, GPUCC_GX_GDSCR);
+		native_a630_gpu_rail_sptprac =
+		    rd(gmu, GMU_WORD(GMU_SPTPRAC_STATUS_W));
+		native_a630_gpu_rail_gx_off = 0;
+		printf("a630gpu: GX and SPTPRAC remain active for the KMD: "
+		    "GDSCR=%#010x SPTPRAC=%#010x\n",
+		    native_a630_gpu_rail_gx_gdscr,
+		    native_a630_gpu_rail_sptprac);
+		return true;
 	}
 
 	wr(gmu, GMU_WORD(GMU_GX_GDSCR_ALIAS_W),
@@ -4068,6 +4667,7 @@ a630_gmu_boot_stage11(volatile uint8_t *gmu, volatile uint8_t *smmu,
 	bool masks_changed = false, hfi_control_touched = false;
 	bool released = false, halted = true;
 	bool started = false;
+	bool keep_running = false;
 
 	native_a630_gpu_stage = 20 + hfi_mode;
 	native_a630_gpu_gmu_hfi_started = 0;
@@ -4254,7 +4854,8 @@ a630_gmu_boot_stage11(volatile uint8_t *gmu, volatile uint8_t *smmu,
 		}
 		if (!failure && hfi_mode >= 3) {
 			if (!a630_gmu_gfx_rail_stage14(gmu, gpucc, smmu,
-			    hfi_mode >= 16 ? 13 : (hfi_mode >= 15 ? 12 :
+			    hfi_mode >= 17 ? 14 : (hfi_mode >= 16 ? 13 :
+			    (hfi_mode >= 15 ? 12 :
 			    (hfi_mode >= 14 ? 11 :
 			    (hfi_mode >= 13 ? 10 :
 			    (hfi_mode >= 12 ? 9 :
@@ -4263,7 +4864,7 @@ a630_gmu_boot_stage11(volatile uint8_t *gmu, volatile uint8_t *smmu,
 			    (hfi_mode >= 9 ? 6 :
 			    (hfi_mode >= 8 ? 5 : (hfi_mode >= 7 ? 4 :
 			    (hfi_mode >= 6 ? 3 : (hfi_mode >= 5 ? 2 :
-			    (hfi_mode >= 4 ? 1 : 0)))))))))))))) {
+			    (hfi_mode >= 4 ? 1 : 0))))))))))))))) {
 				failure = 46;
 			} else if (hfi_mode >= 4 &&
 			    !native_a630_gpu_core_read_ok) {
@@ -4304,14 +4905,40 @@ a630_gmu_boot_stage11(volatile uint8_t *gmu, volatile uint8_t *smmu,
 			} else if (hfi_mode >= 16 &&
 			    !native_a630_gpu_draw_ok) {
 				failure = 59;
-			} else if (hfi_mode >= 16 &&
+			} else if (hfi_mode == 16 &&
 			    !native_a630_gpu_draw_unmap_ok) {
 				failure = 60;
+			} else if (hfi_mode >= 17 &&
+			    (a630_keep_tables == 0 || a630_keep_ring == 0 ||
+			    a630_keep_memptrs == 0 || !native_a630_gpu_g3d_ok ||
+			    !native_a630_gpu_cp_ok)) {
+				failure = 61;
 			}
 		}
 	}
+	if (!failure && hfi_mode >= 17 && started &&
+	    a630_keep_tables != 0 && a630_keep_ring != 0 &&
+	    a630_keep_memptrs != 0 && native_a630_gpu_g3d_ok &&
+	    native_a630_gpu_cp_ok && native_a630_gpu_draw_ok) {
+		keep_running = true;
+	}
 
 restore:
+	if (keep_running) {
+		a630_keep_gmu = gmu;
+		a630_keep_gpucc = gpucc;
+		a630_keep_smmu = smmu;
+		a630_keep_hfi_block = block;
+		a630_keep_fence = 0;
+		native_a630_gpu_kmd_fence = 0;
+		native_a630_gpu_status = 0;
+		printf("a630gpu: persistent resources retained: GMU CB1 block=%#llx "
+		    "Stream0 pages=%u ring=%u fence=%08x\n",
+		    (unsigned long long)kvtophys(block),
+		    native_a630_gpu_g3d_pages, a630_keep_ring_at,
+		    *a630_keep_fence_word);
+		return true;
+	}
 	if (released) {
 		wr(gmu, GMU_WORD(GMU_FENCE_CLR_W), 7);
 		wr(gmu, GMU_WORD(GMU_AO_FENCE_CTRL_W), 0);
@@ -4946,11 +5573,36 @@ native_a630_gpu_probe(void)
 			printf("a630gpu: stage 26 complete: the CP wrote a CACHE_FLUSH_TS fence\n");
 			return;
 		}
-		if (!a630_gmu_boot_stage11(gmu, smmu, gpucc, 16)) {
+		if (enabled < 30) {
+			if (!a630_gmu_boot_stage11(gmu, smmu, gpucc, 16)) {
+				return;
+			}
+			native_a630_gpu_status = 0;
+			printf("a630gpu: stage 27 complete: the CP rendered and verified a known BGRA page\n");
 			return;
 		}
+		if (!a630_gmu_boot_stage11(gmu, smmu, gpucc, 17)) {
+			return;
+		}
+		if (!a630_keep_begin()) {
+			native_a630_gpu_status = 61;
+			printf("a630gpu: Stage 30 has incomplete persistent GPU resources\n");
+			return;
+		}
+		if (!a630_keep_selftest()) {
+			native_a630_gpu_status = 62;
+			__atomic_store_n(&native_a630_gpu_kmd_ready, 0,
+			    __ATOMIC_RELEASE);
+			return;
+		}
+		native_a630_gpu_stage = 37;
+		native_a630_gpu_status = 0;
+		printf("a630gpu: Stage 30 complete: persistent KMD ready, "
+		    "msm ABI accepts submissions at iova %#llx\n",
+		    (unsigned long long)A630_KEEP_IOVA_START);
+		return;
 	}
 
 	native_a630_gpu_status = 0;
-	printf("a630gpu: stage 27 complete: the CP rendered and verified a known BGRA page\n");
+	printf("a630gpu: no GPU stage selected\n");
 }
