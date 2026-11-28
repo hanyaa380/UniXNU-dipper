@@ -2561,7 +2561,7 @@ a630_keep_selftest(void)
 	volatile uint32_t *words;
 	uint32_t ib[5];
 	uint32_t fence = 0;
-	bool mapped = false;
+	bool mapped = false, ok = false;
 
 	if (kmem_alloc_contig(kernel_map, &memory, 0x1000, PAGE_MASK, 0, 0,
 	    KMA_KOBJECT | KMA_ZERO | KMA_DATA,
@@ -2594,7 +2594,7 @@ a630_keep_selftest(void)
 		sleep_us(100);
 	}
 	native_a630_gpu_kmd_to_memory((void *)memory, 0x1000);
-	bool ok = fence != 0 && words[0] == 0xa6300030u &&
+	ok = fence != 0 && words[0] == 0xa6300030u &&
 	    words[1] == 0x4b4d4401u;
 	native_a630_gpu_kmd_report(ok ? "selftest" : "selftest failed");
 	printf("[a630kmd] ok=%u fence=%u mem=%08x/%08x ring=%u fault=%u\n",
