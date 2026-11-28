@@ -8,6 +8,14 @@
 extern "C" {
 #endif
 
+extern volatile uint32_t native_a630_gpu_kmd_ready_state;
+extern volatile uint32_t native_a630_gpu_kmd_mapped_state;
+extern volatile uint32_t native_a630_gpu_kmd_buffer_count;
+extern volatile uint32_t native_a630_gpu_kmd_buffer_bytes;
+extern volatile uint32_t native_a630_gpu_kmd_submit_count;
+extern volatile uint32_t native_a630_gpu_kmd_fence;
+extern volatile uint32_t native_a630_gpu_kmd_fault;
+
 /*
  * The Stage 30 A630 backend. These calls are made with the GPU service lock
  * held: the address-space allocator, page-table writer and command ring are
