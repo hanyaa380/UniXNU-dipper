@@ -2579,7 +2579,9 @@ a630_keep_selftest(void)
 	ib[2] = (uint32_t)(iova >> 32);
 	ib[3] = 0xa6300030u;
 	ib[4] = 0x4b4d4401u;
-	memcpy((void *)memory, ib, sizeof(ib));
+	for (uint32_t i = 0; i < sizeof(ib) / sizeof(ib[0]); i++) {
+		words[i] = ib[i];
+	}
 	native_a630_gpu_kmd_to_memory((void *)memory, sizeof(ib));
 	uint32_t word_count = sizeof(ib) / sizeof(ib[0]);
 	fence = native_a630_gpu_kmd_submit(&iova, &word_count, 1);
