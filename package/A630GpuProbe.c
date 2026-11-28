@@ -131,10 +131,14 @@ extern int printf(const char *, ...);
 #define A630_CP_MEM_WRITE_OPCODE 0x003du
 #define A630_CP_INDIRECT_BUFFER  0x003fu
 #define A630_CP_EVENT_WRITE      0x0046u
+#define A630_CP_WAIT_FOR_IDLE    0x0026u
+#define A630_CP_SCRATCH_REG2     0x0885u
+#define A630_CP_IB1_REM_SIZE     0x092au
 #define A630_CACHE_FLUSH_TS      0x00000004u
 #define A630_CCU_INV_DEPTH       0x00000018u
 #define A630_CCU_INV_COLOR       0x00000019u
 #define A630_FENCE_OFFSET        0x00000040u
+#define A630_FENCE_POST_OFFSET   0x00000044u
 #define A630_RBBM_SECVID_TRUST   0x0f400u
 #define A630_ZAP_PAS_ID          13u
 #define A630_ZAP_REGION_PHYS     0x8c415000ull
@@ -499,6 +503,10 @@ volatile uint32_t native_a630_gpu_fence_wptr;
 volatile uint32_t native_a630_gpu_fence_rptr;
 volatile uint32_t native_a630_gpu_fence_value;
 volatile uint32_t native_a630_gpu_fence_timestamp;
+volatile uint32_t native_a630_gpu_fence_scratch;
+volatile uint32_t native_a630_gpu_fence_post0;
+volatile uint32_t native_a630_gpu_fence_post1;
+volatile uint32_t native_a630_gpu_fence_ib1_rem;
 volatile uint32_t native_a630_gpu_gmu_boot_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_rsc_boot_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_tcm_boot_restore_bad;
@@ -2003,6 +2011,13 @@ a630_pkt7(uint32_t opcode, uint32_t count)
 	    ((opcode & 0x7fu) << 16) | (a630_pm4_parity(opcode) << 23);
 }
 
+static uint32_t
+a630_pkt4(uint32_t reg, uint32_t count)
+{
+	return 0x40000000u | count | (a630_pm4_parity(count) << 7) |
+	    ((reg & 0x3ffffu) << 8) | (a630_pm4_parity(reg) << 27);
+}
+
 static bool
 a630_cp_write_masked(volatile uint8_t *gpu, uint32_t word, uint32_t value,
     uint32_t mask)
@@ -2109,6 +2124,10 @@ a630_zap_auth_stage23(volatile uint8_t *gpu, vm_offset_t ring_mem,
 	native_a630_gpu_fence_rptr = 0;
 	native_a630_gpu_fence_value = 0;
 	native_a630_gpu_fence_timestamp = 0;
+	native_a630_gpu_fence_scratch = 0;
+	native_a630_gpu_fence_post0 = 0;
+	native_a630_gpu_fence_post1 = 0;
+	native_a630_gpu_fence_ib1_rem = 0;
 	native_a630_gpu_zap_trust_before =
 	    gpu ? rd(gpu, 4u * A630_RBBM_SECVID_TRUST) : 0;
 	native_a630_gpu_zap_trust_after =
@@ -2368,17 +2387,35 @@ a630_zap_auth_stage23(volatile uint8_t *gpu, vm_offset_t ring_mem,
 				volatile uint32_t *fence =
 				    (volatile uint32_t *)(memptrs_mem +
 				    A630_FENCE_OFFSET);
+				volatile uint32_t *post =
+				    (volatile uint32_t *)(memptrs_mem +
+				    A630_FENCE_POST_OFFSET);
 
 				*fence = 0;
+				post[0] = 0;
+				post[1] = 0;
 				a630_to_memory(memptrs_mem, 0x1000);
-				ring[24] = a630_pkt7(A630_CP_EVENT_WRITE, 4);
-				ring[25] = A630_CACHE_FLUSH_TS;
-				ring[26] = (uint32_t)(A630_G3D_MEMPTRS_IOVA +
+				ring[24] =
+				    a630_pkt4(A630_CP_SCRATCH_REG2, 1);
+				ring[25] = 0x51ac0de5u;
+				ring[26] = a630_pkt7(A630_CP_WAIT_FOR_IDLE, 1);
+				ring[27] = 0;
+				ring[28] = a630_pkt7(A630_CP_EVENT_WRITE, 4);
+				ring[29] = A630_CACHE_FLUSH_TS;
+				ring[30] = (uint32_t)(A630_G3D_MEMPTRS_IOVA +
 				    A630_FENCE_OFFSET);
-				ring[27] = (uint32_t)((A630_G3D_MEMPTRS_IOVA +
+				ring[31] = (uint32_t)((A630_G3D_MEMPTRS_IOVA +
 				    A630_FENCE_OFFSET) >> 32);
-				ring[28] = 0x12345678u;
-				native_a630_gpu_fence_wptr = 29;
+				ring[32] = 0x12345678u;
+				ring[33] =
+				    a630_pkt7(A630_CP_MEM_WRITE_OPCODE, 4);
+				ring[34] = (uint32_t)(A630_G3D_MEMPTRS_IOVA +
+				    A630_FENCE_POST_OFFSET);
+				ring[35] = (uint32_t)((A630_G3D_MEMPTRS_IOVA +
+				    A630_FENCE_POST_OFFSET) >> 32);
+				ring[36] = 0x89abcdefu;
+				ring[37] = 0x76543210u;
+				native_a630_gpu_fence_wptr = 38;
 				a630_to_memory(ring_mem, 0x8000);
 				if (a630_cp_write_checked(gpu, A630_CP_RB_WPTR,
 				    native_a630_gpu_fence_wptr)) {
@@ -2397,6 +2434,12 @@ a630_zap_auth_stage23(volatile uint8_t *gpu, vm_offset_t ring_mem,
 				a630_to_memory(memptrs_mem, 0x1000);
 				native_a630_gpu_fence_rptr = fence_rptr;
 				native_a630_gpu_fence_timestamp = 0;
+				native_a630_gpu_fence_scratch =
+				    rd(gpu, 4u * A630_CP_SCRATCH_REG2);
+				native_a630_gpu_fence_post0 = post[0];
+				native_a630_gpu_fence_post1 = post[1];
+				native_a630_gpu_fence_ib1_rem =
+				    rd(gpu, 4u * A630_CP_IB1_REM_SIZE);
 				native_a630_gpu_fence_ok =
 				    fence_rptr == native_a630_gpu_fence_wptr &&
 				    native_a630_gpu_fence_value == 0x12345678u;
@@ -2406,6 +2449,11 @@ a630_zap_auth_stage23(volatile uint8_t *gpu, vm_offset_t ring_mem,
 				    native_a630_gpu_fence_rptr,
 				    native_a630_gpu_fence_value,
 				    native_a630_gpu_fence_timestamp);
+				printf("[a630fd] scratch=%08x post=%08x/%08x ib1=%u\n",
+				    native_a630_gpu_fence_scratch,
+				    native_a630_gpu_fence_post0,
+				    native_a630_gpu_fence_post1,
+				    native_a630_gpu_fence_ib1_rem);
 			}
 		}
 	}
