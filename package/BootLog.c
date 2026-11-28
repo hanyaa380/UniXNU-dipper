@@ -279,6 +279,11 @@ extern volatile uint32_t native_a630_gpu_cm4_wptr __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_cm4_rptr __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_cm4_mem0 __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_cm4_mem1 __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_ib_ok __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_ib_wptr __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_ib_rptr __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_ib_mem0 __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_ib_mem1 __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_boot_restore_bad __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_rsc_boot_restore_bad __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_tcm_boot_restore_bad __attribute__((weak_import));
@@ -865,6 +870,14 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
              "mem=%08x/%08x", native_a630_gpu_cm4_ok,
              native_a630_gpu_cm4_wptr, native_a630_gpu_cm4_rptr,
              native_a630_gpu_cm4_mem0, native_a630_gpu_cm4_mem1);
+    at = put(out, at, cap, row, sizeof row);
+  }
+  if (&native_a630_gpu_ib_ok && native_a630_gpu_stage >= 34) {
+    char row[160];
+    snprintf(row, sizeof row, "[a630ib] ok=%u wptr=%u rptr=%u "
+             "mem=%08x/%08x", native_a630_gpu_ib_ok,
+             native_a630_gpu_ib_wptr, native_a630_gpu_ib_rptr,
+             native_a630_gpu_ib_mem0, native_a630_gpu_ib_mem1);
     at = put(out, at, cap, row, sizeof row);
   }
   // SDM845 Adreno 630 qualification. Keep a dedicated row so early printf
