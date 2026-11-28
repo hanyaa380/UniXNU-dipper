@@ -566,7 +566,7 @@ volatile uint32_t native_a630_gpu_gmu_rsc_boot_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_tcm_boot_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_smmu_boot_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_log[4];
-volatile uint32_t native_a630_gpu_kmd_ready;
+volatile uint32_t native_a630_gpu_kmd_ready_state;
 volatile uint32_t native_a630_gpu_kmd_mapped_state;
 volatile uint32_t native_a630_gpu_kmd_buffer_count;
 volatile uint32_t native_a630_gpu_kmd_buffer_bytes;
@@ -2236,7 +2236,8 @@ a630_keep_ring_packet(uint32_t opcode, uint32_t words)
 bool
 native_a630_gpu_kmd_ready(void)
 {
-	return __atomic_load_n(&native_a630_gpu_kmd_ready, __ATOMIC_ACQUIRE) != 0;
+	return __atomic_load_n(&native_a630_gpu_kmd_ready_state,
+	    __ATOMIC_ACQUIRE) != 0;
 }
 
 bool
@@ -2526,7 +2527,8 @@ native_a630_gpu_kmd_report(const char *why)
 void
 native_a630_gpu_kmd_stop(void)
 {
-	__atomic_store_n(&native_a630_gpu_kmd_ready, 0, __ATOMIC_RELEASE);
+	__atomic_store_n(&native_a630_gpu_kmd_ready_state, 0,
+	    __ATOMIC_RELEASE);
 }
 
 static bool
@@ -2544,7 +2546,8 @@ a630_keep_begin(void)
 	a630_keep_ring_sent = a630_keep_ring_at;
 	*a630_keep_fence_word = 0;
 	a630_to_memory((vm_offset_t)a630_keep_fence_word, 4);
-	__atomic_store_n(&native_a630_gpu_kmd_ready, 1, __ATOMIC_RELEASE);
+	__atomic_store_n(&native_a630_gpu_kmd_ready_state, 1,
+	    __ATOMIC_RELEASE);
 	return true;
 }
 
@@ -5591,7 +5594,7 @@ native_a630_gpu_probe(void)
 		}
 		if (!a630_keep_selftest()) {
 			native_a630_gpu_status = 62;
-			__atomic_store_n(&native_a630_gpu_kmd_ready, 0,
+			__atomic_store_n(&native_a630_gpu_kmd_ready_state, 0,
 			    __ATOMIC_RELEASE);
 			return;
 		}
