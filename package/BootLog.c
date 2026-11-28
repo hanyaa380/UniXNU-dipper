@@ -299,6 +299,17 @@ extern volatile uint32_t native_a630_gpu_fence_color_cpi __attribute__((weak_imp
 extern volatile uint32_t native_a630_gpu_fence_ib_cpi __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_fence_cpi __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_fence_sqe_stat __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_draw_ok __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_draw_wptr __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_draw_rptr __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_draw_fence __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_draw_marker __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_draw_pixel0 __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_draw_pixel1 __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_draw_pixel2 __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_draw_cpi __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_draw_sqe_stat __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_draw_unmap_ok __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_boot_restore_bad __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_rsc_boot_restore_bad __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_gmu_tcm_boot_restore_bad __attribute__((weak_import));
@@ -921,6 +932,18 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
              native_a630_gpu_fence_ib_cpi,
              native_a630_gpu_fence_cpi,
              native_a630_gpu_fence_sqe_stat);
+    at = put(out, at, cap, row, sizeof row);
+  }
+  if (&native_a630_gpu_draw_ok && native_a630_gpu_stage >= 36) {
+    char row[220];
+    snprintf(row, sizeof row, "[a630draw] ok=%u unmap=%u wptr=%u rptr=%u "
+             "fence=%08x marker=%08x px=%08x/%08x/%08x cpi=%08x sqe=%08x",
+             native_a630_gpu_draw_ok, native_a630_gpu_draw_unmap_ok,
+             native_a630_gpu_draw_wptr, native_a630_gpu_draw_rptr,
+             native_a630_gpu_draw_fence, native_a630_gpu_draw_marker,
+             native_a630_gpu_draw_pixel0, native_a630_gpu_draw_pixel1,
+             native_a630_gpu_draw_pixel2, native_a630_gpu_draw_cpi,
+             native_a630_gpu_draw_sqe_stat);
     at = put(out, at, cap, row, sizeof row);
   }
   // SDM845 Adreno 630 qualification. Keep a dedicated row so early printf

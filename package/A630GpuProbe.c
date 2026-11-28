@@ -110,6 +110,7 @@ extern int printf(const char *, ...);
 #define A630_G3D_RING_IOVA       0x10008000ull
 #define A630_G3D_MEMPTRS_IOVA    0x10010000ull
 #define A630_G3D_IB_IOVA         0x10011000ull
+#define A630_G3D_TARGET_IOVA     0x10012000ull
 #define A630_G3D_FB_IOVA         0x20000000ull
 #define A630_G3D_TABLE_BYTES     0x10000u
 #define A630_CP_RB_BASE_LO       0x0800u
@@ -133,14 +134,36 @@ extern int printf(const char *, ...);
 #define A630_CP_MEM_WRITE_OPCODE 0x003du
 #define A630_CP_INDIRECT_BUFFER  0x003fu
 #define A630_CP_EVENT_WRITE      0x0046u
+#define A630_CP_BLIT             0x002cu
+#define A630_CP_SET_MARKER       0x0065u
 #define A630_CP_WAIT_FOR_IDLE    0x0026u
 #define A630_CP_SCRATCH_REG2     0x0885u
 #define A630_CP_IB1_REM_SIZE     0x092au
 #define A630_CACHE_FLUSH_TS      0x00000004u
 #define A630_CCU_INV_DEPTH       0x00000018u
 #define A630_CCU_INV_COLOR       0x00000019u
+#define A630_CCU_FLUSH_COLOR_TS  0x0000001du
 #define A630_FENCE_OFFSET        0x00000040u
 #define A630_FENCE_POST_OFFSET   0x00000044u
+#define A630_DRAW_WIDTH          32u
+#define A630_DRAW_HEIGHT         16u
+#define A630_DRAW_ROW_BYTES      128u
+#define A630_DRAW_PIXEL          0xffff8000u
+#define A630_RB_CCU_CNTL         0x8e07u
+#define A630_GRAS_2D_BLIT_CNTL   0x8400u
+#define A630_GRAS_2D_DST_TL      0x8405u
+#define A630_GRAS_2D_DST_BR      0x8406u
+#define A630_RB_2D_BLIT_CNTL     0x8c00u
+#define A630_RB_2D_PIXEL_CNTL    0x8c01u
+#define A630_RB_2D_DST_INFO      0x8c17u
+#define A630_RB_2D_DST           0x8c18u
+#define A630_RB_2D_DST_PITCH     0x8c1au
+#define A630_RB_2D_SRC_SOLID_C0  0x8c2cu
+#define A630_SP_2D_DST_FORMAT    0xacc0u
+#define A630_FORMAT_8888         0x30u
+#define A630_BLIT_SOLID_8888     (1u << 7 | A630_FORMAT_8888 << 8 | \
+    0xfu << 20 | 0x10u << 24)
+#define A630_DST_BGRA_LINEAR     (A630_FORMAT_8888 | 1u << 10)
 #define A630_RBBM_SECVID_TRUST   0x0f400u
 #define A630_ZAP_PAS_ID          13u
 #define A630_ZAP_REGION_PHYS     0x8c415000ull
@@ -517,6 +540,17 @@ volatile uint32_t native_a630_gpu_fence_color_rptr;
 volatile uint32_t native_a630_gpu_fence_ib_cpi;
 volatile uint32_t native_a630_gpu_fence_cpi;
 volatile uint32_t native_a630_gpu_fence_sqe_stat;
+volatile uint32_t native_a630_gpu_draw_ok;
+volatile uint32_t native_a630_gpu_draw_wptr;
+volatile uint32_t native_a630_gpu_draw_rptr;
+volatile uint32_t native_a630_gpu_draw_fence;
+volatile uint32_t native_a630_gpu_draw_marker;
+volatile uint32_t native_a630_gpu_draw_pixel0;
+volatile uint32_t native_a630_gpu_draw_pixel1;
+volatile uint32_t native_a630_gpu_draw_pixel2;
+volatile uint32_t native_a630_gpu_draw_cpi;
+volatile uint32_t native_a630_gpu_draw_sqe_stat;
+volatile uint32_t native_a630_gpu_draw_unmap_ok;
 volatile uint32_t native_a630_gpu_gmu_boot_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_rsc_boot_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_tcm_boot_restore_bad;
@@ -2065,6 +2099,130 @@ a630_cp_wait_for_rptr(volatile uint8_t *gpu, uint32_t wptr, uint32_t *rptr)
 	return false;
 }
 
+static bool
+a630_g3d_stage27_draw(volatile uint8_t *gpu, vm_offset_t ring_mem,
+    vm_offset_t memptrs_mem, vm_offset_t ib_mem, vm_offset_t target_mem)
+{
+	volatile uint32_t *ring = (volatile uint32_t *)ring_mem;
+	volatile uint32_t *memptrs = (volatile uint32_t *)memptrs_mem;
+	volatile uint32_t *ib = (volatile uint32_t *)ib_mem;
+	volatile uint32_t *target = (volatile uint32_t *)target_mem;
+	uint32_t words = 0, rptr = 0;
+	uint32_t last = ((A630_DRAW_HEIGHT - 1) *
+	    (A630_DRAW_ROW_BYTES / 4)) + A630_DRAW_WIDTH - 1;
+
+	for (uint32_t i = 0; i < 0x1000 / 4; i++) {
+		target[i] = 0;
+	}
+	a630_to_memory(target_mem, 0x1000);
+
+	ib[words++] = a630_pkt7(A630_CP_SET_MARKER, 1);
+	ib[words++] = 12;
+	ib[words++] = a630_pkt4(A630_RB_CCU_CNTL, 1);
+	ib[words++] = 0x10000004u;
+	ib[words++] = a630_pkt4(A630_GRAS_2D_DST_TL, 1);
+	ib[words++] = 0;
+	ib[words++] = a630_pkt4(A630_GRAS_2D_DST_BR, 1);
+	ib[words++] = (A630_DRAW_WIDTH - 1) |
+	    ((A630_DRAW_HEIGHT - 1) << 16);
+	ib[words++] = a630_pkt4(A630_RB_2D_SRC_SOLID_C0, 1);
+	ib[words++] = 0xffu;
+	ib[words++] = a630_pkt4(A630_RB_2D_SRC_SOLID_C0 + 1, 1);
+	ib[words++] = 0x80u;
+	ib[words++] = a630_pkt4(A630_RB_2D_SRC_SOLID_C0 + 2, 1);
+	ib[words++] = 0;
+	ib[words++] = a630_pkt4(A630_RB_2D_SRC_SOLID_C0 + 3, 1);
+	ib[words++] = 0xffu;
+	ib[words++] = a630_pkt4(A630_RB_2D_BLIT_CNTL, 1);
+	ib[words++] = A630_BLIT_SOLID_8888;
+	ib[words++] = a630_pkt4(A630_GRAS_2D_BLIT_CNTL, 1);
+	ib[words++] = A630_BLIT_SOLID_8888;
+	ib[words++] = a630_pkt4(A630_SP_2D_DST_FORMAT, 1);
+	ib[words++] = 1u | A630_FORMAT_8888 << 3 | 0xfu << 12;
+	ib[words++] = a630_pkt4(A630_RB_2D_PIXEL_CNTL, 1);
+	ib[words++] = 0;
+	ib[words++] = a630_pkt4(A630_RB_2D_DST_INFO, 1);
+	ib[words++] = A630_DST_BGRA_LINEAR;
+	ib[words++] = a630_pkt4(A630_RB_2D_DST, 1);
+	ib[words++] = (uint32_t)A630_G3D_TARGET_IOVA;
+	ib[words++] = a630_pkt4(A630_RB_2D_DST + 1, 1);
+	ib[words++] = (uint32_t)(A630_G3D_TARGET_IOVA >> 32);
+	ib[words++] = a630_pkt4(A630_RB_2D_DST_PITCH, 1);
+	ib[words++] = A630_DRAW_ROW_BYTES >> 6;
+	ib[words++] = a630_pkt7(A630_CP_WAIT_FOR_IDLE, 0);
+	ib[words++] = a630_pkt7(A630_CP_BLIT, 1);
+	ib[words++] = 3;
+	a630_to_memory(ib_mem, 0x1000);
+
+	memptrs[8] = 0;
+	memptrs[16] = 0;
+	a630_to_memory(memptrs_mem, 0x1000);
+	ring[33] = a630_pkt7(A630_CP_INDIRECT_BUFFER, 3);
+	ring[34] = (uint32_t)A630_G3D_IB_IOVA;
+	ring[35] = (uint32_t)(A630_G3D_IB_IOVA >> 32);
+	ring[36] = words;
+	ring[37] = a630_pkt7(A630_CP_WAIT_FOR_IDLE, 0);
+	ring[38] = a630_pkt7(A630_CP_EVENT_WRITE, 4);
+	ring[39] = A630_CCU_FLUSH_COLOR_TS;
+	ring[40] = (uint32_t)(A630_G3D_MEMPTRS_IOVA + 0x20);
+	ring[41] = (uint32_t)((A630_G3D_MEMPTRS_IOVA + 0x20) >> 32);
+	ring[42] = 0x0c0c0c0cu;
+	ring[43] = a630_pkt7(A630_CP_EVENT_WRITE, 4);
+	ring[44] = A630_CACHE_FLUSH_TS;
+	ring[45] = (uint32_t)(A630_G3D_MEMPTRS_IOVA +
+	    A630_FENCE_OFFSET);
+	ring[46] = (uint32_t)((A630_G3D_MEMPTRS_IOVA +
+	    A630_FENCE_OFFSET) >> 32);
+	ring[47] = 0x0d0e0d0eu;
+	ring[48] = a630_pkt7(A630_CP_WAIT_FOR_IDLE, 0);
+	native_a630_gpu_draw_wptr = 49;
+	a630_to_memory(ring_mem, 0x8000);
+	if (a630_cp_write_checked(gpu, A630_CP_RB_WPTR,
+	    native_a630_gpu_draw_wptr)) {
+		for (uint32_t i = 0; i < 5000; i++) {
+			a630_to_memory(memptrs_mem, 0x1000);
+			native_a630_gpu_draw_fence = memptrs[16];
+			rptr = rd(gpu, 4u * A630_CP_RB_RPTR);
+			if (rptr == native_a630_gpu_draw_wptr &&
+			    native_a630_gpu_draw_fence == 0x0d0e0d0eu) {
+				break;
+			}
+			sleep_us(100);
+		}
+	}
+	a630_to_memory(memptrs_mem, 0x1000);
+	a630_to_memory(target_mem, 0x1000);
+	native_a630_gpu_draw_rptr = rptr;
+	native_a630_gpu_draw_marker = memptrs[8];
+	native_a630_gpu_draw_pixel0 = target[0];
+	native_a630_gpu_draw_pixel1 =
+	    target[(A630_DRAW_HEIGHT / 2) * (A630_DRAW_ROW_BYTES / 4)];
+	native_a630_gpu_draw_pixel2 = target[last];
+	native_a630_gpu_draw_cpi =
+	    rd(gpu, 4u * A630_CP_INTERRUPT_STATUS);
+	uint32_t old_stat_addr = rd(gpu, 4u * A630_CP_SQE_STAT_ADDR);
+	wr(gpu, 4u * A630_CP_SQE_STAT_ADDR, 1);
+	native_a630_gpu_draw_sqe_stat =
+	    rd(gpu, 4u * A630_CP_SQE_STAT_DATA);
+	wr(gpu, 4u * A630_CP_SQE_STAT_ADDR, old_stat_addr);
+	native_a630_gpu_draw_ok =
+	    native_a630_gpu_draw_rptr == native_a630_gpu_draw_wptr &&
+	    native_a630_gpu_draw_fence == 0x0d0e0d0eu &&
+	    native_a630_gpu_draw_marker == 0x0c0c0c0cu &&
+	    native_a630_gpu_draw_pixel0 == A630_DRAW_PIXEL &&
+	    native_a630_gpu_draw_pixel1 == A630_DRAW_PIXEL &&
+	    native_a630_gpu_draw_pixel2 == A630_DRAW_PIXEL &&
+	    native_a630_gpu_draw_cpi == 0;
+	printf("[a630draw] ok=%u wptr=%u rptr=%u fence=%08x marker=%08x "
+	    "px=%08x/%08x/%08x cpi=%08x sqe=%08x\n",
+	    native_a630_gpu_draw_ok, native_a630_gpu_draw_wptr,
+	    native_a630_gpu_draw_rptr, native_a630_gpu_draw_fence,
+	    native_a630_gpu_draw_marker, native_a630_gpu_draw_pixel0,
+	    native_a630_gpu_draw_pixel1, native_a630_gpu_draw_pixel2,
+	    native_a630_gpu_draw_cpi, native_a630_gpu_draw_sqe_stat);
+	return native_a630_gpu_draw_ok != 0;
+}
+
 static int32_t
 a630_scm_call(uint64_t function, uint64_t arginfo, uint64_t a0,
     uint64_t a1, uint64_t a2, uint64_t result[3])
@@ -2108,7 +2266,8 @@ a630_scm_query(uint64_t function, uint64_t argument, uint64_t *answer)
 
 static bool
 a630_zap_auth_stage23(volatile uint8_t *gpu, vm_offset_t ring_mem,
-    vm_offset_t memptrs_mem, vm_offset_t ib_mem, uint32_t action)
+    vm_offset_t memptrs_mem, vm_offset_t ib_mem, vm_offset_t target_mem,
+    uint32_t action)
 {
 	static const uint32_t commands[] = { 0x201u, 0x202u, 0x205u, 0x206u };
 	static vm_offset_t metadata_va;
@@ -2160,6 +2319,17 @@ a630_zap_auth_stage23(volatile uint8_t *gpu, vm_offset_t ring_mem,
 	native_a630_gpu_fence_ib_cpi = 0;
 	native_a630_gpu_fence_cpi = 0;
 	native_a630_gpu_fence_sqe_stat = 0;
+	native_a630_gpu_draw_ok = 0;
+	native_a630_gpu_draw_wptr = 0;
+	native_a630_gpu_draw_rptr = 0;
+	native_a630_gpu_draw_fence = 0;
+	native_a630_gpu_draw_marker = 0;
+	native_a630_gpu_draw_pixel0 = 0;
+	native_a630_gpu_draw_pixel1 = 0;
+	native_a630_gpu_draw_pixel2 = 0;
+	native_a630_gpu_draw_cpi = 0;
+	native_a630_gpu_draw_sqe_stat = 0;
+	native_a630_gpu_draw_unmap_ok = 0;
 	native_a630_gpu_zap_trust_before =
 	    gpu ? rd(gpu, 4u * A630_RBBM_SECVID_TRUST) : 0;
 	native_a630_gpu_zap_trust_after =
@@ -2499,6 +2669,11 @@ a630_zap_auth_stage23(volatile uint8_t *gpu, vm_offset_t ring_mem,
 				    native_a630_gpu_fence_ib_cpi,
 				    native_a630_gpu_fence_cpi,
 				    native_a630_gpu_fence_sqe_stat);
+				if (action >= 13) {
+					(void)a630_g3d_stage27_draw(gpu,
+					    ring_mem, memptrs_mem, ib_mem,
+					    target_mem);
+				}
 			}
 		}
 	}
@@ -2538,7 +2713,8 @@ shutdown:
  */
 static bool
 a630_gpu_cp_stage22(volatile uint8_t *smmu, vm_offset_t ring_mem,
-    vm_offset_t memptrs_mem, vm_offset_t ib_mem, uint32_t action)
+    vm_offset_t memptrs_mem, vm_offset_t ib_mem, vm_offset_t target_mem,
+    uint32_t action)
 {
 	static const uint32_t me_init[8] = {
 		0x0000002fu, 0x00000003u, 0x20000000u, 0,
@@ -2660,7 +2836,7 @@ a630_gpu_cp_stage22(volatile uint8_t *smmu, vm_offset_t ring_mem,
 	}
 	if (consumed && action >= 9) {
 		(void)a630_zap_auth_stage23((volatile uint8_t *)gpu,
-		    ring_mem, memptrs_mem, ib_mem, action);
+		    ring_mem, memptrs_mem, ib_mem, target_mem, action);
 		native_a630_gpu_cp_wptr = native_a630_gpu_zap_wptr;
 		native_a630_gpu_cp_rptr = native_a630_gpu_zap_rptr;
 	} else {
@@ -3319,11 +3495,65 @@ a630_stream0_smmu_restore(volatile uint8_t *smmu,
 }
 
 static bool
+a630_g3d_smmu_update_live(volatile uint8_t *smmu, vm_offset_t tables,
+    uint64_t iova, uint64_t phys, bool map)
+{
+	volatile uint8_t *cb = smmu + native_a630_gpu_smmu_cb_base +
+	    native_a630_gpu_smmu_page_size * A630_G3D_CTX;
+	uint64_t *l2 = (uint64_t *)(tables + 0x1000);
+	uint64_t l2e = l2[(iova >> 21) & 0x1ff];
+	uint64_t *l3 = NULL;
+	uint64_t want = phys | A630_PTE_STAGE1 | (1ull << 6) | A630_PTE_PAGE;
+	uint32_t page = (uint32_t)((iova >> 12) & 0x1ff);
+	uint64_t got = 0;
+
+	if (!(l2e & A630_PTE_TABLE)) {
+		return false;
+	}
+	for (uint32_t t = 2; t < A630_G3D_TABLE_BYTES / 0x1000; t++) {
+		if (kvtophys(tables + 0x1000 * t) ==
+		    (l2e & A630_PTE_ADDRESS)) {
+			l3 = (uint64_t *)(tables + 0x1000 * t);
+			break;
+		}
+	}
+	if (l3 == NULL) {
+		return false;
+	}
+	if (map) {
+		if (l3[page] != 0 && l3[page] != want) {
+			return false;
+		}
+		l3[page] = want;
+	} else {
+		if (l3[page] != want) {
+			return false;
+		}
+		l3[page] = 0;
+	}
+	a630_to_memory(tables, A630_G3D_TABLE_BYTES);
+	__asm__ volatile("dsb sy" ::: "memory");
+	wr(cb, SMMU_CB_TLBIASID, A630_G3D_CTX);
+	wr(cb, SMMU_CB_TLBSYNC, 1);
+	for (uint32_t i = 0; i < 1000 &&
+	    (rd(cb, SMMU_CB_TLBSTATUS) & 1); i += 10) {
+		sleep_us(10);
+	}
+	if (rd(cb, SMMU_CB_TLBSTATUS) & 1) {
+		return false;
+	}
+	int translated = a630_gmu_smmu_translate(smmu, A630_G3D_CTX,
+	    iova, &got);
+	return map ? translated == 1 && got == phys : translated == 0;
+}
+
+static bool
 a630_gpu_g3d_smmu_stage21(volatile uint8_t *smmu, uint32_t action)
 {
 	struct a630_gmu_smmu_old old = { 0 };
 	PE_Video video = { 0 };
 	vm_offset_t tables = 0, sqe = 0, ring = 0, memptrs = 0, ib = 0;
+	vm_offset_t target = 0;
 	volatile uint8_t *cb = NULL;
 	uint64_t *l1, *l2, root, fb_phys;
 	uint32_t fb_size, pages = 0, bad = 0, hole_bad = 0;
@@ -3378,6 +3608,9 @@ a630_gpu_g3d_smmu_stage21(volatile uint8_t *smmu, uint32_t action)
 	    KMA_KOBJECT | KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) !=
 	    KERN_SUCCESS ||
 	    kmem_alloc_contig(kernel_map, &ib, 0x1000, PAGE_MASK, 0, 0,
+	    KMA_KOBJECT | KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) !=
+	    KERN_SUCCESS ||
+	    kmem_alloc_contig(kernel_map, &target, 0x1000, PAGE_MASK, 0, 0,
 	    KMA_KOBJECT | KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) !=
 	    KERN_SUCCESS) {
 		goto free;
@@ -3507,10 +3740,26 @@ a630_gpu_g3d_smmu_stage21(volatile uint8_t *smmu, uint32_t action)
 			hole_bad++;
 		}
 	}
+	if (action >= 13) {
+		if (!a630_g3d_smmu_update_live(smmu, tables,
+		    A630_G3D_TARGET_IOVA, kvtophys(target), true)) {
+			printf("a630gpu: live target mapping failed for %#llx -> %#llx\n",
+			    (unsigned long long)A630_G3D_TARGET_IOVA,
+			    (unsigned long long)kvtophys(target));
+			goto restore;
+		}
+		pages++;
+	}
 	if (action >= 8) {
-		(void)a630_gpu_cp_stage22(smmu, ring, memptrs, ib, action);
+		(void)a630_gpu_cp_stage22(smmu, ring, memptrs, ib, target,
+		    action);
 		cp_quiesced =
 		    native_a630_gpu_cp_restore_bad == 0;
+	}
+	if (action >= 13 && cp_quiesced && native_a630_gpu_draw_ok) {
+		native_a630_gpu_draw_unmap_ok =
+		    a630_g3d_smmu_update_live(smmu, tables,
+		    A630_G3D_TARGET_IOVA, kvtophys(target), false);
 	}
 	native_a630_gpu_g3d_pages = pages;
 	native_a630_gpu_g3d_bad = bad;
@@ -3532,7 +3781,9 @@ restore:
 	}
 	native_a630_gpu_g3d_ok =
 	    cp_quiesced && native_a630_gpu_g3d_restore_bad == 0 && bad == 0 &&
-	    hole_bad == 0 && pages != 0 && setup_complete;
+	    hole_bad == 0 && pages != 0 && setup_complete &&
+	    (action < 13 || (native_a630_gpu_draw_ok != 0 &&
+	    native_a630_gpu_draw_unmap_ok != 0));
 	printf("a630gpu: Stream0 pages=%u bad=%u holes=%u restore=%u sqe=%u/%08x fb=%#llx+%#x ok=%u\n",
 	    pages, bad, hole_bad, native_a630_gpu_g3d_restore_bad,
 	    sqe_size, sqe_hash, (unsigned long long)fb_phys, fb_size,
@@ -3543,6 +3794,9 @@ free:
 	}
 	if (!retain && ib) {
 		kmem_free(kernel_map, ib, 0x1000);
+	}
+	if (!retain && target) {
+		kmem_free(kernel_map, target, 0x1000);
 	}
 	if (!retain && ring) {
 		kmem_free(kernel_map, ring, 0x8000);
@@ -4002,7 +4256,8 @@ a630_gmu_boot_stage11(volatile uint8_t *gmu, volatile uint8_t *smmu,
 		}
 		if (!failure && hfi_mode >= 3) {
 			if (!a630_gmu_gfx_rail_stage14(gmu, gpucc, smmu,
-			    hfi_mode >= 15 ? 12 : (hfi_mode >= 14 ? 11 :
+			    hfi_mode >= 16 ? 13 : (hfi_mode >= 15 ? 12 :
+			    (hfi_mode >= 14 ? 11 :
 			    (hfi_mode >= 13 ? 10 :
 			    (hfi_mode >= 12 ? 9 :
 			    (hfi_mode >= 11 ? 8 :
@@ -4010,7 +4265,7 @@ a630_gmu_boot_stage11(volatile uint8_t *gmu, volatile uint8_t *smmu,
 			    (hfi_mode >= 9 ? 6 :
 			    (hfi_mode >= 8 ? 5 : (hfi_mode >= 7 ? 4 :
 			    (hfi_mode >= 6 ? 3 : (hfi_mode >= 5 ? 2 :
-			    (hfi_mode >= 4 ? 1 : 0))))))))))))) {
+			    (hfi_mode >= 4 ? 1 : 0)))))))))))))) {
 				failure = 46;
 			} else if (hfi_mode >= 4 &&
 			    !native_a630_gpu_core_read_ok) {
@@ -4030,6 +4285,12 @@ a630_gmu_boot_stage11(volatile uint8_t *gmu, volatile uint8_t *smmu,
 			} else if (hfi_mode >= 9 &&
 			    !native_a630_gpu_protect_ok) {
 				failure = 52;
+			} else if (hfi_mode >= 16 &&
+			    !native_a630_gpu_draw_ok) {
+				failure = 59;
+			} else if (hfi_mode >= 16 &&
+			    !native_a630_gpu_draw_unmap_ok) {
+				failure = 60;
 			} else if (hfi_mode >= 10 &&
 			    !native_a630_gpu_g3d_ok) {
 				failure = 53;
@@ -4679,11 +4940,19 @@ native_a630_gpu_probe(void)
 			printf("a630gpu: stage 25 complete: the CP executed an indirect command buffer\n");
 			return;
 		}
-		if (!a630_gmu_boot_stage11(gmu, smmu, gpucc, 15)) {
+		if (enabled < 27) {
+			if (!a630_gmu_boot_stage11(gmu, smmu, gpucc, 15)) {
+				return;
+			}
+			native_a630_gpu_status = 0;
+			printf("a630gpu: stage 26 complete: the CP wrote a CACHE_FLUSH_TS fence\n");
+			return;
+		}
+		if (!a630_gmu_boot_stage11(gmu, smmu, gpucc, 16)) {
 			return;
 		}
 	}
 
 	native_a630_gpu_status = 0;
-	printf("a630gpu: stage 26 complete: the CP wrote a CACHE_FLUSH_TS fence\n");
+	printf("a630gpu: stage 27 complete: the CP rendered and verified a known BGRA page\n");
 }
