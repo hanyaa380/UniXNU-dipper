@@ -567,7 +567,7 @@ volatile uint32_t native_a630_gpu_gmu_tcm_boot_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_smmu_boot_restore_bad;
 volatile uint32_t native_a630_gpu_gmu_log[4];
 volatile uint32_t native_a630_gpu_kmd_ready;
-volatile uint32_t native_a630_gpu_kmd_mapped;
+volatile uint32_t native_a630_gpu_kmd_mapped_state;
 volatile uint32_t native_a630_gpu_kmd_buffer_count;
 volatile uint32_t native_a630_gpu_kmd_buffer_bytes;
 volatile uint32_t native_a630_gpu_kmd_submit_count;

@@ -311,7 +311,7 @@ extern volatile uint32_t native_a630_gpu_draw_cpi __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_draw_sqe_stat __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_draw_unmap_ok __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_kmd_ready __attribute__((weak_import));
-extern volatile uint32_t native_a630_gpu_kmd_mapped __attribute__((weak_import));
+extern volatile uint32_t native_a630_gpu_kmd_mapped_state __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_kmd_buffer_count __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_kmd_buffer_bytes __attribute__((weak_import));
 extern volatile uint32_t native_a630_gpu_kmd_submit_count __attribute__((weak_import));
@@ -957,7 +957,7 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
     char row[192];
     snprintf(row, sizeof row, "[a630kmd] ready=%u mapped=%u bufs=%u "
              "bytes=%u submits=%u fence=%u fault=%u",
-             native_a630_gpu_kmd_ready, native_a630_gpu_kmd_mapped,
+             native_a630_gpu_kmd_ready, native_a630_gpu_kmd_mapped_state,
              native_a630_gpu_kmd_buffer_count,
              native_a630_gpu_kmd_buffer_bytes,
              native_a630_gpu_kmd_submit_count,

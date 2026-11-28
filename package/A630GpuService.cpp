@@ -389,7 +389,8 @@ A630GPUUserClient::newBuffer(IOMemoryDescriptor *memory, uint64_t size,
 	    __ATOMIC_RELAXED);
 	__atomic_add_fetch(&native_a630_gpu_kmd_buffer_bytes, (uint32_t)size,
 	    __ATOMIC_RELAXED);
-	__atomic_store_n(&native_a630_gpu_kmd_mapped, 1, __ATOMIC_RELEASE);
+	__atomic_store_n(&native_a630_gpu_kmd_mapped_state, 1,
+	    __ATOMIC_RELEASE);
 	return entry;
 }
 
@@ -414,7 +415,7 @@ A630GPUUserClient::freeBuffer(struct a630_user_buffer *entry)
 	__atomic_sub_fetch(&native_a630_gpu_kmd_buffer_bytes, (uint32_t)entry->size,
 	    __ATOMIC_RELAXED);
 	if (fBufferCount == 0) {
-		__atomic_store_n(&native_a630_gpu_kmd_mapped, 0,
+		__atomic_store_n(&native_a630_gpu_kmd_mapped_state, 0,
 		    __ATOMIC_RELEASE);
 	}
 	entry->memory->release();
@@ -432,9 +433,11 @@ A630GPUUserClient::gemNew(struct a630_gem_new *request)
 	    size > UINT32_MAX) {
 		return kIOReturnBadArgument;
 	}
+	IOOptionBits options = (IOOptionBits)kIODirectionInOut |
+	    (IOOptionBits)kIOMemoryKernelUserShared |
+	    (IOOptionBits)kIOMapWriteCombineCache;
 	memory = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task,
-	    kIODirectionInOut | kIOMemoryKernelUserShared |
-	    kIOMapWriteCombineCache, (vm_size_t)size, PAGE_SIZE);
+	    options, (vm_size_t)size, PAGE_SIZE);
 	if (memory == NULL) {
 		return kIOReturnNoMemory;
 	}
