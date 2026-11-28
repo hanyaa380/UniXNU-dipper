@@ -19,7 +19,7 @@ extern "C" void native_legacy_display_static_init(void) __asm__("__GLOBAL__sub_I
 extern "C" IOService *native_legacy_display_allocate(void);
 extern "C" void native_gop_presenter_static_init(void) __asm__("__GLOBAL__sub_I_NativeGOPPresenter.cpp");
 extern "C" IOService *native_gop_presenter_create(void);
-extern "C" void native_a630_gpu_static_init(void) __asm__("__GLOBAL__sub_I_A630GpuService.cpp");
+extern "C" void native_a630_gpu_static_init(void);
 extern "C" void native_a630_gpu_service_publish(void);
 extern "C" bool native_a630_gpu_kmd_ready(void);
 static IOService *pendingLegacyDisplay;

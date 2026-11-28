@@ -10,6 +10,7 @@
 #include <IOKit/IOService.h>
 #include <IOKit/IOUserClient.h>
 #include <kern/clock.h>
+#include <libkern/os/cpp_util.h>
 #include <mach/mach_time.h>
 #include <mach/vm_param.h>
 #include <sys/systm.h>
@@ -791,4 +792,9 @@ native_a630_gpu_service_stop(void)
 
 extern "C" void
 native_a630_gpu_static_init(void)
-    __asm__("__GLOBAL__sub_I_A630GpuService.cpp");
+{
+	::new (static_cast<void *>(&A630GPU::gMetaClass))
+	    A630GPU::MetaClass();
+	::new (static_cast<void *>(&A630GPUUserClient::gMetaClass))
+	    A630GPUUserClient::MetaClass();
+}
