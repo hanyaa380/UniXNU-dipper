@@ -3781,9 +3781,7 @@ restore:
 	}
 	native_a630_gpu_g3d_ok =
 	    cp_quiesced && native_a630_gpu_g3d_restore_bad == 0 && bad == 0 &&
-	    hole_bad == 0 && pages != 0 && setup_complete &&
-	    (action < 13 || (native_a630_gpu_draw_ok != 0 &&
-	    native_a630_gpu_draw_unmap_ok != 0));
+	    hole_bad == 0 && pages != 0 && setup_complete;
 	printf("a630gpu: Stream0 pages=%u bad=%u holes=%u restore=%u sqe=%u/%08x fb=%#llx+%#x ok=%u\n",
 	    pages, bad, hole_bad, native_a630_gpu_g3d_restore_bad,
 	    sqe_size, sqe_hash, (unsigned long long)fb_phys, fb_size,
@@ -4285,12 +4283,6 @@ a630_gmu_boot_stage11(volatile uint8_t *gmu, volatile uint8_t *smmu,
 			} else if (hfi_mode >= 9 &&
 			    !native_a630_gpu_protect_ok) {
 				failure = 52;
-			} else if (hfi_mode >= 16 &&
-			    !native_a630_gpu_draw_ok) {
-				failure = 59;
-			} else if (hfi_mode >= 16 &&
-			    !native_a630_gpu_draw_unmap_ok) {
-				failure = 60;
 			} else if (hfi_mode >= 10 &&
 			    !native_a630_gpu_g3d_ok) {
 				failure = 53;
@@ -4309,6 +4301,12 @@ a630_gmu_boot_stage11(volatile uint8_t *gmu, volatile uint8_t *smmu,
 			} else if (hfi_mode >= 15 &&
 			    !native_a630_gpu_fence_ok) {
 				failure = 58;
+			} else if (hfi_mode >= 16 &&
+			    !native_a630_gpu_draw_ok) {
+				failure = 59;
+			} else if (hfi_mode >= 16 &&
+			    !native_a630_gpu_draw_unmap_ok) {
+				failure = 60;
 			}
 		}
 	}
