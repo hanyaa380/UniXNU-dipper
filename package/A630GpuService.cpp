@@ -10,12 +10,13 @@
 #include <IOKit/IOService.h>
 #include <IOKit/IOUserClient.h>
 #include <kern/clock.h>
-#include <libkern/os/cpp_util.h>
 #include <mach/mach_time.h>
 #include <mach/vm_param.h>
 #include <sys/systm.h>
 
 #include "A630GpuKernel.h"
+
+void *operator new(size_t, void *) noexcept;
 
 enum {
 	kDrmGemClose = 0x09,
